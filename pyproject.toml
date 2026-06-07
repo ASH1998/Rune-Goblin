@@ -34,6 +34,9 @@ train = [
     "sentencepiece>=0.2",
     "protobuf>=4.25",
 ]
+gguf = [
+    "llama-cpp-python>=0.3.0",
+]
 dev = [
     "ruff>=0.6",
     "pytest>=8.0",

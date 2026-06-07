@@ -18,6 +18,12 @@ Rune buttons (Gradio / React)
    → spell outcome JSON              (validated by rune_goblin.schema)
    → game state engine               (rune_goblin.game, clamps HP)
    → updated UI
+
+Drawn canvas (Gradio vision app)
+   → canvas image + game state
+   → fine-tuned MiniCPM-V model      (rune_goblin.vision_inference)
+   → visual_reading + spell JSON     (validated by rune_goblin.schema)
+   → game state engine               (same dungeon loop)
 ```
 
 The deterministic rule engine (`rune_goblin.engine`) is both the **dataset
@@ -34,9 +40,11 @@ until a fine-tuned adapter exists, so the UIs run before training finishes).
 | `src/rune_goblin/generate_dataset.py` | synthetic dataset → `data/*.jsonl` |
 | `src/rune_goblin/finetune.py` | LoRA/QLoRA training (TRL + PEFT) |
 | `src/rune_goblin/inference.py` | load base + adapter, cast spells |
+| `src/rune_goblin/vision_inference.py` | load `ASHu2/goblinV1`, read canvas drawings |
 | `src/rune_goblin/evaluate.py` | game-engine eval metrics |
 | `src/rune_goblin/game.py` | 5-room dungeon state machine |
 | `app/app.py` | **Gradio** game UI (HF Space deliverable) |
+| `app/vision_app.py` | **Gradio** drawing UI for the fine-tuned vision model |
 | `api/server.py` | FastAPI backend for the React frontend |
 | `frontend/` | Vite + React custom cursed-dungeon UI |
 | `notebooks/` | dataset exploration and Modal.com vision fine-tuning notebooks |
@@ -53,6 +61,9 @@ uv sync
 
 # 2. Add the heavy ML stack for training / local model inference
 uv sync --extra train
+
+# 2b. Add GGUF runtime support for the local vision model
+uv sync --extra gguf
 
 # 3. Download the fine-tuning base model into models/
 uv run rune-goblin-download            # add --gguf for the .env serving model
@@ -96,6 +107,13 @@ fine-tuning reference and model-serving notes.
 # Gradio (rule engine by default; set RG_USE_MODEL=1 to use the fine-tune)
 uv run python app/app.py                   # → http://localhost:7860
 
+# Gradio drawing app with the downloaded ASHu2/goblinV1 GGUF
+RG_USE_MODEL=1 \
+RG_VISION_MODEL=models/goblinV1-gguf/gguf/rune-goblin-v46-Q4_K_M.gguf \
+RG_VISION_MMPROJ=models/goblinV1-gguf/gguf/rune-goblin-v46-mmproj-f16.gguf \
+uv run python app/vision_app.py
+# → http://localhost:7861
+
 # OR: React frontend + FastAPI backend
 uv run uvicorn api.server:app --port 8000  # terminal 1
 cd frontend && npm run dev                 # terminal 2 → http://localhost:5173
@@ -104,10 +122,19 @@ cd frontend && npm run dev                 # terminal 2 → http://localhost:517
 Set `RG_USE_MODEL=1` (and optionally `RG_BASE_MODEL` / `RG_ADAPTER`) to switch
 the UIs from the rule engine to the fine-tuned model.
 
+For the drawing app, set `RG_VISION_MODEL` to either a local merged MiniCPM-V
+Transformers directory or a local `.gguf` file. For GGUF, also set
+`RG_VISION_MMPROJ` to the downloaded projector. The model returns nested
+`visual_reading` + `spell` JSON; the game applies only the validated and clamped
+`spell` object.
+
 ## Notes on the model
 
 - **Fine-tuning base**: `openbmb/MiniCPM5-1B-SFT` — safetensors, llama-arch,
   LoRA-trainable. This is what `rune-goblin-download` and `finetune.py` use.
+- **Vision fine-tune**: `ASHu2/goblinV1` — merged MiniCPM-V model for canvas
+  drawings. The local GGUF files live in `models/goblinV1-gguf/gguf/`; use
+  `app/vision_app.py` for the first playable drawing prototype.
 - The `MODEL` in `.env` (`openbmb/MiniCPM-o-4_5-gguf`) is a **quantized GGUF
   multimodal** model — it's the llama.cpp/serving + optional vision path and
   **cannot** be LoRA-fine-tuned. Download it with `--gguf` only if you need it.

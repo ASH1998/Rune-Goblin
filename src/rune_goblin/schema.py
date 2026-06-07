@@ -45,6 +45,36 @@ class SpellResult(BaseModel):
         return json.dumps(self.model_dump(), ensure_ascii=False, separators=(",", ":"))
 
 
+class VisualReading(BaseModel):
+    """What the vision model saw on the drawn spell canvas."""
+
+    detected_runes: list[str] = Field(default_factory=list)
+    ambiguous_runes: list[str] = Field(default_factory=list)
+    drawing_style: str = Field(default="", max_length=200)
+    layout: str = Field(default="", max_length=200)
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    notes: list[str] = Field(default_factory=list)
+
+    @field_validator("detected_runes", "ambiguous_runes", "notes", mode="before")
+    @classmethod
+    def _coerce_list(cls, v):
+        if v is None:
+            return []
+        if isinstance(v, str):
+            return [v]
+        return list(v)
+
+
+class VisionSpellResult(BaseModel):
+    """Nested JSON emitted by the MiniCPM-V Rune Goblin fine-tune."""
+
+    visual_reading: VisualReading = Field(default_factory=VisualReading)
+    spell: SpellResult
+
+    def to_compact_json(self) -> str:
+        return json.dumps(self.model_dump(), ensure_ascii=False, separators=(",", ":"))
+
+
 def try_parse_spell(text: str) -> SpellResult | None:
     """Best-effort parse of model output into a :class:`SpellResult`.
 
@@ -55,6 +85,19 @@ def try_parse_spell(text: str) -> SpellResult | None:
         return None
     try:
         return SpellResult.model_validate(candidate)
+    except Exception:
+        return None
+
+
+def try_parse_vision_spell(text: str) -> VisionSpellResult | None:
+    """Best-effort parse of vision-model output into the nested schema."""
+    candidate = _extract_json(text)
+    if candidate is None:
+        return None
+    try:
+        if "spell" not in candidate:
+            candidate = {"visual_reading": {}, "spell": candidate}
+        return VisionSpellResult.model_validate(candidate)
     except Exception:
         return None
 
@@ -110,4 +153,16 @@ FALLBACK_SPELL = SpellResult(
     player_hp_delta=0,
     status_effects=[],
     chaos=1,
+)
+
+FALLBACK_VISION_SPELL = VisionSpellResult(
+    visual_reading=VisualReading(
+        detected_runes=[],
+        ambiguous_runes=[],
+        drawing_style="unreadable canvas",
+        layout="unknown",
+        confidence=0.0,
+        notes=["vision_model_unavailable_or_invalid_json"],
+    ),
+    spell=FALLBACK_SPELL.model_copy(),
 )

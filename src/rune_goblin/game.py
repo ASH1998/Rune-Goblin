@@ -7,11 +7,13 @@ FastAPI backend drive the exact same rules.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from .engine import GameState
 from .inference import cast_spell
 from .runelang import ENEMIES, ROOMS
-from .schema import SpellResult
+from .schema import SpellResult, VisionSpellResult
+from .vision_inference import cast_vision_spell
 
 
 @dataclass
@@ -69,6 +71,47 @@ class Game:
 
         self._resolve_turn_end(spell)
         return spell
+
+    def cast_drawing(self, image: Any) -> VisionSpellResult:
+        """Resolve a hand-drawn canvas through the vision model."""
+        if self.over:
+            return VisionSpellResult(
+                spell=SpellResult(spell_name="Nothing", effect="The run is already over.")
+            )
+
+        result = cast_vision_spell(
+            self.state,
+            image,
+            room_name=self.current_room.name,
+            use_model=self.use_model,
+        )
+        spell = result.spell
+        runes = result.visual_reading.detected_runes
+
+        self.state.enemy_hp = max(
+            0, min(self.state.enemy_max_hp, self.state.enemy_hp + spell.enemy_hp_delta)
+        )
+        self.state.player_hp = max(
+            0, min(self.state.player_max_hp, self.state.player_hp + spell.player_hp_delta)
+        )
+
+        rune_text = ", ".join(runes) if runes else "unreadable runes"
+        confidence = result.visual_reading.confidence
+        self.log.append(
+            f"You draw {rune_text} ({confidence:.0%} confidence): {spell.spell_name}. "
+            f"{spell.effect}"
+        )
+        if result.visual_reading.ambiguous_runes:
+            self.log.append(
+                f"  Ambiguous: {', '.join(result.visual_reading.ambiguous_runes)}"
+            )
+        if spell.side_effect:
+            self.log.append(f"  Side effect: {spell.side_effect}")
+
+        self.score += max(0, -spell.enemy_hp_delta) * 10 + spell.chaos
+
+        self._resolve_turn_end(spell)
+        return result
 
     def _resolve_turn_end(self, spell: SpellResult) -> None:
         # enemy defeated?
