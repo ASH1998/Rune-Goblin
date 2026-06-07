@@ -18,6 +18,7 @@ dependencies = [
     "gradio>=4.44",
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
+    "modal>=1.4.3",
 ]
 
 [project.optional-dependencies]

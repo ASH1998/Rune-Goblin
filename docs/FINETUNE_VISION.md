@@ -6,9 +6,16 @@ a canvas image + game state and emit `visual_reading` + `spell` JSON.
 > **TL;DR**
 > 1. The GGUF you downloaded is **inference-only** — fine-tuning needs the full
 >    safetensors model `openbmb/MiniCPM-V-4.6` (~2.6 GB).
-> 2. Convert the dataset to absolute paths: `uv run python scripts/prepare_vision_dataset.py`
+> 2. Convert the dataset to absolute image paths before training; the Modal
+>    notebook includes the conversion cell.
 > 3. Train LoRA with **ms-swift** (one command) or **LLaMA-Factory** (ready config).
 > 4. (Optional) merge LoRA → convert to GGUF to serve in the game via llama.cpp.
+
+> **Running on Modal?** Use the ready notebook
+> [`notebooks/MODAL-run-p1Jun2026.ipynb`](../notebooks/MODAL-run-p1Jun2026.ipynb)
+> — a single Run-All notebook (ms-swift based) for a Modal Notebook GPU, with an
+> appendix `modal run` script for unattended jobs. This doc is the framework-agnostic
+> reference behind it.
 
 ---
 
@@ -109,14 +116,17 @@ cursed.** Bad player art is part of the game loop.
 
 ### Step 1 — convert to absolute paths + framework formats
 
-Frameworks need absolute image paths. Run:
+Frameworks need absolute image paths. The Modal notebook includes a conversion
+cell that writes:
 
-```bash
-uv run python scripts/prepare_vision_dataset.py
-# writes data/vision_prepared/:
-#   vision_swift_{train,val}.jsonl       (ms-swift)
-#   vision_sharegpt_{train,val}.jsonl    (LLaMA-Factory ShareGPT)
-```
+| Output | Purpose |
+|---|---|
+| `vision_swift_{train,val}.jsonl` | ms-swift |
+| `vision_sharegpt_{train,val}.jsonl` | LLaMA-Factory ShareGPT |
+
+If you run outside Modal, use the same mapping: resolve each record's `image`
+field under the dataset root, skip or repair any missing image, and emit the
+framework-specific JSONL with absolute image paths.
 
 ---
 
@@ -273,8 +283,9 @@ user = `<image>\nSTATE: player_hp=… enemy=… …\nLook at the drawn RuneLang 
 ## 6. Pitfalls
 
 - **Don't** point training at the GGUF — use `openbmb/MiniCPM-V-4.6` safetensors.
-- **Relative image paths** in the raw dataset will fail mid-training; always run
-  `prepare_vision_dataset.py` first (it makes them absolute and verifies they exist).
+- **Relative image paths** in the raw dataset will fail mid-training; always
+  convert them to absolute paths first. The Modal notebook's preparation cell
+  does this and skips records with missing images.
 - **Prompt drift:** keep the exact system/user template from the dataset at game
   time or accuracy drops.
 - The dataset is **synthetic** — after launch, log real Gradio-canvas drawings

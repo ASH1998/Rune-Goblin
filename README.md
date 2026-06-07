@@ -39,6 +39,7 @@ until a fine-tuned adapter exists, so the UIs run before training finishes).
 | `app/app.py` | **Gradio** game UI (HF Space deliverable) |
 | `api/server.py` | FastAPI backend for the React frontend |
 | `frontend/` | Vite + React custom cursed-dungeon UI |
+| `notebooks/` | dataset exploration and Modal.com vision fine-tuning notebooks |
 | `data/` | drop your `.jsonl` training data here |
 | `models/` | downloaded base model + trained adapters |
 
@@ -74,6 +75,20 @@ uv run rune-goblin-train --data data/rune_spells.jsonl
 # Evaluate (rule engine, or the model once trained)
 uv run rune-goblin-eval --n 200            # add --rules-only to skip the model
 ```
+
+## Vision fine-tuning on Modal.com
+
+For the hand-drawn canvas model, use the Modal.com notebook workflow:
+
+1. Open [`notebooks/MODAL-run-p1Jun2026.ipynb`](./notebooks/MODAL-run-p1Jun2026.ipynb)
+   in Modal Notebooks.
+2. Attach a GPU, add your Hugging Face and W&B secrets, and run the notebook
+   top-to-bottom.
+3. The notebook prepares the vision JSONL data, fine-tunes `openbmb/MiniCPM-V-4.6`
+   with ms-swift LoRA, evaluates samples, and exports the adapter artifacts.
+
+See [`docs/FINETUNE_VISION.md`](./docs/FINETUNE_VISION.md) for the full
+fine-tuning reference and model-serving notes.
 
 ## Run the game
 
