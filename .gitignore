@@ -1,0 +1,35 @@
+# secrets
+.env
+.env.*
+!.env.example
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+
+# models & data artifacts (large / generated)
+models/
+!models/.gitkeep
+data/*.jsonl
+!data/.gitkeep
+outputs/
+wandb/
+*.safetensors
+*.gguf
+
+# node
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# os / editor
+.DS_Store
+.idea/
+.vscode/
+*.log

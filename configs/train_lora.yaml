@@ -1,0 +1,29 @@
+# Reference hyperparameters for LoRA fine-tuning (plan section 13.3).
+# These mirror the CLI defaults in src/rune_goblin/finetune.py — edit and pass
+# the values as flags, e.g.:
+#   uv run rune-goblin-train --epochs 3 --lora-r 16 --max-seq-len 1024
+
+base_model: openbmb/MiniCPM5-1B-SFT   # downloaded to models/MiniCPM5-1B-SFT
+local_base: models/MiniCPM5-1B-SFT
+output: models/rune-goblin-lora
+
+dataset: data/rune_spells.jsonl
+val_dataset: data/rune_spells_val.jsonl
+
+method: qlora            # qlora (4-bit) | lora (bf16)
+epochs: 3
+batch_size: 4
+grad_accum: 4            # effective batch = 16
+learning_rate: 2.0e-4
+max_seq_len: 1024
+lr_scheduler: cosine
+warmup_ratio: 0.03
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+
+# Output adapter to push to the Hub (section 13.2 step 5)
+hub_adapter_repo: <your-username>/rune-goblin-minicpm5-1b-lora

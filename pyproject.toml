@@ -1,0 +1,64 @@
+[project]
+name = "rune-goblin"
+version = "0.1.0"
+description = "A fine-tuned spell-language dungeon game powered by MiniCPM5-1B."
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Rune Goblin" }]
+dependencies = [
+    # core game + schema
+    "pydantic>=2.6",
+    "python-dotenv>=1.0",
+    # hugging face / data
+    "huggingface-hub>=0.25",
+    "hf-transfer>=0.1.6",
+    "datasets>=2.19",
+    # UI / serving
+    "gradio>=4.44",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+]
+
+[project.optional-dependencies]
+# Heavy ML stack for fine-tuning / local inference (installed via the
+# "train" extra so a lightweight UI-only checkout stays small).
+train = [
+    "torch>=2.3",
+    "transformers>=4.45",
+    "peft>=0.12",
+    "trl>=0.11",
+    "accelerate>=0.33",
+    "bitsandbytes>=0.43; platform_system == 'Linux'",
+    "sentencepiece>=0.2",
+    "protobuf>=4.25",
+]
+dev = [
+    "ruff>=0.6",
+    "pytest>=8.0",
+]
+
+[project.scripts]
+rune-goblin-data = "rune_goblin.generate_dataset:main"
+rune-goblin-download = "rune_goblin.download_model:main"
+rune-goblin-train = "rune_goblin.finetune:main"
+rune-goblin-eval = "rune_goblin.evaluate:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rune_goblin"]
+
+[tool.uv]
+# Resolve torch from PyPI default index (ships CUDA 12 wheels on Linux x86_64).
+package = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
