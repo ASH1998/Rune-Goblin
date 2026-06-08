@@ -26,18 +26,26 @@ Drawn canvas (Gradio vision app)
    → goblinV1-gguf Q4_K_M sketch reader
    → visual_reading / rune metadata  (rune_goblin.vision_inference)
    → fine-tuned RuneLang spell JSON  (validated by rune_goblin.schema)
-   → MiniCPM-V-4.6 Q8 asset planner  (planned)
-   → attack / VFX metadata JSON
-   → procedural renderer + game state engine
+   → asset / VFX planner             (rune_goblin.vfx — rule-based today, MiniCPM-V-4.6 later)
+   → attack / VFX metadata           (palette, projectile, particles, screen shake)
+   → CSS/canvas renderer + game state engine
 ```
+
+For the playable MVP the asset planner is a small deterministic function
+(`rune_goblin.vfx`) instead of a second model: it is instant and never fails,
+and its metadata shape mirrors the plan so a real `MiniCPM-V-4.6` planner can be
+swapped in later without touching the renderer.
 
 The deterministic rule engine (`rune_goblin.engine`) is both the **dataset
 oracle** (it generates training targets) and the **runtime fallback** (used
 until a fine-tuned adapter exists, so the UIs run before training finishes).
 
-The full RPG direction is map exploration with NPCs, chests, powerups, bosses,
-demons, locked doors and story flags. Models propose structured spell/world/
-asset metadata; Python validates and applies the actual state changes.
+The **RPG sandbox** (`app/rpg_app.py` + `src/rune_goblin/world.py`) realizes the
+map-exploration direction: tile-map areas with enemies, NPCs, chests, shrines,
+powerups, locked doors and a boss. The canvas client owns movement/rendering;
+`resolve_world_cast` turns drawn/selected runes + the faced target into a
+validated spell **and** a list of world actions (unlock, loot, defeat, heal,
+travel-gate…). Python stays the spell engine and balance authority.
 
 ## Layout
 
@@ -51,9 +59,14 @@ asset metadata; Python validates and applies the actual state changes.
 | `src/rune_goblin/inference.py` | load base + adapter, cast spells |
 | `src/rune_goblin/vision_inference.py` | load `ASHu2/goblinV1`, read canvas drawings |
 | `src/rune_goblin/evaluate.py` | game-engine eval metrics |
-| `src/rune_goblin/game.py` | 5-room dungeon state machine |
-| `app/app.py` | **Gradio** game UI (HF Space deliverable) |
-| `app/vision_app.py` | **Gradio** drawing UI for the fine-tuned vision model |
+| `src/rune_goblin/vfx.py` | deterministic asset/VFX planner (palette, projectile, particles, shake) |
+| `src/rune_goblin/game.py` | 5-room dungeon state machine (vision + text/rule cast paths) |
+| `src/rune_goblin/world.py` | **RPG world**: tile-map areas, entities, and cast→world-action resolution |
+| `app/rpg_app.py` | **Gradio + canvas RPG** — free-roaming sandbox (the main game) |
+| `app/rpg_bridge.py` | FastAPI `/rg/world` + `/rg/cast` bridge for the canvas client |
+| `app/rpg_static/` | `rpg.js` + `rpg.css` — the HTML5 canvas game client |
+| `app/vision_app.py` | **Gradio** — linear 5-room combat game (draw + tap, VFX, rune guide) |
+| `app/app.py` | minimal Gradio rune-button game (legacy) |
 | `api/server.py` | FastAPI backend for the React frontend |
 | `frontend/` | Vite + React custom cursed-dungeon UI |
 | `notebooks/` | dataset exploration and Modal.com vision fine-tuning notebooks |
@@ -112,18 +125,55 @@ fine-tuning reference and model-serving notes.
 
 ## Run the game
 
-```bash
-# Gradio (rule engine by default; set RG_USE_MODEL=1 to use the fine-tune)
-uv run python app/app.py                   # → http://localhost:7860
+### 🗺️ RPG sandbox (the main game)
 
-# Gradio drawing app with the downloaded ASHu2/goblinV1 GGUF
+A free-roaming tile world: explore an overworld hub and three dungeons, fight
+enemies, unlock chests and doors, bless yourself at shrines, find the Calendar
+Key, and beat the Calendar Beast. Movement and rendering run in an HTML5 canvas;
+casting round-trips to the Python engine + `goblinV1` vision model. The game is
+served at `/play` and embedded in a Gradio app.
+
+```bash
 RG_USE_MODEL=1 \
 RG_VISION_MODEL=models/goblinV1-gguf/gguf/rune-goblin-v46-Q4_K_M.gguf \
 RG_VISION_MMPROJ=models/goblinV1-gguf/gguf/rune-goblin-v46-mmproj-f16.gguf \
-uv run python app/vision_app.py
-# → http://localhost:7861
+uv run --extra gguf python app/rpg_app.py
+# → http://localhost:7862   (set RG_USE_MODEL=0 to play purely on the rule engine)
+```
 
-# OR: React frontend + FastAPI backend
+**Controls:** `WASD` / arrows move · `1–9` pick runes (or click the rune deck) ·
+`Space` cast at whatever you face · `E` draw a spell (read by goblinV1) · `C`
+clear runes · step into portals (🌀 / 🕳️ / 🚪) to travel. Face an enemy and cast;
+hit its weakness for bonus damage. Locked chests/doors show what runes they need.
+
+> Deployment note: `rpg_app.py` mounts FastAPI routes alongside Gradio
+> (`gr.mount_gradio_app`) and runs under `uvicorn`. For a Hugging Face Space, use
+> a Docker space (or expose `app` to uvicorn) rather than the plain Gradio SDK
+> auto-launch.
+
+### ⚔️ Linear combat game
+
+`app/vision_app.py` is the simpler 5-room combat game. There are two ways to cast every turn:
+
+- **Draw** a RuneLang spell on the canvas → the fine-tuned `goblinV1` vision
+  model reads your doodle and decides the spell.
+- **Tap 2–4 runes** from the board → instant deterministic rule-engine cast
+  (great for speed, and while the vision model warms up).
+
+```bash
+# The full game with the downloaded goblinV1 GGUF reading your drawings
+RG_USE_MODEL=1 \
+RG_VISION_MODEL=models/goblinV1-gguf/gguf/rune-goblin-v46-Q4_K_M.gguf \
+RG_VISION_MMPROJ=models/goblinV1-gguf/gguf/rune-goblin-v46-mmproj-f16.gguf \
+uv run --extra gguf python app/vision_app.py
+# → http://localhost:7861
+# The first drawing cast loads the model (~30s on CPU, faster on GPU). Rune-button
+# casts are instant. Set RG_USE_MODEL=0 to play purely on the rule engine.
+
+# Minimal legacy rune-button game
+uv run python app/app.py                   # → http://localhost:7860
+
+# OR: React frontend + FastAPI backend (rune buttons)
 uv run uvicorn api.server:app --port 8000  # terminal 1
 cd frontend && npm run dev                 # terminal 2 → http://localhost:5173
 ```
