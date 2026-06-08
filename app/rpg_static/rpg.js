@@ -13,7 +13,7 @@
   let A = null;                 // current area
   let selected = [];            // selected rune keys (quick-cast)
   let facing = "down";
-  let busy = false, over = false, drawing = false;
+  let busy = false, over = false, drawing = false, paused = false;
   let toastMsg = "";
   let vfx = [];                 // active visual effects
 
@@ -43,6 +43,183 @@
     broken_mark: ["#ff3d6e", "💢"],
   };
 
+  // ---- sprites (Tiny Swords by Pixel Frog, CC0) ----
+  const SPR_BASE = "/rg/static/sprites/";
+  const SPRITES = {
+    grass: { src: "grass.png", tile: true },
+    water: { src: "water.png", tile: true },
+    player: { src: "player.png", fw: 192, fh: 192, frames: 8, anim: true, scale: 1.6 },
+    npc_pawn: { src: "npc_pawn.png", fw: 192, fh: 192, frames: 8, anim: true, scale: 1.4 },
+    npc_monk: { src: "npc_monk.png", fw: 192, fh: 192, frames: 6, anim: true, scale: 1.4 },
+    goblin_red: { src: "goblin_red.png", fw: 192, fh: 192, frames: 7, anim: true, scale: 1.4 },
+    goblin_blue: { src: "goblin_blue.png", fw: 192, fh: 192, frames: 7, anim: true, scale: 1.4 },
+    goblin_purple: { src: "goblin_purple.png", fw: 192, fh: 192, frames: 7, anim: true, scale: 1.8 },
+    goblin_yellow: { src: "goblin_yellow.png", fw: 192, fh: 192, frames: 7, anim: true, scale: 1.35 },
+    chest_gold: { src: "chest_gold.png", fw: 128, fh: 128, frames: 1, scale: 1.0 },
+    shrine_tower: { src: "shrine_tower.png", fw: 128, fh: 256, frames: 1, scale: 1.4 },
+  };
+  const STATIC = "/rg/static/";
+  const VFXM = {};            // name -> {img, fw, fh, frames}
+  const SFXB = {};            // name -> url for Audio
+  let CIRCLES = null;         // magic-circle atlas {img, fw, fh, frames, fps, entries}
+  // creatures are tiny 16px sprites; keep them ~player-sized or smaller, not huge
+  const CRE_SCALE = {
+    magical_fairy: 0.9, fluttering_pixie: 0.85, glowing_wisp: 0.9,
+    iron_golem: 1.3, earth_elemental: 1.2, ice_golem: 1.25, water_elemental: 1.05,
+    corrupted_treant: 1.35, grizzled_treant: 1.35, adept_necromancer: 1.2,
+    vile_witch: 1.05, fire_elemental: 1.1, deft_sorceress: 1.05,
+    expert_druid: 1.1, novice_pyromancer: 1.05,
+  };
+  function loadSprites() {
+    Object.values(SPRITES).forEach((s) => { const img = new Image(); img.src = SPR_BASE + s.src; s.img = img; });
+  }
+  async function loadManifest() {
+    let m;
+    try { m = await fetch(STATIC + "manifest.json").then((r) => r.json()); }
+    catch (e) { return; }
+    for (const [k, v] of Object.entries(m.vfx || {})) {
+      const img = new Image(); img.src = STATIC + v.file;
+      VFXM[k] = { img, fw: v.fw, fh: v.fh, frames: v.frames };
+    }
+    for (const [k, v] of Object.entries(m.creatures || {})) {
+      const img = new Image(); img.src = STATIC + v.file;
+      SPRITES[k] = { img, fw: v.fw, fh: v.fh, frames: v.frames, anim: v.frames > 1, scale: CRE_SCALE[k] || 1.0 };
+    }
+    for (const [k, v] of Object.entries(m.deco || {})) {
+      const img = new Image(); img.src = STATIC + v.file;
+      const tall = v.fh > v.fw, big = v.fw >= 192;
+      SPRITES[k] = { img, fw: v.fw, fh: v.fh, frames: 1, anim: false,
+        scale: k === "tree" ? 1.5 : big ? 1.5 : tall ? 1.25 : 0.95 };
+    }
+    for (const [k, v] of Object.entries(m.sfx || {})) SFXB[k] = STATIC + v;
+    if (m.circles) {
+      const img = new Image(); img.src = STATIC + m.circles.file;
+      CIRCLES = { img, fw: m.circles.fw, fh: m.circles.fh, frames: m.circles.frames,
+        fps: m.circles.fps || 12, entries: m.circles.entries || [] };
+    }
+  }
+  // pick the magic-circle row whose runes best match the cast
+  const RUNE_SHORT = { closed_circle: "circle", jagged_line: "jagged", broken_mark: "broken", three_dots: "dots" };
+  function circleRow(runes) {
+    if (!CIRCLES || !CIRCLES.entries.length) return -1;
+    const short = runes.map((r) => RUNE_SHORT[r] || r);
+    let best = CIRCLES.entries[0].row, bestScore = -1;
+    for (const e of CIRCLES.entries) {
+      const s = e.runes.filter((x) => short.includes(x)).length;
+      if (s > bestScore) { bestScore = s; best = e.row; }
+    }
+    return best;
+  }
+  function spr(name) {
+    const s = SPRITES[name];
+    return (s && s.img && s.img.complete && s.img.naturalWidth) ? s : null;
+  }
+  function drawTileSprite(name, px, py) {
+    const s = spr(name); if (!s) return false;
+    ctx.drawImage(s.img, 0, 0, s.img.naturalWidth, s.img.naturalHeight, px, py, TILE + 1, TILE + 1);
+    return true;
+  }
+  // bottom-centred unit/object sprite at screen (cx, baseY)
+  function drawUnitSprite(name, cx, baseY, scale, frameIndex) {
+    const s = spr(name); if (!s) return false;
+    const fw = s.fw || s.img.naturalWidth, fh = s.fh || s.img.naturalHeight;
+    const fcount = s.frames || 1;
+    const col = (s.anim && fcount > 1) ? (frameIndex % fcount) : 0;
+    const dw = TILE * (scale || s.scale || 1.4);
+    const dh = dw * (fh / fw);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(s.img, col * fw, 0, fw, fh, cx - dw / 2, baseY - dh, dw, dh);
+    return true;
+  }
+  const GOBLIN_BY_NAME = {
+    "Queue Goblin": "goblin_red", "Mirror Fungus": "goblin_yellow",
+    "PDF Wraith": "goblin_blue", "Tax Wraith": "goblin_blue",
+    "Stapler Hydra": "goblin_red", "Mold Knight": "goblin_yellow",
+    "Calendar Beast": "goblin_purple",
+  };
+  function entitySprite(e) {
+    if (e.sprite_key && SPRITES[e.sprite_key]) return e.sprite_key;
+    if (e.type === "boss") return "goblin_purple";
+    if (e.type === "enemy") return GOBLIN_BY_NAME[e.name] || "goblin_red";
+    if (e.type === "npc") return e.id === "librarian" ? "npc_monk" : "npc_pawn";
+    if (e.type === "chest" || e.type === "powerup") return "chest_gold";
+    if (e.type === "shrine" || e.type === "locked_door") return "shrine_tower";
+    return null; // portals are drawn as a glow
+  }
+
+  // ---- spell element + complexity tier (drives the drawn magic) ----
+  const ELEM_OF = {
+    flame: "fire", tooth: "fire", jagged_line: "electric", wave: "water",
+    leaf: "poison", three_dots: "poison", thread: "poison", bone: "dark",
+    broken_mark: "dark", spiral: "wind", eye: "light", mirror: "light",
+    closed_circle: "light", bell: "light", coin: "light", key: "light",
+  };
+  function elementOf(runes) {
+    for (const r of runes) if (ELEM_OF[r]) return ELEM_OF[r];
+    return "light";
+  }
+  const ELEM_VFX = {
+    fire: { cast: "fire_cast", proj: "fire_ball", impact: "fire_burst", sound: "fire" },
+    water: { cast: "ice_cast", proj: "ice_pick", impact: "ice_shatter", sound: "water" },
+    electric: { cast: "light_cast", proj: "star", impact: "holy", sound: "electric" },
+    poison: { cast: "poison_cast", proj: "poison_claw", impact: "poison_claw", sound: "earth" },
+    wind: { cast: "tornado", proj: "tornado", impact: "tornado", sound: "wind" },
+    light: { cast: "light_cast", proj: "star", impact: "holy", sound: "light" },
+    dark: { cast: "poison_cast", proj: "poison_claw", impact: "explosion", sound: "dark" },
+  };
+  function spellTier(s, runes) {
+    const chaos = s.chaos || 0, dmg = -(s.enemy_hp_delta || 0);
+    let t = 1;
+    if (chaos >= 4 || dmg >= 3 || runes.length >= 3) t = 2;
+    if (chaos >= 6 || dmg >= 5 || runes.length >= 4) t = 3;
+    if (chaos >= 8 || dmg >= 7 || runes.includes("broken_mark")) t = 4;
+    return t;
+  }
+  function playSfx(name, tier) {
+    if (!musicOn) return;
+    const url = SFXB[name] || SFXB.light;
+    if (url) { try { const a = new Audio(url); a.volume = 0.22; a.play().catch(() => {}); } catch (e) {} }
+    if (tier >= 3 && SFXB.charge) { try { const c = new Audio(SFXB.charge); c.volume = 0.16; c.play().catch(() => {}); } catch (e) {} }
+  }
+
+  // ---- music (original procedural chiptune via Web Audio) ----
+  let actx = null, masterGain = null, musicOn = true, musicTimer = null, step = 0;
+  const PENTA = [0, 3, 5, 7, 10];           // minor pentatonic
+  const ROOT_HZ = 196;                      // ~G3
+  function noteHz(semi) { return ROOT_HZ * Math.pow(2, semi / 12); }
+  function blip(freq, t, dur, type, gain) {
+    const o = actx.createOscillator(), g = actx.createGain();
+    o.type = type || "square"; o.frequency.value = freq;
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(gain || 0.2, t + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g); g.connect(masterGain); o.start(t); o.stop(t + dur + 0.02);
+  }
+  function startMusic() {
+    if (musicTimer || !actx) return;
+    const beat = 60 / 96 / 2; // eighth notes @ 96bpm
+    musicTimer = setInterval(() => {
+      if (!actx || !musicOn) return;
+      const t = actx.currentTime + 0.03;
+      if (step % 4 === 0) blip(noteHz(PENTA[(step / 4 | 0) % PENTA.length] - 12), t, beat * 3.2, "triangle", 0.22);
+      const mel = PENTA[(step * 2) % PENTA.length] + (step % 8 >= 4 ? 12 : 0);
+      blip(noteHz(mel), t, beat * 0.85, "square", 0.10);
+      step = (step + 1) % 32;
+    }, beat * 1000);
+  }
+  function initAudio() {
+    if (actx) { if (actx.state === "suspended") actx.resume(); return; }
+    const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
+    actx = new AC(); masterGain = actx.createGain();
+    masterGain.gain.value = musicOn ? 0.05 : 0; masterGain.connect(actx.destination);
+    startMusic();
+  }
+  function toggleMute() {
+    musicOn = !musicOn;
+    if (masterGain) masterGain.gain.value = musicOn ? 0.05 : 0;
+    const b = $("rg-mute"); if (b) b.textContent = musicOn ? "🔊" : "🔇";
+  }
+
   // ---- helpers ----
   const $ = (id) => document.getElementById(id);
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
@@ -66,12 +243,25 @@
   }
 
   // ---- layout ----
+  let shakeAmt = 0;
   function layout() {
     COLS = A.width; ROWS = A.height;
-    const availW = canvas.width - 8, availH = canvas.height - HUD_TOP - 8;
-    TILE = Math.floor(Math.min(availW / COLS, availH / ROWS));
-    OX = Math.floor((canvas.width - TILE * COLS) / 2);
-    OY = HUD_TOP + Math.floor((canvas.height - HUD_TOP - TILE * ROWS) / 2);
+    const viewH = canvas.height - HUD_TOP;
+    // aim for ~11 tiles tall; clamp tile size so big maps scroll via the camera
+    TILE = clamp(Math.floor(viewH / 11), 34, 88);
+  }
+  function camera() {
+    const worldW = COLS * TILE, worldH = ROWS * TILE;
+    const viewW = canvas.width, viewH = canvas.height - HUD_TOP;
+    const pcx = P.x * TILE + TILE / 2, pcy = P.y * TILE + TILE / 2;
+    let camX = pcx - viewW / 2, camY = pcy - viewH / 2;
+    camX = (worldW <= viewW) ? -(viewW - worldW) / 2 : clamp(camX, 0, worldW - viewW);
+    camY = (worldH <= viewH) ? -(viewH - worldH) / 2 : clamp(camY, 0, worldH - viewH);
+    let jx = 0, jy = 0;
+    if (shakeAmt > 0.01) { jx = (Math.random() * 2 - 1) * shakeAmt * TILE * 0.3; jy = (Math.random() * 2 - 1) * shakeAmt * TILE * 0.3; }
+    OX = Math.round(-camX + jx);
+    OY = Math.round(HUD_TOP - camY + jy);
+    shakeAmt *= 0.88;
   }
   const sx = (tx) => OX + tx * TILE;
   const sy = (ty) => OY + ty * TILE;
@@ -84,7 +274,7 @@
   function facedTarget() {
     const [fx, fy] = facedTile();
     const e = entityAt(fx, fy);
-    return e && e.blocking ? e : null;
+    return e && e.blocking && e.type !== "deco" ? e : null;
   }
 
   // ---- movement ----
@@ -97,7 +287,7 @@
     if (!WALK.has(A.rows[ny][nx])) { updateTarget(); return; }
     const e = entityAt(nx, ny);
     if (e && e.blocking) {
-      // bump: face it, surface hint
+      if (e.type === "deco") { updateTarget(); return; } // scenery just blocks
       toast("<b>" + e.name + "</b> — " + (e.hint || (e.dialogue || "")));
       updateTarget(); return;
     }
@@ -215,7 +405,7 @@
     });
     P.score += Math.max(0, -(s.enemy_hp_delta || 0)) * 10 + (s.chaos || 0);
 
-    spawnVfx(s, target, runes);
+    spawnSpellVfx(s, target, runes);
 
     if (!over) {
       let line = "<b>" + (s.spell_name || "Spell") + "</b> — " + (s.effect || "");
@@ -262,62 +452,132 @@
   function tileCenter(e) { return [sx(e.x) + TILE / 2, sy(e.y) + TILE / 2]; }
   function playerCenter() { return [sx(P.x) + TILE / 2, sy(P.y) + TILE / 2]; }
 
-  function spawnVfx(s, target, runes) {
-    const [color, glyph] = school(runes || []);
-    const dmg = -(s.enemy_hp_delta || 0), heal = Math.max(0, s.player_hp_delta || 0);
-    const tgtPos = target ? tileCenter(target) : playerCenter();
-    vfx.push({
-      t0: now(), dur: 760 + 40 * (s.chaos || 0), color, glyph,
-      from: playerCenter(), to: tgtPos, dmg, heal,
-      shieldy: (s.status_effects || []).includes("player_shielded"),
-      particles: 8 + (s.chaos || 0),
-      shakeTarget: target && dmg > 0 ? target.id : null,
-    });
+  // world-anchored helpers (tile-space, resolved to screen at draw time)
+  function tcOf(e) { return [e.x + 0.5, e.y + 0.5]; }
+  function pcOf() { return [P.x + 0.5, P.y + 0.5]; }
+  function addAnim(sheet, tx, ty, scale, delay) {
+    if (VFXM[sheet]) vfx.push({ kind: "anim", sheet, tx, ty, scale, start: now() + (delay || 0) });
   }
-  function spawnHit() { vfx.push({ t0: now(), dur: 420, color: "#ff5d73", glyph: "", from: playerCenter(), to: playerCenter(), dmg: 0, heal: 0, hit: true, particles: 0 }); }
+  function addProj(sheet, from, to, travel, delay) {
+    if (VFXM[sheet]) vfx.push({ kind: "proj", sheet, fx: from[0], fy: from[1], txx: to[0], tyy: to[1],
+      travel, scale: 1.2, start: now() + (delay || 0) });
+  }
+  function addNum(text, color, tx, ty, delay) {
+    vfx.push({ kind: "num", text, color, tx, ty, dur: 900, start: now() + (delay || 0) });
+  }
+  function addCircle(row, tx, ty, scale, dur) {
+    if (CIRCLES && row >= 0) vfx.push({ kind: "circle", row, tx, ty, scale, dur, start: now() });
+  }
+
+  // The drawn magic: complexity (layers, size, shake, secondary bursts) scales
+  // with the spell's tier — derived from rune count, chaos, damage and curse.
+  function spawnSpellVfx(s, target, runes) {
+    runes = runes || [];
+    const el = elementOf(runes), cfg = ELEM_VFX[el] || ELEM_VFX.light;
+    const t = spellTier(s, runes);
+    const dmg = -(s.enemy_hp_delta || 0), heal = Math.max(0, s.player_hp_delta || 0);
+    const pc = pcOf(), tc = target ? tcOf(target) : pc;
+    const travel = target ? 300 : 0;
+    // magic circle under the caster, chosen by the drawn runes, bigger with tier
+    const crow = circleRow(runes);
+    addCircle(crow, pc[0], pc[1] + 0.1, 2.0 + 0.5 * t, 650 + 150 * t);
+    if (target && t >= 2) addCircle(crow, tc[0], tc[1] + 0.1, 1.5 + 0.4 * t, 600 + 130 * t);
+    addAnim(cfg.cast, pc[0], pc[1] - 0.3, 1.1 + 0.18 * t, 0);
+    if (target) addProj(cfg.proj, pc, tc, travel, 110);
+    addAnim(cfg.impact, tc[0], tc[1] - 0.2, 1.2 + 0.22 * t, 110 + travel);
+    if (t >= 2) addAnim("explosion", tc[0], tc[1] - 0.2, 1.0, 150 + travel);
+    if (t >= 3) { addAnim("star", tc[0], tc[1] - 0.4, 1.7, 170 + travel); shakeAmt = Math.max(shakeAmt, 0.35); }
+    if (t >= 4) {
+      addAnim("explosion_big", tc[0], tc[1] - 0.3, 1.6, 210 + travel);
+      addAnim("tornado", tc[0], tc[1] - 0.3, 1.5, 90 + travel);
+      shakeAmt = Math.max(shakeAmt, 0.7);
+    }
+    if (heal > 0) addAnim("holy", pc[0], pc[1] - 0.2, 1.1, 0);
+    if ((s.status_effects || []).includes("player_shielded")) addAnim("barrier", pc[0], pc[1] - 0.2, 1.3, 0);
+    if (dmg > 0) { addNum("-" + dmg, "#ff5d73", tc[0], tc[1] - 0.6, 110 + travel); shakeAmt = Math.max(shakeAmt, Math.min(0.55, 0.12 + dmg * 0.06)); }
+    else if (heal > 0) addNum("+" + heal, "#6df5a0", pc[0], pc[1] - 0.6, 0);
+    playSfx(cfg.sound, t);
+  }
+  function spawnHit() { vfx.push({ kind: "hit", start: now(), dur: 360 }); shakeAmt = Math.max(shakeAmt, 0.35); }
 
   // ---- rendering ----
   function drawTiles() {
     const b = BIOME[A.biome] || DEFAULT_BIOME;
-    for (let y = 0; y < ROWS; y++) {
-      for (let x = 0; x < COLS; x++) {
+    const haveTiles = spr("grass") && spr("water");
+    const x0 = clamp(Math.floor((0 - OX) / TILE), 0, COLS - 1);
+    const x1 = clamp(Math.ceil((canvas.width - OX) / TILE), 0, COLS - 1);
+    const y0 = clamp(Math.floor((HUD_TOP - OY) / TILE), 0, ROWS - 1);
+    const y1 = clamp(Math.ceil((canvas.height - OY) / TILE), 0, ROWS - 1);
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
         const ch = A.rows[y][x];
-        let col;
-        if (ch === "#") col = b.wall;
-        else if (ch === "~") col = HAZARD;
-        else if (ch === " ") col = "#070510";
-        else col = ((x + y) % 2 === 0) ? b.floor : b.alt;
-        ctx.fillStyle = col;
-        ctx.fillRect(sx(x), sy(y), TILE, TILE);
-        if (ch === "#") {
-          ctx.fillStyle = b.edge;
-          ctx.fillRect(sx(x), sy(y) + TILE - 4, TILE, 4);
+        const walk = WALK.has(ch);
+        const px = sx(x), py = sy(y);
+        if (haveTiles) {
+          drawTileSprite(walk ? "grass" : "water", px, py);
+          if (ch === "~") { ctx.fillStyle = "rgba(120,40,60,0.25)"; ctx.fillRect(px, py, TILE, TILE); }
+        } else {
+          let col;
+          if (ch === "#") col = b.wall;
+          else if (ch === "~") col = HAZARD;
+          else if (ch === " ") col = "#070510";
+          else col = ((x + y) % 2 === 0) ? b.floor : b.alt;
+          ctx.fillStyle = col; ctx.fillRect(px, py, TILE, TILE);
+          if (ch === "#") { ctx.fillStyle = b.edge; ctx.fillRect(px, py + TILE - 4, TILE, 4); }
         }
       }
     }
   }
 
-  function drawEntity(e) {
-    let [cx, cy] = tileCenter(e);
-    // shake if currently being hit
-    const sh = vfx.find((f) => f.shakeTarget === e.id && now() - f.t0 < 360);
-    if (sh) { const p = (now() - sh.t0) / 360; cx += Math.sin(p * 40) * (6 * (1 - p)); }
-    ctx.font = Math.floor(TILE * 0.7) + "px serif";
-    ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    let glyph = e.sprite;
-    if (e.type === "chest" && e.state === "open") glyph = "📭";
-    if ((e.type === "locked_door" || (e.type === "portal" && e.state === "locked"))) {
-      // draw door/portal then a lock badge
+  function drawPortal(cx, cy, e) {
+    const t = now() / 600, locked = e.state === "locked";
+    ctx.save();
+    for (let i = 0; i < 3; i++) {
+      ctx.globalAlpha = 0.5 - i * 0.13;
+      ctx.strokeStyle = locked ? "#ff5d73" : "#b07cff";
+      ctx.lineWidth = Math.max(2, TILE * 0.06);
+      ctx.beginPath();
+      ctx.arc(cx, cy, TILE * (0.2 + i * 0.13) + Math.sin(t + i) * 2, 0, Math.PI * 2);
+      ctx.stroke();
     }
-    ctx.fillText(glyph, cx, cy);
+    // glowing core (no emoji)
+    ctx.globalAlpha = 0.85;
+    const grd = ctx.createRadialGradient(cx, cy, 1, cx, cy, TILE * 0.34);
+    grd.addColorStop(0, locked ? "#ffd0d8" : "#e8d6ff");
+    grd.addColorStop(1, locked ? "rgba(255,93,115,0)" : "rgba(176,124,255,0)");
+    ctx.fillStyle = grd;
+    ctx.beginPath(); ctx.arc(cx, cy, TILE * 0.34, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+
+  function drawEntity(e) {
+    const cx = sx(e.x) + TILE / 2;
+    const cy = sy(e.y) + TILE / 2, baseY = sy(e.y) + TILE * 0.98;
+
+    if (e.type === "portal") {
+      drawPortal(cx, cy, e);
+    } else {
+      const name = entitySprite(e);
+      const fi = (now() / 140) | 0;
+      let drew = false;
+      if (name && !(e.type === "chest" && e.state === "open")) {
+        drew = drawUnitSprite(name, cx, baseY, null, fi);
+      }
+      if (!drew) {
+        ctx.font = Math.floor(TILE * 0.7) + "px serif";
+        ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        ctx.fillText(e.type === "chest" && e.state === "open" ? "📭" : e.sprite, cx, cy);
+      }
+    }
     // lock badge
     if (e.state === "locked") {
-      ctx.font = Math.floor(TILE * 0.32) + "px serif";
-      ctx.fillText("🔒", cx + TILE * 0.26, cy - TILE * 0.24);
+      ctx.font = Math.floor(TILE * 0.4) + "px serif";
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText("🔒", cx, sy(e.y) + TILE * 0.15);
     }
     // enemy HP bar
     if ((e.type === "enemy" || e.type === "boss") && e.hp > 0) {
-      const w = TILE * 0.8, h = 5, bx = cx - w / 2, by = sy(e.y) + 2;
+      const w = TILE * 0.9, h = 5, bx = cx - w / 2, by = sy(e.y) - 4;
       ctx.fillStyle = "#000"; ctx.fillRect(bx - 1, by - 1, w + 2, h + 2);
       ctx.fillStyle = "#3a1020"; ctx.fillRect(bx, by, w, h);
       ctx.fillStyle = e.type === "boss" ? "#ffd24a" : "#ff5d73";
@@ -326,113 +586,137 @@
   }
 
   function drawPlayer() {
-    const [cx, cy] = playerCenter();
-    ctx.font = Math.floor(TILE * 0.7) + "px serif";
-    ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    ctx.fillText("🧙", cx, cy);
+    const cx = sx(P.x) + TILE / 2, cy = sy(P.y) + TILE / 2, baseY = sy(P.y) + TILE * 0.98;
+    const fi = (now() / 140) | 0;
+    let drew = false;
+    if (spr("player")) {
+      ctx.save();
+      if (facing === "left") { ctx.translate(cx * 2, 0); ctx.scale(-1, 1); }
+      drew = drawUnitSprite("player", cx, baseY, null, fi);
+      ctx.restore();
+    }
+    if (!drew) {
+      ctx.font = Math.floor(TILE * 0.7) + "px serif";
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText("🧙", cx, cy);
+    }
     // facing pip
     const v = DIRV[facing];
     ctx.fillStyle = "#ffd24a";
     ctx.beginPath();
-    ctx.arc(cx + v[0] * TILE * 0.34, cy + v[1] * TILE * 0.34, 3, 0, 7);
+    ctx.arc(cx + v[0] * TILE * 0.36, cy + v[1] * TILE * 0.36, 3, 0, 7);
     ctx.fill();
   }
 
-  function drawVfx() {
-    const keep = [];
+  // ground-level magic circles, drawn under entities
+  function drawCircles() {
+    if (!CIRCLES || !CIRCLES.img.complete || !CIRCLES.img.naturalWidth) return;
+    ctx.imageSmoothingEnabled = false;
     for (const f of vfx) {
-      const t = now() - f.t0, p = t / f.dur;
-      if (p >= 1) continue;
-      keep.push(f);
-      if (f.hit) {
+      if (f.kind !== "circle") continue;
+      const t = now() - f.start; if (t < 0) continue;
+      const p = t / f.dur; if (p >= 1) continue;
+      const fi = Math.floor(t / (1000 / CIRCLES.fps)) % CIRCLES.frames;
+      const dw = TILE * f.scale, dh = dw;
+      ctx.globalAlpha = p < 0.15 ? p / 0.15 : (p > 0.8 ? (1 - p) / 0.2 : 1);
+      ctx.drawImage(CIRCLES.img, fi * CIRCLES.fw, f.row * CIRCLES.fh, CIRCLES.fw, CIRCLES.fh,
+        OX + f.tx * TILE - dw / 2, OY + f.ty * TILE - dh / 2, dw, dh);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  function drawVfx() {
+    const FM = 24; // ms per frame
+    const keep = [];
+    ctx.imageSmoothingEnabled = false;
+    for (const f of vfx) {
+      const t = now() - f.start;
+      if (t < 0) { keep.push(f); continue; }
+      if (f.kind === "anim" || f.kind === "proj") {
+        const m = VFXM[f.sheet];
+        if (!m || !m.img.complete || !m.img.naturalWidth) { keep.push(f); continue; }
+        const fi = Math.floor(t / FM);
+        let cx, cy, fcol;
+        if (f.kind === "proj") {
+          const p = Math.min(1, t / f.travel);
+          cx = OX + (f.fx + (f.txx - f.fx) * p) * TILE;
+          cy = OY + (f.fy + (f.tyy - f.fy) * p) * TILE;
+          fcol = fi % m.frames;
+          if (p >= 1) continue;
+          keep.push(f);
+        } else {
+          if (fi >= m.frames) continue;
+          keep.push(f);
+          cx = OX + f.tx * TILE; cy = OY + f.ty * TILE; fcol = fi;
+        }
+        const dw = TILE * f.scale, dh = dw * (m.fh / m.fw);
+        ctx.drawImage(m.img, fcol * m.fw, 0, m.fw, m.fh, cx - dw / 2, cy - dh / 2, dw, dh);
+      } else if (f.kind === "circle") {
+        const p = t / f.dur; if (p >= 1) continue; keep.push(f); // drawn under entities by drawCircles()
+      } else if (f.kind === "num") {
+        const p = t / f.dur; if (p >= 1) continue; keep.push(f);
+        ctx.fillStyle = f.color; ctx.globalAlpha = 1 - p;
+        ctx.font = "bold " + Math.floor(TILE * 0.42) + 'px "Press Start 2P", monospace';
+        ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        ctx.fillText(f.text, OX + f.tx * TILE, OY + f.ty * TILE - p * 30);
+        ctx.globalAlpha = 1;
+      } else if (f.kind === "hit") {
+        const p = t / f.dur; if (p >= 1) continue; keep.push(f);
         ctx.fillStyle = "rgba(255,80,90," + (0.4 * (1 - p)) + ")";
         ctx.fillRect(0, HUD_TOP, canvas.width, canvas.height - HUD_TOP);
-        continue;
-      }
-      // flash
-      ctx.save();
-      ctx.globalAlpha = 0.35 * (1 - p);
-      ctx.fillStyle = f.color;
-      ctx.fillRect(0, HUD_TOP, canvas.width, canvas.height - HUD_TOP);
-      ctx.restore();
-      // projectile
-      const px = f.from[0] + (f.to[0] - f.from[0]) * Math.min(1, p * 1.4);
-      const py = f.from[1] + (f.to[1] - f.from[1]) * Math.min(1, p * 1.4);
-      ctx.font = Math.floor(TILE * 0.6) + "px serif";
-      ctx.textAlign = "center"; ctx.textBaseline = "middle";
-      ctx.globalAlpha = 1;
-      ctx.fillText(f.glyph, px, py);
-      // particles at target
-      if (p > 0.35) {
-        const n = f.particles;
-        for (let i = 0; i < n; i++) {
-          const a = (i / n) * Math.PI * 2;
-          const r = TILE * 0.9 * (p - 0.35) / 0.65;
-          ctx.fillStyle = f.color;
-          ctx.globalAlpha = 1 - p;
-          ctx.beginPath();
-          ctx.arc(f.to[0] + Math.cos(a) * r, f.to[1] + Math.sin(a) * r, 3, 0, 7);
-          ctx.fill();
-        }
-        ctx.globalAlpha = 1;
-      }
-      // floating number
-      if (f.dmg > 0 || f.heal > 0) {
-        const txt = f.dmg > 0 ? "-" + f.dmg : "+" + f.heal;
-        ctx.fillStyle = f.dmg > 0 ? "#ff5d73" : "#6df5a0";
-        ctx.font = 'bold ' + Math.floor(TILE * 0.5) + 'px "Press Start 2P", monospace';
-        ctx.globalAlpha = 1 - p;
-        ctx.fillText(txt, f.to[0], f.to[1] - TILE * 0.6 - p * 24);
-        ctx.globalAlpha = 1;
       }
     }
     vfx = keep;
   }
 
   function drawHud() {
-    ctx.fillStyle = "rgba(16,10,26,0.9)";
+    ctx.fillStyle = "rgba(16,10,26,0.92)";
     ctx.fillRect(0, 0, canvas.width, HUD_TOP);
     ctx.fillStyle = "#34254d"; ctx.fillRect(0, HUD_TOP - 2, canvas.width, 2);
     ctx.textBaseline = "middle"; ctx.textAlign = "left";
-    // hearts
-    ctx.font = '16px serif';
+    ctx.font = '11px "Press Start 2P", monospace';
     let hx = 12;
-    ctx.fillStyle = "#ff5d73";
-    ctx.fillText("❤", hx, HUD_TOP / 2); hx += 20;
-    ctx.font = '12px "Press Start 2P", monospace';
-    ctx.fillStyle = "#e7d9ff";
-    ctx.fillText(P.hp + "/" + P.max_hp, hx, HUD_TOP / 2); hx += 70;
-    ctx.fillStyle = "#ffd24a"; ctx.fillText("⚡" + P.courage, hx, HUD_TOP / 2); hx += 60;
-    ctx.fillStyle = "#6df5a0"; ctx.fillText("★" + P.score, hx, HUD_TOP / 2); hx += 90;
-    ctx.fillStyle = "#9c8bc4";
-    ctx.fillText("🎒" + P.inventory.length, hx, HUD_TOP / 2);
-    // area name centred
-    ctx.textAlign = "center"; ctx.fillStyle = "#b07cff";
-    ctx.fillText(A.name.toUpperCase(), canvas.width / 2, HUD_TOP / 2);
+    const cy = HUD_TOP / 2;
+    ctx.fillStyle = "#ff5d73"; ctx.fillText("HP " + P.hp + "/" + P.max_hp, hx, cy); hx += 150;
+    ctx.fillStyle = "#ffd24a"; ctx.fillText("CR " + P.courage, hx, cy); hx += 90;
+    ctx.fillStyle = "#6df5a0"; ctx.fillText("SCORE " + P.score, hx, cy); hx += 150;
+    ctx.fillStyle = "#9c8bc4"; ctx.fillText("BAG " + P.inventory.length, hx, cy);
+    ctx.textAlign = "right"; ctx.fillStyle = "#b07cff";
+    ctx.fillText(A.name.toUpperCase(), canvas.width - 14, cy);
   }
 
   function render() {
+    if (paused) return;
+    fitCanvas();
+    camera();
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = "#0b0810"; ctx.fillRect(0, 0, canvas.width, canvas.height);
     drawTiles();
-    liveEntities().forEach(drawEntity);
-    drawPlayer();
+    drawCircles();
+    // depth sort: lower y drawn first, player interleaved by row
+    const ents = liveEntities().slice().sort((a, b) => a.y - b.y);
+    let playerDrawn = false;
+    for (const e of ents) {
+      if (!playerDrawn && e.y > P.y) { drawPlayer(); playerDrawn = true; }
+      drawEntity(e);
+    }
+    if (!playerDrawn) drawPlayer();
     drawVfx();
     drawHud();
     requestAnimationFrame(render);
   }
 
   // ---- palette / DOM ----
+  const ICON = (k) => "/rg/static/icons/" + k + ".png";
   function renderPalette() {
     const sel = $("rg-sel");
     if (sel) sel.innerHTML = selected.length
-      ? selected.map((k) => runeSym(k)).join(" + ")
-      : "no runes";
+      ? selected.map((k) => "<img class='ricon' src='" + ICON(k) + "' alt=''>").join("<span class='plus'>+</span>")
+      : "<span class='dim'>no runes</span>";
     document.querySelectorAll(".rg-rune").forEach((b) => {
       b.classList.toggle("on", selected.includes(b.dataset.rune));
     });
   }
-  function runeSym(k) { const r = runesMeta.find((x) => x.key === k); return r ? r.symbol + r.label : k; }
 
   function toggleRune(k) {
     const i = selected.indexOf(k);
@@ -448,7 +732,8 @@
       const b = document.createElement("button");
       b.className = "rg-rune"; b.dataset.rune = r.key;
       b.title = r.label + " — " + (r.meanings || []).join(", ");
-      b.innerHTML = (i < 9 ? "<span class='num'>" + (i + 1) + "</span>" : "") + r.symbol;
+      b.innerHTML = (i < 9 ? "<span class='num'>" + (i + 1) + "</span>" : "")
+        + "<img class='ricon' src='" + ICON(r.key) + "' alt='" + r.label + "'>";
       b.onclick = () => { toggleRune(r.key); canvas.focus(); };
       pal.appendChild(b);
     });
@@ -511,20 +796,43 @@
     toast("You wake on the <b>Goblin Toll Road</b>. " + moodLine() + " — roam and cast.");
   }
 
+  // Keep the canvas's internal resolution equal to its displayed CSS size.
+  // Called every frame so it self-corrects even if Gradio lays out the iframe
+  // late or the window resizes — otherwise the world renders at the wrong
+  // scale and the player drifts off-screen.
+  function fitCanvas() {
+    const cw = canvas.clientWidth, ch = canvas.clientHeight;
+    if (cw > 0 && ch > 0 && (canvas.width !== cw || canvas.height !== ch)) {
+      canvas.width = cw; canvas.height = ch;
+      if (A) layout();
+    }
+  }
+  function resizeCanvas() { fitCanvas(); }
+
   function bootUI() {
     canvas = $("rg-canvas"); ctx = canvas.getContext("2d");
     setupSketch();
+    resizeCanvas();
+    window.addEventListener("resize", resizeCanvas);
     $("rg-boot").style.display = "none";
-    $("rg-cast").onclick = () => { castRunes(); canvas.focus(); };
-    $("rg-draw-open").onclick = () => { openDraw(); };
+    const gesture = () => initAudio();
+    $("rg-cast").onclick = () => { gesture(); castRunes(); canvas.focus(); };
+    $("rg-draw-open").onclick = () => { gesture(); openDraw(); };
     $("rg-clear").onclick = () => { selected = []; renderPalette(); canvas.focus(); };
     $("rg-reset").onclick = () => { newGame(); canvas.focus(); };
     $("rg-draw-cast").onclick = castDrawing;
     $("rg-draw-clear").onclick = clearSketch;
     $("rg-draw-cancel").onclick = closeDraw;
     $("rg-end-restart").onclick = () => { newGame(); canvas.focus(); };
-    window.addEventListener("keydown", onKey);
-    canvas.addEventListener("click", () => canvas.focus());
+    $("rg-mute").onclick = () => { gesture(); toggleMute(); canvas.focus(); };
+    $("rg-full").onclick = () => {
+      const el = document.documentElement;
+      if (document.fullscreenElement) document.exitFullscreen();
+      else if (el.requestFullscreen) el.requestFullscreen().catch(() => {});
+      canvas.focus();
+    };
+    window.addEventListener("keydown", (e) => { gesture(); onKey(e); });
+    canvas.addEventListener("click", () => { gesture(); canvas.focus(); });
     canvas.setAttribute("tabindex", "0");
     canvas.focus();
     // lightweight debug/test hook
@@ -532,9 +840,16 @@
       state: () => ({ area: P.area, x: P.x, y: P.y, facing, hp: P.hp, courage: P.courage,
         score: P.score, inv: P.inventory.slice(), over,
         target: (facedTarget() || {}).id || null,
+        cam: { OX, OY, TILE, cw: canvas.width, ch: canvas.height, cols: COLS, rows: ROWS,
+               pscreenX: OX + P.x * TILE + TILE / 2, pscreenY: OY + P.y * TILE + TILE / 2 },
         entities: A.entities.map((e) => ({ id: e.id, x: e.x, y: e.y, hp: e.hp, state: e.state })) }),
       goto: (x, y, dir) => { P.x = x; P.y = y; if (dir) facing = dir; updateTarget(); },
       pick: (...ks) => { selected = ks.slice(0, 4); renderPalette(); },
+      pause: () => { paused = true; },
+      resume: () => { if (paused) { paused = false; render(); } },
+      sprites: () => Object.fromEntries(Object.entries(SPRITES).map(([k, s]) => [k, !!spr(k)])),
+      vfxk: () => vfx.map((f) => f.kind),
+      circles: () => CIRCLES ? { ready: !!(CIRCLES.img.complete && CIRCLES.img.naturalWidth), frames: CIRCLES.frames, n: CIRCLES.entries.length } : null,
     };
     window.__rgReady = true;
   }
@@ -547,6 +862,8 @@
   }
 
   waitFor("#rg-canvas", async () => {
+    loadSprites();
+    loadManifest();
     bootUI();
     await newGame();
     render();

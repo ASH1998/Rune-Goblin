@@ -42,28 +42,30 @@ PLAY_PAGE = """<!doctype html>
   <title>Rune Goblin RPG</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/rg/static/rpg.css?v=5">
+  <link rel="stylesheet" href="/rg/static/rpg.css?v=12">
 </head>
 <body>
   <div id="rg-root">
-    <div id="rg-boot" class="rg-boot">Summoning the dungeon…</div>
-    <canvas id="rg-canvas" width="960" height="640" tabindex="0"></canvas>
+    <div id="rg-stage">
+      <div id="rg-boot" class="rg-boot">Summoning the dungeon…</div>
+      <canvas id="rg-canvas" tabindex="0"></canvas>
 
-    <div class="rg-draw" id="rg-draw">
-      <h3>Draw your spell</h3>
-      <canvas id="rg-sketch" width="340" height="340"></canvas>
-      <div class="row">
-        <button class="rg-btn primary" id="rg-draw-cast">🔮 Cast Drawing</button>
-        <button class="rg-btn" id="rg-draw-clear">Clear</button>
-        <button class="rg-btn ghost" id="rg-draw-cancel">Cancel (Esc)</button>
+      <div class="rg-draw" id="rg-draw">
+        <h3>Draw your spell</h3>
+        <canvas id="rg-sketch" width="340" height="340"></canvas>
+        <div class="row">
+          <button class="rg-btn primary" id="rg-draw-cast">🔮 Cast Drawing</button>
+          <button class="rg-btn" id="rg-draw-clear">Clear</button>
+          <button class="rg-btn ghost" id="rg-draw-cancel">Cancel (Esc)</button>
+        </div>
+        <div class="tip">Sketch 1–4 RuneLang glyphs. The fine-tuned goblinV1 model reads your doodle (~slow on CPU).</div>
       </div>
-      <div class="tip">Sketch 1–4 RuneLang glyphs. The fine-tuned goblinV1 model reads your doodle (~slow on CPU).</div>
-    </div>
 
-    <div class="rg-end" id="rg-end">
-      <h2 id="rg-end-title"></h2>
-      <div id="rg-end-sub"></div>
-      <button class="rg-btn primary" id="rg-end-restart">Descend again</button>
+      <div class="rg-end" id="rg-end">
+        <h2 id="rg-end-title"></h2>
+        <div id="rg-end-sub"></div>
+        <button class="rg-btn primary" id="rg-end-restart">Descend again</button>
+      </div>
     </div>
 
     <div id="rg-ui">
@@ -74,24 +76,29 @@ PLAY_PAGE = """<!doctype html>
         <button class="rg-btn" id="rg-draw-open">✍ Draw (E)</button>
         <button class="rg-btn ghost" id="rg-clear">Clear (C)</button>
         <button class="rg-btn ghost" id="rg-reset">New Game</button>
+        <button class="rg-btn ghost" id="rg-mute" title="music">🔊</button>
+        <button class="rg-btn ghost" id="rg-full" title="fullscreen">⛶</button>
         <span class="rg-target" id="rg-target"></span>
       </div>
       <div class="rg-toast" id="rg-toast">Use WASD / arrows to roam. Face something and cast a spell.</div>
-      <div class="rg-hint">WASD / Arrows move · 1–9 pick runes · Space cast · E draw · C clear · step into portals 🌀 / 🚪 to travel</div>
+      <div class="rg-hint">WASD / Arrows move · 1–9 pick runes · Space cast · E draw · C clear · step into portals to travel</div>
     </div>
   </div>
-  <script src="/rg/static/rpg.js?v=5"></script>
+  <script src="/rg/static/rpg.js?v=12"></script>
 </body>
 </html>
 """
 
-# The Gradio shell just frames the standalone game page.
+# The Gradio shell frames the standalone game page full-bleed.
 SHELL_HTML = """
-<div style="text-align:center">
-  <iframe src="/play" title="Rune Goblin RPG"
-    style="width:100%; max-width:1000px; height:760px; border:0; border-radius:12px;
-           box-shadow:0 0 40px #2a1140;"></iframe>
-</div>
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; }
+  .gradio-container { max-width: none !important; padding: 0 !important; margin: 0 !important; }
+  .gradio-container > .main, .gradio-container .wrap, .gradio-container .contain { padding: 0 !important; }
+  footer { display: none !important; }
+  #rg-frame { width: 100%; height: 100vh; border: 0; display: block; }
+</style>
+<iframe id="rg-frame" src="/play" title="Rune Goblin RPG" allow="fullscreen"></iframe>
 """
 
 fastapi_app = FastAPI(title="Rune Goblin RPG")
