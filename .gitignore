@@ -33,3 +33,4 @@ frontend/.vite/
 .idea/
 .vscode/
 *.log
+launch.json
