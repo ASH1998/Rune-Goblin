@@ -70,13 +70,13 @@
     npc_monk: { src: "npc_monk.png", fw: 192, fh: 192, frames: 6, anim: true, scale: 1.4 },
     goblin_red: { src: "goblin_red.png", fw: 192, fh: 192, frames: 7, anim: true, scale: 1.4 },
     goblin_blue: { src: "goblin_blue.png", fw: 192, fh: 192, frames: 7, anim: true, scale: 1.4 },
-    goblin_purple: { src: "goblin_purple.png", fw: 192, fh: 192, frames: 7, anim: true, scale: 1.8 },
+    goblin_purple: { src: "goblin_purple.png", fw: 192, fh: 192, frames: 7, anim: true, scale: 1.45 },
     goblin_yellow: { src: "goblin_yellow.png", fw: 192, fh: 192, frames: 7, anim: true, scale: 1.35 },
     chest_gold: { src: "chest_gold.png", fw: 128, fh: 128, frames: 1, scale: 1.0 },
-    shrine_tower: { src: "shrine_tower.png", fw: 128, fh: 256, frames: 1, scale: 1.4 },
-    goblin_house: { src: "goblin_house.png", fw: 128, fh: 192, frames: 1, scale: 1.45 },
-    knight_tower_blue: { src: "knight_tower_blue.png", fw: 128, fh: 256, frames: 1, scale: 1.55 },
-    goblin_tower_red: { src: "goblin_tower_red.png", fw: 128, fh: 192, frames: 8, anim: true, scale: 1.45 },
+    shrine_tower: { src: "shrine_tower.png", fw: 128, fh: 256, frames: 1, scale: 1.65 },
+    goblin_house: { src: "goblin_house.png", fw: 128, fh: 192, frames: 1, scale: 1.65 },
+    knight_tower_blue: { src: "knight_tower_blue.png", fw: 128, fh: 256, frames: 1, scale: 1.7 },
+    goblin_tower_red: { src: "goblin_tower_red.png", fw: 128, fh: 192, frames: 8, anim: true, scale: 1.6 },
     bridge_all: { src: "bridge_all.png", fw: 192, fh: 256, frames: 1, scale: 1.15 },
     happy_sheep: { src: "happy_sheep.png", fw: 128, fh: 128, frames: 8, anim: true, scale: 0.9 },
     blue_archer: { src: "blue_archer.png", fw: 192, fh: 192, frames: 6, anim: true, scale: 1.25 },
@@ -93,11 +93,18 @@
     corrupted_treant: 1.35, grizzled_treant: 1.35, adept_necromancer: 1.2,
     vile_witch: 1.05, fire_elemental: 1.1, deft_sorceress: 1.05,
     expert_druid: 1.1, novice_pyromancer: 1.05,
-    // Goblin Pack heroes: wide frames (attack swing) with the goblin at full
-    // frame height + feet at the bottom, so scale ≈ 1.9 * (fw/fh) to make the
-    // visible goblin ~1.9 tiles tall regardless of the box aspect.
-    hero_warrior: 3.4, hero_rogue: 2.5, hero_poison: 2.5,
-    hero_hunter: 2.4, hero_barbarian: 2.8, hero_king: 3.0, water_foam: 1.0, water_rocks: 1.0,
+    // Goblin Pack hero frames include weapon swing padding. Keep their draw
+    // boxes near one tile wide so they read as units beside houses and towers.
+    hero_warrior: 1.65, hero_rogue: 1.45, hero_poison: 1.45,
+    hero_hunter: 1.4, hero_barbarian: 1.7, hero_king: 1.75, water_foam: 1.0, water_rocks: 1.0,
+  };
+  const DECO_SCALE = {
+    tree: 2.6, bush: 0.95, rock: 0.8, rock2: 0.8,
+    goblin_house_destroyed: 1.65, knight_house_blue: 1.65,
+    wood_tower_destroyed: 1.75, wood_tower_building: 1.75,
+    castle_blue: 2.35, castle_red: 2.35, castle_destroyed: 2.35, black_castle: 2.35,
+    knight_tower_yellow: 1.7, purple_tower: 1.7,
+    red_barracks: 2.0, yellow_monastery: 1.85, gold_mine: 1.6,
   };
   function loadSprites() {
     Object.values(SPRITES).forEach((s) => { const img = new Image(); img.src = SPR_BASE + s.src; s.img = img; });
@@ -118,7 +125,7 @@
       const img = new Image(); img.src = STATIC + v.file;
       const tall = v.fh > v.fw, big = v.fw >= 192;
       SPRITES[k] = { img, fw: v.fw, fh: v.fh, frames: 1, anim: false,
-        scale: k === "tree" ? 1.5 : big ? 1.5 : tall ? 1.25 : 0.95 };
+        scale: DECO_SCALE[k] || (big ? 1.45 : tall ? 1.25 : 0.95) };
     }
     for (const [k, v] of Object.entries(m.sfx || {})) SFXB[k] = STATIC + v;
     if (m.circles) {
