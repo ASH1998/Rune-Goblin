@@ -143,6 +143,23 @@ uv run --extra gguf python app/rpg_app.py
 # → http://localhost:7862   (set RG_USE_MODEL=0 to play purely on the rule engine)
 ```
 
+On a MacBook / Apple Silicon machine, prefer running the mounted FastAPI app
+through `uvicorn` bound to localhost. This avoids `0.0.0.0` bind issues in
+restricted environments and uses conservative llama.cpp settings for the local
+GGUF vision model:
+
+```bash
+cd app
+RG_USE_MODEL=1 \
+RG_GGUF_GPU_LAYERS=0 \
+RG_GGUF_CTX=2048 \
+RG_VISION_MODEL=../models/goblinV1-gguf/gguf/rune-goblin-v46-Q4_K_M.gguf \
+RG_VISION_MMPROJ=../models/goblinV1-gguf/gguf/rune-goblin-v46-mmproj-f16.gguf \
+PYTHONPATH=../src \
+uv run uvicorn rpg_app:app --host 127.0.0.1 --port 7862
+# → http://127.0.0.1:7862/play
+```
+
 **Controls:** `WASD` / arrows move · `1–9` pick runes (or click the rune deck) ·
 `Space` cast at whatever you face · `E` draw a spell (read by goblinV1) · `C`
 clear runes · `🔊` music · `⛶` fullscreen · step into portals to travel. Face an
