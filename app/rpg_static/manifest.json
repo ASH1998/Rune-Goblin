@@ -1,0 +1,1162 @@
+{
+ "vfx": {
+  "fire_cast": {
+   "file": "vfx/fire_cast.png",
+   "fw": 96,
+   "fh": 96,
+   "frames": 28
+  },
+  "fire_ball": {
+   "file": "vfx/fire_ball.png",
+   "fw": 64,
+   "fh": 64,
+   "frames": 45
+  },
+  "fire_burst": {
+   "file": "vfx/fire_burst.png",
+   "fw": 64,
+   "fh": 64,
+   "frames": 29
+  },
+  "ice_cast": {
+   "file": "vfx/ice_cast.png",
+   "fw": 96,
+   "fh": 96,
+   "frames": 28
+  },
+  "ice_shatter": {
+   "file": "vfx/ice_shatter.png",
+   "fw": 96,
+   "fh": 96,
+   "frames": 49
+  },
+  "ice_pick": {
+   "file": "vfx/ice_pick.png",
+   "fw": 64,
+   "fh": 64,
+   "frames": 30
+  },
+  "poison_cast": {
+   "file": "vfx/poison_cast.png",
+   "fw": 96,
+   "fh": 96,
+   "frames": 40
+  },
+  "poison_claw": {
+   "file": "vfx/poison_claw.png",
+   "fw": 96,
+   "fh": 96,
+   "frames": 31
+  },
+  "light_cast": {
+   "file": "vfx/light_cast.png",
+   "fw": 96,
+   "fh": 96,
+   "frames": 48
+  },
+  "holy": {
+   "file": "vfx/holy.png",
+   "fw": 96,
+   "fh": 96,
+   "frames": 28
+  },
+  "tornado": {
+   "file": "vfx/tornado.png",
+   "fw": 96,
+   "fh": 96,
+   "frames": 89
+  },
+  "barrier": {
+   "file": "vfx/barrier.png",
+   "fw": 64,
+   "fh": 64,
+   "frames": 33
+  },
+  "explosion": {
+   "file": "vfx/explosion.png",
+   "fw": 96,
+   "fh": 96,
+   "frames": 44
+  },
+  "explosion_big": {
+   "file": "vfx/explosion_big.png",
+   "fw": 133,
+   "fh": 133,
+   "frames": 60
+  },
+  "star": {
+   "file": "vfx/star.png",
+   "fw": 64,
+   "fh": 64,
+   "frames": 60
+  }
+ },
+ "creatures": {
+  "fire_elemental": {
+   "file": "sprites/fire_elemental.png",
+   "fw": 16,
+   "fh": 16,
+   "frames": 4
+  },
+  "ice_golem": {
+   "file": "sprites/ice_golem.png",
+   "fw": 16,
+   "fh": 16,
+   "frames": 4
+  },
+  "water_elemental": {
+   "file": "sprites/water_elemental.png",
+   "fw": 16,
+   "fh": 16,
+   "frames": 4
+  },
+  "earth_elemental": {
+   "file": "sprites/earth_elemental.png",
+   "fw": 16,
+   "fh": 16,
+   "frames": 4
+  },
+  "iron_golem": {
+   "file": "sprites/iron_golem.png",
+   "fw": 16,
+   "fh": 16,
+   "frames": 4
+  },
+  "vile_witch": {
+   "file": "sprites/vile_witch.png",
+   "fw": 16,
+   "fh": 16,
+   "frames": 4
+  },
+  "corrupted_treant": {
+   "file": "sprites/corrupted_treant.png",
+   "fw": 16,
+   "fh": 16,
+   "frames": 4
+  },
+  "grizzled_treant": {
+   "file": "sprites/grizzled_treant.png",
+   "fw": 16,
+   "fh": 16,
+   "frames": 4
+  },
+  "glowing_wisp": {
+   "file": "sprites/glowing_wisp.png",
+   "fw": 16,
+   "fh": 16,
+   "frames": 4
+  },
+  "magical_fairy": {
+   "file": "sprites/magical_fairy.png",
+   "fw": 16,
+   "fh": 16,
+   "frames": 4
+  },
+  "fluttering_pixie": {
+   "file": "sprites/fluttering_pixie.png",
+   "fw": 16,
+   "fh": 16,
+   "frames": 4
+  },
+  "adept_necromancer": {
+   "file": "sprites/adept_necromancer.png",
+   "fw": 16,
+   "fh": 16,
+   "frames": 4
+  },
+  "deft_sorceress": {
+   "file": "sprites/deft_sorceress.png",
+   "fw": 16,
+   "fh": 16,
+   "frames": 4
+  },
+  "expert_druid": {
+   "file": "sprites/expert_druid.png",
+   "fw": 16,
+   "fh": 16,
+   "frames": 4
+  },
+  "novice_pyromancer": {
+   "file": "sprites/novice_pyromancer.png",
+   "fw": 16,
+   "fh": 16,
+   "frames": 4
+  }
+ },
+ "deco": {
+  "tree": {
+   "file": "sprites/deco_tree.png",
+   "fw": 256,
+   "fh": 256,
+   "frames": 6
+  },
+  "bush": {
+   "file": "sprites/deco_bush.png",
+   "fw": 1024,
+   "fh": 128,
+   "frames": 1
+  },
+  "rock": {
+   "file": "sprites/deco_rock.png",
+   "fw": 64,
+   "fh": 64,
+   "frames": 1
+  },
+  "rock2": {
+   "file": "sprites/deco_rock2.png",
+   "fw": 64,
+   "fh": 64,
+   "frames": 1
+  },
+  "d01": {
+   "file": "sprites/deco_d01.png",
+   "fw": 64,
+   "fh": 64,
+   "frames": 1
+  },
+  "d02": {
+   "file": "sprites/deco_d02.png",
+   "fw": 64,
+   "fh": 64,
+   "frames": 1
+  },
+  "d03": {
+   "file": "sprites/deco_d03.png",
+   "fw": 64,
+   "fh": 64,
+   "frames": 1
+  },
+  "d04": {
+   "file": "sprites/deco_d04.png",
+   "fw": 64,
+   "fh": 64,
+   "frames": 1
+  },
+  "d05": {
+   "file": "sprites/deco_d05.png",
+   "fw": 64,
+   "fh": 64,
+   "frames": 1
+  },
+  "d06": {
+   "file": "sprites/deco_d06.png",
+   "fw": 64,
+   "fh": 64,
+   "frames": 1
+  },
+  "d07": {
+   "file": "sprites/deco_d07.png",
+   "fw": 64,
+   "fh": 64,
+   "frames": 1
+  },
+  "d08": {
+   "file": "sprites/deco_d08.png",
+   "fw": 64,
+   "fh": 64,
+   "frames": 1
+  },
+  "d09": {
+   "file": "sprites/deco_d09.png",
+   "fw": 64,
+   "fh": 64,
+   "frames": 1
+  },
+  "d10": {
+   "file": "sprites/deco_d10.png",
+   "fw": 64,
+   "fh": 64,
+   "frames": 1
+  },
+  "d11": {
+   "file": "sprites/deco_d11.png",
+   "fw": 64,
+   "fh": 64,
+   "frames": 1
+  },
+  "d12": {
+   "file": "sprites/deco_d12.png",
+   "fw": 64,
+   "fh": 64,
+   "frames": 1
+  },
+  "d13": {
+   "file": "sprites/deco_d13.png",
+   "fw": 64,
+   "fh": 64,
+   "frames": 1
+  },
+  "d14": {
+   "file": "sprites/deco_d14.png",
+   "fw": 64,
+   "fh": 64,
+   "frames": 1
+  },
+  "d15": {
+   "file": "sprites/deco_d15.png",
+   "fw": 64,
+   "fh": 64,
+   "frames": 1
+  },
+  "d16": {
+   "file": "sprites/deco_d16.png",
+   "fw": 64,
+   "fh": 128,
+   "frames": 1
+  },
+  "d17": {
+   "file": "sprites/deco_d17.png",
+   "fw": 64,
+   "fh": 128,
+   "frames": 1
+  },
+  "d18": {
+   "file": "sprites/deco_d18.png",
+   "fw": 192,
+   "fh": 192,
+   "frames": 1
+  }
+ },
+ "icons": {
+  "spiral": "icons/spiral.png",
+  "jagged_line": "icons/jagged_line.png",
+  "closed_circle": "icons/closed_circle.png",
+  "three_dots": "icons/three_dots.png",
+  "wave": "icons/wave.png",
+  "eye": "icons/eye.png",
+  "bone": "icons/bone.png",
+  "leaf": "icons/leaf.png",
+  "flame": "icons/flame.png",
+  "key": "icons/key.png",
+  "mirror": "icons/mirror.png",
+  "bell": "icons/bell.png",
+  "tooth": "icons/tooth.png",
+  "thread": "icons/thread.png",
+  "coin": "icons/coin.png",
+  "broken_mark": "icons/broken_mark.png",
+  "_logo": "icons/logo.png"
+ },
+ "sfx": {
+  "fire": "sfx/fire.wav",
+  "ice": "sfx/ice.wav",
+  "water": "sfx/water.wav",
+  "light": "sfx/light.wav",
+  "dark": "sfx/dark.wav",
+  "earth": "sfx/earth.wav",
+  "wind": "sfx/wind.wav",
+  "charge": "sfx/charge.wav",
+  "sweep": "sfx/sweep.wav",
+  "good": "sfx/good.wav",
+  "bad": "sfx/bad.wav",
+  "power": "sfx/power.wav"
+ },
+ "circles": {
+  "file": "vfx/magic_circles.png",
+  "fw": 96,
+  "fh": 96,
+  "frames": 8,
+  "fps": 12,
+  "entries": [
+   {
+    "row": 0,
+    "runes": [
+     "flame",
+     "circle",
+     "coin"
+    ]
+   },
+   {
+    "row": 1,
+    "runes": [
+     "wave",
+     "spiral",
+     "circle"
+    ]
+   },
+   {
+    "row": 2,
+    "runes": [
+     "jagged",
+     "thread",
+     "spiral"
+    ]
+   },
+   {
+    "row": 3,
+    "runes": [
+     "leaf",
+     "tooth",
+     "wave"
+    ]
+   },
+   {
+    "row": 4,
+    "runes": [
+     "leaf",
+     "circle",
+     "dots"
+    ]
+   },
+   {
+    "row": 5,
+    "runes": [
+     "bone",
+     "bell",
+     "dots"
+    ]
+   },
+   {
+    "row": 6,
+    "runes": [
+     "mirror",
+     "wave",
+     "broken"
+    ]
+   },
+   {
+    "row": 7,
+    "runes": [
+     "flame",
+     "bell",
+     "circle"
+    ]
+   },
+   {
+    "row": 8,
+    "runes": [
+     "eye",
+     "wave",
+     "spiral"
+    ]
+   },
+   {
+    "row": 9,
+    "runes": [
+     "jagged",
+     "eye",
+     "dots"
+    ]
+   },
+   {
+    "row": 10,
+    "runes": [
+     "wave",
+     "key",
+     "circle"
+    ]
+   },
+   {
+    "row": 11,
+    "runes": [
+     "mirror",
+     "circle",
+     "jagged"
+    ]
+   },
+   {
+    "row": 12,
+    "runes": [
+     "coin",
+     "bell",
+     "key"
+    ]
+   },
+   {
+    "row": 13,
+    "runes": [
+     "thread",
+     "tooth",
+     "circle"
+    ]
+   },
+   {
+    "row": 14,
+    "runes": [
+     "tooth",
+     "dots",
+     "flame"
+    ]
+   },
+   {
+    "row": 15,
+    "runes": [
+     "spiral",
+     "eye",
+     "circle"
+    ]
+   },
+   {
+    "row": 16,
+    "runes": [
+     "key",
+     "mirror",
+     "eye"
+    ]
+   },
+   {
+    "row": 17,
+    "runes": [
+     "wave",
+     "spiral",
+     "broken"
+    ]
+   },
+   {
+    "row": 18,
+    "runes": [
+     "flame",
+     "coin",
+     "broken"
+    ]
+   },
+   {
+    "row": 19,
+    "runes": [
+     "eye",
+     "dots",
+     "wave"
+    ]
+   },
+   {
+    "row": 20,
+    "runes": [
+     "coin",
+     "circle",
+     "spiral"
+    ]
+   },
+   {
+    "row": 21,
+    "runes": [
+     "spiral",
+     "mirror",
+     "wave"
+    ]
+   },
+   {
+    "row": 22,
+    "runes": [
+     "jagged",
+     "mirror",
+     "leaf"
+    ]
+   },
+   {
+    "row": 23,
+    "runes": [
+     "bell",
+     "circle",
+     "jagged"
+    ]
+   },
+   {
+    "row": 24,
+    "runes": [
+     "tooth",
+     "coin",
+     "broken"
+    ]
+   },
+   {
+    "row": 25,
+    "runes": [
+     "wave",
+     "thread",
+     "circle"
+    ]
+   },
+   {
+    "row": 26,
+    "runes": [
+     "eye",
+     "wave",
+     "circle"
+    ]
+   },
+   {
+    "row": 27,
+    "runes": [
+     "flame",
+     "key",
+     "circle"
+    ]
+   },
+   {
+    "row": 28,
+    "runes": [
+     "leaf",
+     "wave",
+     "jagged"
+    ]
+   },
+   {
+    "row": 29,
+    "runes": [
+     "coin",
+     "dots",
+     "leaf"
+    ]
+   },
+   {
+    "row": 30,
+    "runes": [
+     "bell",
+     "dots",
+     "flame"
+    ]
+   },
+   {
+    "row": 31,
+    "runes": [
+     "bone",
+     "dots",
+     "circle"
+    ]
+   },
+   {
+    "row": 32,
+    "runes": [
+     "eye",
+     "bell",
+     "spiral"
+    ]
+   },
+   {
+    "row": 33,
+    "runes": [
+     "mirror",
+     "bone",
+     "broken"
+    ]
+   },
+   {
+    "row": 34,
+    "runes": [
+     "circle",
+     "mirror",
+     "key"
+    ]
+   },
+   {
+    "row": 35,
+    "runes": [
+     "wave",
+     "key",
+     "eye"
+    ]
+   },
+   {
+    "row": 36,
+    "runes": [
+     "leaf",
+     "circle",
+     "eye"
+    ]
+   },
+   {
+    "row": 37,
+    "runes": [
+     "flame",
+     "tooth",
+     "jagged"
+    ]
+   },
+   {
+    "row": 38,
+    "runes": [
+     "spiral",
+     "eye",
+     "wave"
+    ]
+   },
+   {
+    "row": 39,
+    "runes": [
+     "mirror",
+     "circle",
+     "bone"
+    ]
+   },
+   {
+    "row": 40,
+    "runes": [
+     "bell",
+     "thread",
+     "wave"
+    ]
+   },
+   {
+    "row": 41,
+    "runes": [
+     "eye",
+     "wave",
+     "broken"
+    ]
+   },
+   {
+    "row": 42,
+    "runes": [
+     "spiral",
+     "coin",
+     "key"
+    ]
+   },
+   {
+    "row": 43,
+    "runes": [
+     "key",
+     "circle",
+     "eye"
+    ]
+   },
+   {
+    "row": 44,
+    "runes": [
+     "bell",
+     "spiral",
+     "mirror"
+    ]
+   },
+   {
+    "row": 45,
+    "runes": [
+     "thread",
+     "wave",
+     "circle"
+    ]
+   },
+   {
+    "row": 46,
+    "runes": [
+     "coin",
+     "spiral",
+     "dots"
+    ]
+   },
+   {
+    "row": 47,
+    "runes": [
+     "coin",
+     "mirror",
+     "broken"
+    ]
+   },
+   {
+    "row": 48,
+    "runes": [
+     "flame",
+     "eye",
+     "bell"
+    ]
+   },
+   {
+    "row": 49,
+    "runes": [
+     "bone",
+     "spiral",
+     "broken"
+    ]
+   },
+   {
+    "row": 50,
+    "runes": [
+     "bell",
+     "leaf",
+     "dots"
+    ]
+   },
+   {
+    "row": 51,
+    "runes": [
+     "wave",
+     "mirror",
+     "eye"
+    ]
+   },
+   {
+    "row": 52,
+    "runes": [
+     "thread",
+     "eye",
+     "wave"
+    ]
+   },
+   {
+    "row": 53,
+    "runes": [
+     "key",
+     "spiral",
+     "eye"
+    ]
+   },
+   {
+    "row": 54,
+    "runes": [
+     "coin",
+     "wave",
+     "broken"
+    ]
+   },
+   {
+    "row": 55,
+    "runes": [
+     "circle",
+     "thread",
+     "coin"
+    ]
+   },
+   {
+    "row": 56,
+    "runes": [
+     "leaf",
+     "tooth",
+     "jagged"
+    ]
+   },
+   {
+    "row": 57,
+    "runes": [
+     "leaf",
+     "thread",
+     "circle"
+    ]
+   },
+   {
+    "row": 58,
+    "runes": [
+     "leaf",
+     "dots",
+     "wave"
+    ]
+   },
+   {
+    "row": 59,
+    "runes": [
+     "leaf",
+     "bone",
+     "circle"
+    ]
+   },
+   {
+    "row": 60,
+    "runes": [
+     "wave",
+     "bell",
+     "dots"
+    ]
+   },
+   {
+    "row": 61,
+    "runes": [
+     "wave",
+     "eye",
+     "circle"
+    ]
+   },
+   {
+    "row": 62,
+    "runes": [
+     "jagged",
+     "wave",
+     "dots"
+    ]
+   },
+   {
+    "row": 63,
+    "runes": [
+     "wave",
+     "flame",
+     "key"
+    ]
+   },
+   {
+    "row": 64,
+    "runes": [
+     "coin",
+     "thread",
+     "circle"
+    ]
+   },
+   {
+    "row": 65,
+    "runes": [
+     "tooth",
+     "spiral",
+     "jagged"
+    ]
+   },
+   {
+    "row": 66,
+    "runes": [
+     "thread",
+     "jagged",
+     "bone"
+    ]
+   },
+   {
+    "row": 67,
+    "runes": [
+     "flame",
+     "eye",
+     "bell"
+    ]
+   },
+   {
+    "row": 68,
+    "runes": [
+     "flame",
+     "circle",
+     "wave"
+    ]
+   },
+   {
+    "row": 69,
+    "runes": [
+     "coin",
+     "spiral",
+     "dots"
+    ]
+   },
+   {
+    "row": 70,
+    "runes": [
+     "mirror",
+     "key",
+     "coin"
+    ]
+   },
+   {
+    "row": 71,
+    "runes": [
+     "coin",
+     "bell",
+     "circle"
+    ]
+   },
+   {
+    "row": 72,
+    "runes": [
+     "mirror",
+     "eye",
+     "broken"
+    ]
+   },
+   {
+    "row": 73,
+    "runes": [
+     "leaf",
+     "bell",
+     "circle"
+    ]
+   },
+   {
+    "row": 74,
+    "runes": [
+     "flame",
+     "tooth",
+     "circle"
+    ]
+   },
+   {
+    "row": 75,
+    "runes": [
+     "wave",
+     "circle",
+     "coin"
+    ]
+   },
+   {
+    "row": 76,
+    "runes": [
+     "leaf",
+     "jagged",
+     "wave"
+    ]
+   },
+   {
+    "row": 77,
+    "runes": [
+     "tooth",
+     "eye",
+     "spiral"
+    ]
+   },
+   {
+    "row": 78,
+    "runes": [
+     "key",
+     "mirror",
+     "spiral"
+    ]
+   },
+   {
+    "row": 79,
+    "runes": [
+     "wave",
+     "dots",
+     "key"
+    ]
+   },
+   {
+    "row": 80,
+    "runes": [
+     "flame",
+     "spiral",
+     "eye"
+    ]
+   },
+   {
+    "row": 81,
+    "runes": [
+     "mirror",
+     "wave",
+     "eye"
+    ]
+   },
+   {
+    "row": 82,
+    "runes": [
+     "jagged",
+     "eye",
+     "flame"
+    ]
+   },
+   {
+    "row": 83,
+    "runes": [
+     "bone",
+     "flame",
+     "eye"
+    ]
+   },
+   {
+    "row": 84,
+    "runes": [
+     "jagged",
+     "dots",
+     "bell"
+    ]
+   },
+   {
+    "row": 85,
+    "runes": [
+     "mirror",
+     "circle",
+     "dots"
+    ]
+   },
+   {
+    "row": 86,
+    "runes": [
+     "spiral",
+     "wave",
+     "dots"
+    ]
+   },
+   {
+    "row": 87,
+    "runes": [
+     "circle",
+     "bone",
+     "leaf"
+    ]
+   },
+   {
+    "row": 88,
+    "runes": [
+     "key",
+     "circle",
+     "bone"
+    ]
+   },
+   {
+    "row": 89,
+    "runes": [
+     "bell",
+     "dots",
+     "coin"
+    ]
+   },
+   {
+    "row": 90,
+    "runes": [
+     "tooth",
+     "dots",
+     "jagged"
+    ]
+   },
+   {
+    "row": 91,
+    "runes": [
+     "thread",
+     "key",
+     "coin"
+    ]
+   },
+   {
+    "row": 92,
+    "runes": [
+     "spiral",
+     "eye",
+     "bell"
+    ]
+   },
+   {
+    "row": 93,
+    "runes": [
+     "mirror",
+     "bell",
+     "tooth"
+    ]
+   },
+   {
+    "row": 94,
+    "runes": [
+     "jagged",
+     "thread",
+     "tooth"
+    ]
+   },
+   {
+    "row": 95,
+    "runes": [
+     "coin",
+     "bell",
+     "thread"
+    ]
+   },
+   {
+    "row": 96,
+    "runes": [
+     "coin",
+     "key",
+     "broken"
+    ]
+   },
+   {
+    "row": 97,
+    "runes": [
+     "broken",
+     "eye",
+     "spiral"
+    ]
+   },
+   {
+    "row": 98,
+    "runes": [
+     "dots",
+     "mirror",
+     "bell"
+    ]
+   },
+   {
+    "row": 99,
+    "runes": [
+     "mirror",
+     "spiral",
+     "broken"
+    ]
+   }
+  ]
+ }
+}
