@@ -37,6 +37,14 @@ class CastRequest(BaseModel):
     seed: int | None = None
 
 
+class DialogueRequest(BaseModel):
+    area: str = ""
+    scene: str = "talk"
+    target: dict = Field(default_factory=dict)
+    player: dict = Field(default_factory=dict)
+    action: dict = Field(default_factory=dict)
+
+
 def _decode_image(data_url: str):
     from PIL import Image
 
@@ -47,8 +55,21 @@ def _decode_image(data_url: str):
 def register_routes(app: FastAPI) -> None:
     @app.get("/rg/ping")
     def ping() -> dict:
+        from rune_goblin.dialogue import model_status
+
         problems = validate_world()
-        return {"ok": not problems, "msg": "rune goblin online", "world_problems": problems}
+        return {"ok": not problems, "msg": "rune goblin online",
+                "world_problems": problems, "dialogue_model": model_status()}
+
+    @app.post("/rg/dialogue")
+    def dialogue(req: DialogueRequest) -> dict:
+        """Interactive NPC dialogue via the base MiniCPM model (+ fallback)."""
+        from rune_goblin.dialogue import generate_dialogue
+
+        return generate_dialogue(
+            area=req.area, scene=req.scene, target=req.target,
+            player=req.player, action=req.action,
+        )
 
     @app.get("/rg/world")
     def world() -> dict:

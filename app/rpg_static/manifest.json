@@ -181,6 +181,54 @@
    "fw": 16,
    "fh": 16,
    "frames": 4
+  },
+  "water_foam": {
+   "file": "sprites/water_foam.png",
+   "fw": 192,
+   "fh": 192,
+   "frames": 8
+  },
+  "water_rocks": {
+   "file": "sprites/water_rocks.png",
+   "fw": 128,
+   "fh": 128,
+   "frames": 8
+  },
+  "hero_warrior": {
+   "file": "sprites/heroes/hero_warrior.png",
+   "fw": 544,
+   "fh": 304,
+   "frames": 10
+  },
+  "hero_rogue": {
+   "file": "sprites/heroes/hero_rogue.png",
+   "fw": 448,
+   "fh": 344,
+   "frames": 14
+  },
+  "hero_poison": {
+   "file": "sprites/heroes/hero_poison.png",
+   "fw": 448,
+   "fh": 344,
+   "frames": 14
+  },
+  "hero_hunter": {
+   "file": "sprites/heroes/hero_hunter.png",
+   "fw": 408,
+   "fh": 328,
+   "frames": 17
+  },
+  "hero_barbarian": {
+   "file": "sprites/heroes/hero_barbarian.png",
+   "fw": 624,
+   "fh": 424,
+   "frames": 10
+  },
+  "hero_king": {
+   "file": "sprites/heroes/hero_king.png",
+   "fw": 80,
+   "fh": 64,
+   "frames": 18
   }
  },
  "deco": {
@@ -314,6 +362,84 @@
    "file": "sprites/deco_d18.png",
    "fw": 192,
    "fh": 192,
+   "frames": 1
+  },
+  "goblin_house_destroyed": {
+   "file": "sprites/goblin_house_destroyed.png",
+   "fw": 128,
+   "fh": 192,
+   "frames": 1
+  },
+  "wood_tower_destroyed": {
+   "file": "sprites/wood_tower_destroyed.png",
+   "fw": 256,
+   "fh": 192,
+   "frames": 1
+  },
+  "wood_tower_building": {
+   "file": "sprites/wood_tower_building.png",
+   "fw": 256,
+   "fh": 192,
+   "frames": 1
+  },
+  "castle_blue": {
+   "file": "sprites/castle_blue.png",
+   "fw": 320,
+   "fh": 256,
+   "frames": 1
+  },
+  "castle_red": {
+   "file": "sprites/castle_red.png",
+   "fw": 320,
+   "fh": 256,
+   "frames": 1
+  },
+  "castle_destroyed": {
+   "file": "sprites/castle_destroyed.png",
+   "fw": 320,
+   "fh": 256,
+   "frames": 1
+  },
+  "knight_house_blue": {
+   "file": "sprites/knight_house_blue.png",
+   "fw": 128,
+   "fh": 192,
+   "frames": 1
+  },
+  "knight_tower_yellow": {
+   "file": "sprites/knight_tower_yellow.png",
+   "fw": 128,
+   "fh": 256,
+   "frames": 1
+  },
+  "black_castle": {
+   "file": "sprites/black_castle.png",
+   "fw": 320,
+   "fh": 256,
+   "frames": 1
+  },
+  "purple_tower": {
+   "file": "sprites/purple_tower.png",
+   "fw": 128,
+   "fh": 256,
+   "frames": 1
+  },
+  "red_barracks": {
+   "file": "sprites/red_barracks.png",
+   "fw": 192,
+   "fh": 256,
+   "frames": 1
+  },
+  "yellow_monastery": {
+   "file": "sprites/yellow_monastery.png",
+   "fw": 192,
+   "fh": 320,
+   "frames": 1
+  },
+  "gold_mine": {
+   "file": "sprites/gold_mine.png",
+   "fw": 192,
+   "fh": 128,
    "frames": 1
   }
  },

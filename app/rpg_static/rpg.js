@@ -18,6 +18,21 @@
   let vfx = [];                 // active visual effects
   let turnNo = 0;
   let enemyCooldown = {};
+  let selecting = false;        // title-screen character select active
+  let chosenClass = null;       // selected goblin class id
+  let journalOpen = false;
+  let dialogueOpen = false;
+  let lastEnding = null;        // {ending,title,text} from win_game action
+  let CLASSES = [], WEAPONS = {};
+  const CLASS_SPRITE = {        // in-game sprite per class (Goblin Pack #1 hero sheets)
+    warrior: "hero_warrior", rogue: "hero_rogue", poison: "hero_poison",
+    hunter: "hero_hunter", barbarian: "hero_barbarian",
+  };
+  const CLASS_SPRITE_FALLBACK = {  // generic goblins if a hero sheet fails to load
+    warrior: "goblin_red", rogue: "goblin_yellow", poison: "goblin_purple",
+    hunter: "goblin_blue", barbarian: "goblin_red",
+  };
+  const KING_SPRITE = "hero_king";  // evolved Goblin King in-game sprite
 
   let canvas, ctx, sketch, sctx;
   let TILE = 40, OX = 0, OY = 64, COLS = 20, ROWS = 13;
@@ -78,6 +93,11 @@
     corrupted_treant: 1.35, grizzled_treant: 1.35, adept_necromancer: 1.2,
     vile_witch: 1.05, fire_elemental: 1.1, deft_sorceress: 1.05,
     expert_druid: 1.1, novice_pyromancer: 1.05,
+    // Goblin Pack heroes: wide frames (attack swing) with the goblin at full
+    // frame height + feet at the bottom, so scale ≈ 1.9 * (fw/fh) to make the
+    // visible goblin ~1.9 tiles tall regardless of the box aspect.
+    hero_warrior: 3.4, hero_rogue: 2.5, hero_poison: 2.5,
+    hero_hunter: 2.4, hero_barbarian: 2.8, hero_king: 3.0, water_foam: 1.0, water_rocks: 1.0,
   };
   function loadSprites() {
     Object.values(SPRITES).forEach((s) => { const img = new Image(); img.src = SPR_BASE + s.src; s.img = img; });
@@ -191,6 +211,17 @@
     if (url) { try { const a = new Audio(url); a.volume = 0.22; a.play().catch(() => {}); } catch (e) {} }
     if (tier >= 3 && SFXB.charge) { try { const c = new Audio(SFXB.charge); c.volume = 0.16; c.play().catch(() => {}); } catch (e) {} }
   }
+  // Each region gets a distinct entry cue so areas feel sonically different.
+  const REGION_SFX = {
+    toll_road: "good", cavern: "water", library: "light", market: "dark",
+    sewer: "water", gate: "charge", arena: "power",
+  };
+  function regionCue() {
+    if (!musicOn || !A) return;
+    const name = REGION_SFX[A.biome] || "sweep";
+    const url = SFXB[name];
+    if (url) { try { const a = new Audio(url); a.volume = 0.3; a.play().catch(() => {}); } catch (e) {} }
+  }
 
   // ---- music (original procedural chiptune via Web Audio) ----
   let actx = null, masterGain = null, musicOn = true, musicTimer = null, step = 0;
@@ -258,16 +289,34 @@
     P.quest_log = P.quest_log || [];
     P.discoveries = P.discoveries || [];
     P.trust = P.trust || {};
+    P.level = P.level || 1;
+    P.xp = P.xp || 0;
+    P.xp_to_next = P.xp_to_next || 8;
+    P.goblin_class = P.goblin_class || "warrior";
+    P.weapon = P.weapon || "clerk_wand";
+    P.weapon_inventory = P.weapon_inventory || [P.weapon];
+    P.gold = P.gold || 0;
+    P.story_flags = P.story_flags || [];
+    P.journal = P.journal || [];
+    P.evolved = P.evolved || false;
+    P.four_rune_unlocked = P.four_rune_unlocked || false;
   }
+  function hasFlag(f) { return (P.story_flags || []).includes(f); }
+  function addFlag(f) { if (f && !hasFlag(f)) P.story_flags.push(f); }
+  function weaponLabel(id) { return (WEAPONS[id] && WEAPONS[id].label) || id; }
   function addUnique(arr, text) { if (text && !arr.includes(text)) arr.push(text); }
   function questText() {
     const inv = new Set(P.inventory || []);
+    const boss = (areas.arena || { entities: [] }).entities.find((e) => e.id === "calendar_beast");
+    if (boss && boss.state === "defeated") return "The Calendar is decided";
+    if (P.area === "arena") return "Defeat or repair the Calendar Beast";
+    if (!inv.has("Calendar Shard")) return "Find the Calendar Shard in the Mirror Fungus Caverns";
     if (!inv.has("Calendar Key")) return "Find the Calendar Key in the Wet Library";
     const gate = (areas.library || { entities: [] }).entities.find((e) => e.id === "portal_arena");
-    if (gate && gate.state === "locked") return "Open the Calendar Gate";
-    const boss = (areas.arena || { entities: [] }).entities.find((e) => e.id === "calendar_beast");
-    return boss && boss.state !== "defeated" ? "Defeat the Calendar Beast" : "The Calendar is broken";
+    if (gate && gate.state === "locked") return "Open the Calendar Gate with the Calendar Key";
+    return "Cross the Gate Approach to the Calendar Beast";
   }
+  function maxRunes() { return P.four_rune_unlocked ? 4 : 3; }
 
   // ---- layout ----
   let shakeAmt = 0;
@@ -294,7 +343,22 @@
   const sy = (ty) => OY + ty * TILE;
 
   // ---- entity lookups ----
-  function liveEntities() { return A.entities.filter((e) => e.state !== "defeated" && e.state !== "collected"); }
+  function liveEntities() { return A.entities.filter((e) => e.state !== "defeated" && e.state !== "collected" && e.state !== "hidden"); }
+  // Show/hide flag-gated entities (consequence enemies, returning allies).
+  function applyConditionalSpawns(areaId) {
+    const ar = areas[areaId]; if (!ar) return;
+    const set = (id, show, flagWhenShown) => {
+      const e = ar.entities.find((x) => x.id === id);
+      if (!e || e.state === "defeated") return;
+      e.state = show ? "idle" : "hidden";
+      if (show && flagWhenShown) addFlag(flagWhenShown);
+    };
+    if (areaId === "gate_approach") {
+      const debtUnpaid = (hasFlag("debt_accepted") || hasFlag("debt_deepened")) && !hasFlag("debt_repaid");
+      set("debt_collector", debtUnpaid, "debt_collector_spawned");
+      set("gate_tourist", hasFlag("tourist_helped"), "boss_ally_tourist");
+    }
+  }
   function entityAt(x, y) { return liveEntities().find((e) => e.x === x && e.y === y); }
   function byId(id) { return A.entities.find((e) => e.id === id); }
   function facedTile() { const v = DIRV[facing]; return [P.x + v[0], P.y + v[1]]; }
@@ -347,6 +411,7 @@
     const e = entityAt(nx, ny);
     if (e && e.blocking) {
       if (e.type === "deco") { updateTarget(); return; } // scenery just blocks
+      if (e.type === "npc") { openDialogue(e, []); updateTarget(); return; }
       toast("<b>" + e.name + "</b> — " + (e.hint || (e.dialogue || "")));
       updateTarget(); return;
     }
@@ -362,9 +427,11 @@
   function travel(portal) {
     P.area = portal.target_area;
     A = areas[P.area];
+    applyConditionalSpawns(P.area);
     layout();
     P.x = portal.target_x; P.y = portal.target_y;
     enemyCooldown = {};
+    regionCue();
     toast("You enter <b>" + A.name + "</b>. " + moodLine());
   }
 
@@ -396,7 +463,10 @@
   // ---- casting ----
   function playerCtx() {
     return { hp: P.hp, max_hp: P.max_hp, courage: P.courage, max_courage: P.max_courage,
-             inventory: P.inventory.slice(), statuses: P.statuses.slice() };
+             inventory: P.inventory.slice(), statuses: P.statuses.slice(),
+             level: P.level, xp: P.xp, goblin_class: P.goblin_class, weapon: P.weapon,
+             story_flags: (P.story_flags || []).slice(), rune_mastery: P.rune_mastery || {},
+             gold: P.gold };
   }
   function targetCtx(t) {
     if (!t) return null;
@@ -470,7 +540,38 @@
           break;
         case "add_discovery": addUnique(P.discoveries, a.text); break;
         case "add_quest": addUnique(P.quest_log, a.text); break;
-        case "win_game": win(); break;
+        case "add_journal_entry": addUnique(P.journal, a.text); addUnique(P.discoveries, a.text); break;
+        case "set_story_flag": addFlag(a.flag); break;
+        case "bump_mastery":
+          (a.runes || []).forEach((r) => {
+            const before = P.rune_mastery[r] || 0;
+            P.rune_mastery[r] = before + 1;
+            if (P.rune_mastery[r] === 5) toast("✦ You have <b>mastered</b> the " + r.replace(/_/g, " ") + " rune (+1 damage with it).");
+          });
+          break;
+        case "set_progress":
+          if (a.level > P.level) { /* level shown by level_up */ }
+          P.level = a.level; P.xp = a.xp; P.xp_to_next = a.xp_to_next;
+          break;
+        case "level_up":
+          if (a.max_hp) { P.max_hp += a.max_hp; P.hp = clamp(P.hp + a.max_hp, 0, P.max_hp); }
+          if (a.max_courage) { P.max_courage += a.max_courage; P.courage = clamp(P.courage + a.max_courage, 0, P.max_courage); }
+          if (a.unlock_four_runes) P.four_rune_unlocked = true;
+          showBanner("⬆ LEVEL " + a.level + "<br><span style='font-size:11px'>" + (a.note || "") + "</span>");
+          break;
+        case "add_weapon":
+          if (!P.weapon_inventory.includes(a.weapon)) P.weapon_inventory.push(a.weapon);
+          P.weapon = a.weapon;  // auto-equip newest
+          if (WEAPONS[a.weapon] && WEAPONS[a.weapon].story_flag) addFlag(WEAPONS[a.weapon].story_flag);
+          toast("🗡️ You acquire the <b>" + weaponLabel(a.weapon) + "</b>. " + ((WEAPONS[a.weapon] || {}).identity || ""));
+          break;
+        case "equip_weapon": if (P.weapon_inventory.includes(a.weapon)) P.weapon = a.weapon; break;
+        case "start_boss_phase":
+          showBanner(a.banner || ("PHASE " + a.phase));
+          setTimeout(() => toast("<b>Calendar Beast</b>: " + (a.line || "")), 700);
+          if (a.phase >= 3) setTimeout(() => { if (!over && canEvolveNow()) maybeEvolve(); }, 1400);
+          break;
+        case "win_game": lastEnding = { ending: a.ending, title: a.title, text: a.text }; win(); break;
         default: break;
       }
     });
@@ -495,6 +596,8 @@
     if (!over && target && (target.type === "enemy" || target.type === "boss") && !defeated) {
       retaliate(target, s.status_effects || []);
     }
+    // casting at a friendly NPC also surfaces a model-driven reply
+    if (!over && target && target.type === "npc") openDialogue(target, runes);
     updateTarget();
     if (P.hp <= 0 && !over) lose();
   }
@@ -514,6 +617,86 @@
     }, 650);
   }
 
+  // ---- NPC dialogue (model-driven via /rg/dialogue, + deterministic fallback) ----
+  function dialoguePortrait(npc) {
+    const map = { tourist: "🧳", gate_tourist: "🧳", librarian: "📚", lost_wisp: "✨",
+      sewer_wisp: "✨", water_spirit: "💧", market_merchant: "💀", cave_hermit: "🍄",
+      watch_archer: "🏹", gate_archer: "🏹", road_druid: "🌿", toll_pixie: "🧚",
+      red_guard: "🛡️", debt_collector: "📜", toll_goblin: "👺" };
+    return map[npc.id] || "🗣️";
+  }
+  function showDialogue(npc, text, thinking) {
+    dialogueOpen = true;
+    const box = $("rg-dialogue");
+    box.className = "rg-dialogue open" + (thinking ? " thinking" : "");
+    $("rg-dialogue-portrait").textContent = dialoguePortrait(npc);
+    $("rg-dialogue-name").textContent = npc.name;
+    $("rg-dialogue-text").innerHTML = text;
+  }
+  function closeDialogue() { dialogueOpen = false; $("rg-dialogue").className = "rg-dialogue"; }
+
+  function applyDialoguePayload(npc, d) {
+    if (!d) return;
+    if (d.journal_entry) { addUnique(P.journal, d.journal_entry); addUnique(P.discoveries, d.journal_entry); }
+    if (d.suggested_story_flag) addFlag(d.suggested_story_flag);
+    let text = d.npc_line || (npc.dialogue || "…");
+    if (d.story_toast) text += "<br><span style='color:#9c8bc4'>" + d.story_toast + "</span>";
+    const src = d.source === "model" ? " <span style='color:#6df5a0;font-size:10px'>· MiniCPM-V-4.6 base model</span>" : "";
+    showDialogue(npc, text + src, false);
+  }
+
+  async function openDialogue(npc, runes) {
+    if (over || !npc) return;
+    showDialogue(npc, "<i>…</i>", true);
+    try {
+      const d = await api("/rg/dialogue", {
+        area: A.name, scene: "talk",
+        target: { id: npc.id, name: npc.name, type: npc.type, state: npc.state },
+        player: { goblin_class: P.goblin_class, level: P.level, hp: P.hp,
+          courage: P.courage, weapon: P.weapon, inventory: P.inventory.slice(),
+          story_flags: P.story_flags.slice(), npc_trust: P.trust[npc.id] || 0 },
+        action: { mode: runes && runes.length ? "cast" : "talk", runes: runes || [] },
+      });
+      applyDialoguePayload(npc, d);
+    } catch (e) {
+      showDialogue(npc, npc.dialogue || npc.hint || "They nod, distracted.", false);
+    }
+  }
+  function talk() {
+    const t = facedTarget();
+    if (t && t.type === "npc") openDialogue(t, []);
+    else toast("Face an NPC, then press T to talk.");
+  }
+
+  // ---- banner (boss phase / evolution) ----
+  let bannerTimer = null;
+  function showBanner(text) {
+    const el = $("rg-banner"); if (!el) return;
+    el.innerHTML = text; el.className = "rg-banner show";
+    if (bannerTimer) clearTimeout(bannerTimer);
+    bannerTimer = setTimeout(() => { el.className = "rg-banner"; }, 2600);
+  }
+
+  // ---- Goblin King evolution ----
+  const HELPER_FLAGS = ["tourist_helped", "fungus_colony_spared", "librarian_trust",
+    "clean_water_restored", "queue_goblin_paid"];
+  const DEVOUR_FLAGS = ["library_shelves_burned", "debt_deepened", "debt_accepted", "fungus_colony_burned"];
+  function canEvolveNow() {
+    if (P.evolved) return false;
+    const identity = HELPER_FLAGS.concat(DEVOUR_FLAGS).some(hasFlag);
+    return P.level >= 5 || identity;
+  }
+  function maybeEvolve() {
+    if (P.evolved) return;
+    const cls = CLASSES.find((c) => c.id === P.goblin_class) || {};
+    addFlag("player_evolved");
+    P.evolved = true;
+    P.courage = P.max_courage;          // refill courage
+    P.four_rune_unlocked = true;
+    showBanner("👑 GOBLIN KING<br><span style='font-size:11px'>" + (cls.king_line || "") + "</span>");
+    toast("<b>You evolve into the Goblin King!</b> " + (cls.king_ability || ""));
+  }
+
   // ---- win / lose ----
   function endScreen(cls, title, sub) {
     over = true;
@@ -522,7 +705,13 @@
     $("rg-end-title").textContent = title;
     $("rg-end-sub").innerHTML = sub;
   }
-  function win() { endScreen("win", "🏆 THE BEAST FALLS", "You broke the Calendar.<br>Final score: " + P.score); }
+  function win() {
+    const e = lastEnding || {};
+    const title = e.title || "🏆 THE BEAST FALLS";
+    const text = e.text || "You broke the Calendar.";
+    endScreen("win", title, text + "<br><br>Hero: <b>" + ((CLASSES.find((c) => c.id === P.goblin_class) || {}).label || "Goblin")
+      + (P.evolved ? " 👑" : "") + "</b> · Level " + P.level + " · Final score: " + P.score);
+  }
   function lose() { endScreen("lose", "💀 YOU COLLAPSED", "The dungeon keeps your score: " + P.score); }
 
   // ---- VFX ----
@@ -710,15 +899,38 @@
     }
   }
 
+  function playerSprite() {
+    if (P.evolved && spr(KING_SPRITE)) return KING_SPRITE;
+    const c = CLASS_SPRITE[P.goblin_class];
+    if (c && spr(c)) return c;
+    const fb = CLASS_SPRITE_FALLBACK[P.goblin_class];
+    if (fb && spr(fb)) return fb;
+    return spr("player") ? "player" : null;
+  }
   function drawPlayer() {
     const cx = sx(P.x) + TILE / 2, cy = sy(P.y) + TILE / 2, baseY = sy(P.y) + TILE * 0.98;
     const fi = (now() / 140) | 0;
+    const name = playerSprite();
+    // evolved Goblin King aura
+    if (P.evolved) {
+      ctx.save();
+      ctx.globalAlpha = 0.35 + 0.15 * Math.sin(now() / 220);
+      const g = ctx.createRadialGradient(cx, cy, 2, cx, cy, TILE * 0.7);
+      g.addColorStop(0, "rgba(255,210,74,0.8)"); g.addColorStop(1, "rgba(255,210,74,0)");
+      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, TILE * 0.7, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    }
     let drew = false;
-    if (spr("player")) {
+    if (name) {
       ctx.save();
       if (facing === "left") { ctx.translate(cx * 2, 0); ctx.scale(-1, 1); }
-      drew = drawUnitSprite("player", cx, baseY, null, fi);
+      drew = drawUnitSprite(name, cx, baseY, null, fi);  // hero scale from CRE_SCALE
       ctx.restore();
+    }
+    if (P.evolved) {
+      ctx.font = Math.floor(TILE * 0.4) + "px serif";
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText("👑", cx, sy(P.y) + TILE * 0.06);
     }
     if (!drew) {
       ctx.font = Math.floor(TILE * 0.7) + "px serif";
@@ -801,25 +1013,38 @@
     ctx.textBaseline = "middle"; ctx.textAlign = "left";
     ctx.font = '11px "Press Start 2P", monospace';
     let hx = 12;
-    const cy = HUD_TOP / 2;
-    ctx.fillStyle = "#ff5d73"; ctx.fillText("HP " + P.hp + "/" + P.max_hp, hx, cy); hx += 150;
-    ctx.fillStyle = "#ffd24a"; ctx.fillText("CR " + P.courage, hx, cy); hx += 90;
-    ctx.fillStyle = "#6df5a0"; ctx.fillText("SCORE " + P.score, hx, cy); hx += 150;
+    const cy = 18;
+    ctx.fillStyle = "#ff5d73"; ctx.fillText("HP " + P.hp + "/" + P.max_hp, hx, cy); hx += 140;
+    ctx.fillStyle = "#ffd24a"; ctx.fillText("CR " + P.courage + "/" + P.max_courage, hx, cy); hx += 120;
+    ctx.fillStyle = (P.evolved ? "#ffd24a" : "#cdbfff");
+    ctx.fillText("LV " + P.level + (P.evolved ? " 👑" : ""), hx, cy); hx += 95;
+    // XP bar
+    const xpw = 90, xb = hx, frac = P.xp_to_next > 0 ? clamp(P.xp / P.xp_to_next, 0, 1) : 1;
+    ctx.fillStyle = "#241a36"; ctx.fillRect(xb, cy - 5, xpw, 10);
+    ctx.fillStyle = "#6df5a0"; ctx.fillRect(xb, cy - 5, xpw * frac, 10);
+    ctx.strokeStyle = "#34254d"; ctx.strokeRect(xb, cy - 5, xpw, 10);
+    hx += xpw + 16;
     ctx.fillStyle = "#9c8bc4"; ctx.fillText("BAG " + P.inventory.length, hx, cy);
     ctx.textAlign = "right"; ctx.fillStyle = "#b07cff";
     ctx.fillText(A.name.toUpperCase(), canvas.width - 14, cy);
-    ctx.textAlign = "left"; ctx.fillStyle = "#e7d9ff";
-    ctx.font = '10px "Press Start 2P", monospace';
-    ctx.fillText("OBJ " + questText().toUpperCase(), 12, HUD_TOP - 14);
-    if (P.discoveries && P.discoveries.length) {
-      ctx.textAlign = "right"; ctx.fillStyle = "#9c8bc4";
-      ctx.fillText(P.discoveries[P.discoveries.length - 1].slice(0, 58).toUpperCase(), canvas.width - 14, HUD_TOP - 14);
-    }
+    // bottom row: weapon + objective + latest discovery
+    ctx.textAlign = "left"; ctx.font = '10px "Press Start 2P", monospace';
+    ctx.fillStyle = "#ffce6b";
+    ctx.fillText("🗡 " + weaponLabel(P.weapon).toUpperCase(), 12, HUD_TOP - 14);
+    ctx.textAlign = "right"; ctx.fillStyle = "#e7d9ff";
+    ctx.fillText("OBJ " + questText().toUpperCase(), canvas.width - 14, HUD_TOP - 14);
+    ctx.textAlign = "left";
   }
 
   function render() {
     if (paused) return;
     fitCanvas();
+    if (selecting || !A) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.fillStyle = "#0b0810"; ctx.fillRect(0, 0, canvas.width, canvas.height);
+      requestAnimationFrame(render);
+      return;
+    }
     camera();
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = "#0b0810"; ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -853,7 +1078,8 @@
   function toggleRune(k) {
     const i = selected.indexOf(k);
     if (i >= 0) selected.splice(i, 1);
-    else if (selected.length < 4) selected.push(k);
+    else if (selected.length < maxRunes()) selected.push(k);
+    else { toast("You can weave " + maxRunes() + " runes (4-rune casts unlock at level 3)."); return; }
     renderPalette();
   }
 
@@ -901,8 +1127,13 @@
   // ---- input ----
   function onKey(ev) {
     const k = ev.key.toLowerCase();
+    if (selecting) { return; }
     if (drawing) { if (k === "escape") closeDraw(); return; }
+    if (dialogueOpen) { if (k === "escape" || k === " " || k === "enter") { closeDialogue(); ev.preventDefault(); } return; }
+    if (k === "j") { toggleJournal(); ev.preventDefault(); return; }
+    if (journalOpen && k === "escape") { toggleJournal(); return; }
     if (over) return;
+    if (k === "t") { talk(); ev.preventDefault(); return; }
     if (["arrowup", "w"].includes(k)) { tryMove("up"); ev.preventDefault(); }
     else if (["arrowdown", "s"].includes(k)) { tryMove("down"); ev.preventDefault(); }
     else if (["arrowleft", "a"].includes(k)) { tryMove("left"); ev.preventDefault(); }
@@ -913,20 +1144,115 @@
     else if (k >= "1" && k <= "9") { const idx = parseInt(k, 10) - 1; if (runesMeta[idx]) toggleRune(runesMeta[idx].key); }
   }
 
+  // ---- character select ----
+  function buildSelect() {
+    const wrap = $("rg-heroes"); if (!wrap) return;
+    wrap.innerHTML = "";
+    CLASSES.forEach((c) => {
+      const card = document.createElement("div");
+      card.className = "rg-hero"; card.dataset.cls = c.id;
+      const aff = (c.affinity || []).join(", ");
+      card.innerHTML =
+        "<img src='/rg/static/sprites/" + c.preview_gif + "' alt='" + c.label + "'>" +
+        "<div class='hname'>" + c.label + "</div>" +
+        "<div class='hstat'>HP " + c.hp + " · CR " + c.courage + "</div>" +
+        "<div class='hpass'>" + aff + "<br>" + c.passive + "</div>";
+      card.onclick = () => {
+        chosenClass = c.id;
+        document.querySelectorAll(".rg-hero").forEach((h) => h.classList.toggle("sel", h.dataset.cls === c.id));
+        let line = $("rg-select-line");
+        if (!line) { line = document.createElement("div"); line.id = "rg-select-line"; line.className = "rg-select-line"; $("rg-heroes").after(line); }
+        line.textContent = c.select_line;
+        $("rg-select-start").disabled = false;
+      };
+      wrap.appendChild(card);
+    });
+  }
+  function showSelect() {
+    selecting = true; chosenClass = null;
+    $("rg-select").className = "rg-select open";
+    $("rg-select-start").disabled = true;
+    buildSelect();
+  }
+
   // ---- boot ----
   async function newGame() {
     if (!W) W = await api("/rg/world");
     runesMeta = W.runes;
+    CLASSES = W.classes || [];
+    WEAPONS = {}; (W.weapons || []).forEach((w) => { WEAPONS[w.id] = w; });
     areas = JSON.parse(JSON.stringify(W.areas));
     P = JSON.parse(JSON.stringify(W.player));
     ensurePlayerMeta();
+    over = false; lastEnding = null;
+    $("rg-end").className = "rg-end";
+    closeDialogue(); $("rg-journal").className = "rg-journal"; journalOpen = false;
+    showSelect();
+  }
+
+  function startGame(classId) {
+    const c = CLASSES.find((x) => x.id === classId) || CLASSES[0];
+    if (c) {
+      P.goblin_class = c.id; P.hp = c.hp; P.max_hp = c.hp;
+      P.courage = c.courage; P.max_courage = Math.max(9, c.courage + 2);
+    }
+    selecting = false; $("rg-select").className = "rg-select";
     P.area = W.start_area;
     A = areas[P.area];
+    applyConditionalSpawns(P.area);
     const sp = A.spawn; P.x = sp[0]; P.y = sp[1];
-    facing = "down"; selected = []; vfx = []; over = false; busy = false; turnNo = 0; enemyCooldown = {};
-    $("rg-end").className = "rg-end";
-    layout(); buildPalette(); renderPalette(); updateTarget();
-    toast("You wake on the <b>Goblin Toll Road</b>. " + moodLine() + " — roam and cast.");
+    facing = "down"; selected = []; vfx = []; busy = false; turnNo = 0; enemyCooldown = {};
+    layout(); buildPalette(); renderPalette(); updateTarget(); regionCue();
+    const label = c ? c.label : "goblin";
+    toast("You are the <b>" + label + "</b>. You broke the calendar. " + moodLine() + " — roam, talk (T), and cast.");
+  }
+
+  // ---- weapons ----
+  const WEAPON_ICON = { clerk_wand: "wpn_magic", bell_staff: "wpn_shield",
+    mirror_shield: "wpn_mirror", bone_blade: "wpn_sword", coin_sling: "wpn_fire",
+    river_thread: "wpn_water" };
+  function equipWeapon(id) {
+    if (!(P.weapon_inventory || []).includes(id)) return;
+    P.weapon = id;
+    toast("🗡️ Equipped <b>" + weaponLabel(id) + "</b>. " + ((WEAPONS[id] || {}).identity || ""));
+    renderJournal();
+  }
+  function weaponsHtml() {
+    const inv = P.weapon_inventory || [P.weapon];
+    return inv.map((id) => {
+      const w = WEAPONS[id] || { label: id, identity: "", school: [] };
+      const on = id === P.weapon ? " equipped" : "";
+      const ic = "/rg/static/icons/" + (WEAPON_ICON[id] || "wpn_magic") + ".png";
+      const sch = (w.school || []).length ? " <span class='flag'>(" + w.school.join("/") + ")</span>" : "";
+      return "<button class='rg-wpn" + on + "' data-w='" + id + "'>" +
+        "<img src='" + ic + "' alt=''> <b>" + w.label + (on ? " ✓" : "") + "</b>" + sch +
+        "<br><span class='wdesc'>" + w.identity + "</span></button>";
+    }).join("");
+  }
+
+  // ---- journal panel ----
+  function renderJournal() {
+    const body = $("rg-journal-body"); if (!body) return;
+    const cls = CLASSES.find((c) => c.id === P.goblin_class) || {};
+    const li = (arr) => arr.length ? "<ul>" + arr.map((x) => "<li>" + x + "</li>").join("") + "</ul>" : "<ul><li class='flag'>— nothing yet —</li></ul>";
+    const flags = (P.story_flags || []).map((f) => "<li class='flag'>" + f.replace(/_/g, " ") + "</li>");
+    const mastered = Object.keys(P.rune_mastery || {}).filter((r) => P.rune_mastery[r] >= 5);
+    body.innerHTML =
+      "<div class='rg-jsec'><h4>Hero</h4><ul><li>" + (cls.label || "Goblin") + (P.evolved ? " 👑 (King)" : "") +
+        " · Lv " + P.level + " · XP " + P.xp + "/" + P.xp_to_next + "</li></ul></div>" +
+      "<div class='rg-jsec'><h4>Weapons (click to equip)</h4><div class='rg-wpns'>" + weaponsHtml() + "</div></div>" +
+      "<div class='rg-jsec'><h4>Objective</h4><ul><li>" + questText() + "</li></ul></div>" +
+      "<div class='rg-jsec'><h4>Quest log</h4>" + li(P.quest_log || []) + "</div>" +
+      "<div class='rg-jsec'><h4>Discoveries</h4>" + li((P.journal || []).concat((P.discoveries || []).filter((d) => !(P.journal || []).includes(d)))) + "</div>" +
+      "<div class='rg-jsec'><h4>Inventory</h4>" + li(P.inventory || []) + "</div>" +
+      (mastered.length ? "<div class='rg-jsec'><h4>Rune mastery</h4><ul>" + mastered.map((r) => "<li class='flag'>" + r.replace(/_/g, " ") + " ✦</li>").join("") + "</ul></div>" : "") +
+      "<div class='rg-jsec'><h4>Story memory</h4><ul>" + (flags.length ? flags.join("") : "<li class='flag'>— the world has not remembered anything yet —</li>") + "</ul></div>";
+    body.querySelectorAll(".rg-wpn").forEach((b) => { b.onclick = () => equipWeapon(b.dataset.w); });
+  }
+  function toggleJournal() {
+    journalOpen = !journalOpen;
+    if (journalOpen) renderJournal();
+    $("rg-journal").className = "rg-journal" + (journalOpen ? " open" : "");
   }
 
   // Keep the canvas's internal resolution equal to its displayed CSS size.
@@ -951,6 +1277,11 @@
     const gesture = () => initAudio();
     $("rg-cast").onclick = () => { gesture(); castRunes(); canvas.focus(); };
     $("rg-draw-open").onclick = () => { gesture(); openDraw(); };
+    $("rg-talk").onclick = () => { gesture(); talk(); canvas.focus(); };
+    $("rg-journal-open").onclick = () => { gesture(); toggleJournal(); canvas.focus(); };
+    const jc = $("rg-journal-close"); if (jc) jc.onclick = () => { toggleJournal(); canvas.focus(); };
+    const ss = $("rg-select-start"); if (ss) ss.onclick = () => { gesture(); startGame(chosenClass); canvas.focus(); };
+    const dlg = $("rg-dialogue"); if (dlg) dlg.onclick = () => { closeDialogue(); canvas.focus(); };
     $("rg-clear").onclick = () => { selected = []; renderPalette(); canvas.focus(); };
     $("rg-reset").onclick = () => { newGame(); canvas.focus(); };
     $("rg-draw-cast").onclick = castDrawing;
@@ -978,6 +1309,13 @@
                pscreenX: OX + P.x * TILE + TILE / 2, pscreenY: OY + P.y * TILE + TILE / 2 },
         entities: A.entities.map((e) => ({ id: e.id, x: e.x, y: e.y, hp: e.hp, state: e.state })) }),
       goto: (x, y, dir) => { P.x = x; P.y = y; if (dir) facing = dir; updateTarget(); },
+      start: (cls) => startGame(cls || "warrior"),
+      selecting: () => selecting,
+      prog: () => ({ level: P.level, xp: P.xp, xp_to_next: P.xp_to_next, weapon: P.weapon,
+        gold: P.gold, evolved: P.evolved, flags: (P.story_flags || []).slice(),
+        class: P.goblin_class, four: P.four_rune_unlocked }),
+      talk: (id) => { const e = byId(id); if (e) openDialogue(e, []); },
+      journal: () => P.journal.slice(),
       pick: (...ks) => { selected = ks.slice(0, 4); renderPalette(); },
       pause: () => { paused = true; },
       resume: () => { if (paused) { paused = false; render(); } },

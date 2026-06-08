@@ -42,13 +42,36 @@ PLAY_PAGE = """<!doctype html>
   <title>Rune Goblin RPG</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/rg/static/rpg.css?v=15">
+  <link rel="stylesheet" href="/rg/static/rpg.css?v=17">
 </head>
 <body>
   <div id="rg-root">
     <div id="rg-stage">
       <div id="rg-boot" class="rg-boot">Summoning the dungeon…</div>
       <canvas id="rg-canvas" tabindex="0"></canvas>
+
+      <div class="rg-select" id="rg-select">
+        <h1>RUNE GOBLIN</h1>
+        <p class="rg-select-sub">The Calendar Bell rang thirteen times. Tomorrow is being eaten.<br>Choose the goblin who broke tomorrow.</p>
+        <div class="rg-heroes" id="rg-heroes"></div>
+        <button class="rg-btn primary" id="rg-select-start" disabled>Start shift</button>
+      </div>
+
+      <div class="rg-dialogue" id="rg-dialogue">
+        <div class="rg-dialogue-portrait" id="rg-dialogue-portrait">🗣️</div>
+        <div class="rg-dialogue-body">
+          <div class="rg-dialogue-name" id="rg-dialogue-name">NPC</div>
+          <div class="rg-dialogue-text" id="rg-dialogue-text">…</div>
+          <div class="rg-dialogue-tip">Space/Esc to close · cast a rune at them to react</div>
+        </div>
+      </div>
+
+      <div class="rg-journal" id="rg-journal">
+        <h3>📓 Journal <span class="rg-journal-close" id="rg-journal-close">✕ (J)</span></h3>
+        <div id="rg-journal-body"></div>
+      </div>
+
+      <div class="rg-banner" id="rg-banner"></div>
 
       <div class="rg-draw" id="rg-draw">
         <h3>Draw your spell</h3>
@@ -74,6 +97,8 @@ PLAY_PAGE = """<!doctype html>
         <span class="rg-sel" id="rg-sel">no runes</span>
         <button class="rg-btn primary" id="rg-cast">⚡ Cast (Space)</button>
         <button class="rg-btn" id="rg-draw-open">✍ Draw (E)</button>
+        <button class="rg-btn" id="rg-talk">💬 Talk (T)</button>
+        <button class="rg-btn" id="rg-journal-open">📓 Journal (J)</button>
         <button class="rg-btn ghost" id="rg-clear">Clear (C)</button>
         <button class="rg-btn ghost" id="rg-reset">New Game</button>
         <button class="rg-btn ghost" id="rg-mute" title="music">🔊</button>
@@ -84,7 +109,7 @@ PLAY_PAGE = """<!doctype html>
       <div class="rg-hint">WASD / Arrows move · 1–9 pick runes · Space cast · E draw · C clear · step into portals to travel</div>
     </div>
   </div>
-  <script src="/rg/static/rpg.js?v=15"></script>
+  <script src="/rg/static/rpg.js?v=17"></script>
 </body>
 </html>
 """

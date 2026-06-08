@@ -129,19 +129,40 @@ fine-tuning reference and model-serving notes.
 
 ### 🗺️ RPG sandbox (the main game)
 
-A free-roaming tile world: explore an overworld hub and three dungeons, fight
-enemies, unlock chests and doors, bless yourself at shrines, find the Calendar
-Key, and beat the Calendar Beast. Movement and rendering run in an HTML5 canvas;
-casting round-trips to the Python engine + `goblinV1` vision model. The game is
-served at `/play` and embedded in a Gradio app.
+A free-roaming campaign RPG. You start on a **character-select title screen** and
+pick one of five goblin heroes (Warrior / Rogue / Poison Rogue / Hunter /
+Barbarian, art from `assets/Goblin Pack #1`), each with its own HP, courage and
+rune affinities. Then explore **seven connected areas** — Toll Road hub, Mirror
+Fungus Caverns, Wet Library, Bone Market, Clock Sewer, Gate Approach and the
+Calendar Beast Arena — fighting enemies, gaining **XP and levels**, buying
+**weapons** that modify your spells, helping or scaring NPCs, and leaving durable
+**story flags** that steer one of four endings (Broken / Repaired / Devoured /
+secret Tollmaster). The final boss has three phases and your hero can **evolve
+into the Goblin King**.
+
+Two models power the game: the fine-tuned `goblinV1` vision model reads your
+*drawn* runes, and the **base `openbmb/MiniCPM-V-4.6-gguf` model drives
+interactive NPC dialogue** (press `T` to talk, or cast at an NPC). Movement and
+rendering run in an HTML5 canvas; casting and dialogue round-trip to Python,
+which stays the balance authority. The game is served at `/play`.
 
 ```bash
 RG_USE_MODEL=1 \
 RG_VISION_MODEL=models/goblinV1-gguf/gguf/rune-goblin-v46-Q4_K_M.gguf \
 RG_VISION_MMPROJ=models/goblinV1-gguf/gguf/rune-goblin-v46-mmproj-f16.gguf \
+RG_USE_DIALOGUE_MODEL=1 \
+RG_DIALOGUE_MODEL=models/MiniCPM-V-4.6-gguf/MiniCPM-V-4_6-Q4_K_M.gguf \
 uv run --extra gguf python app/rpg_app.py
 # → http://localhost:7862   (set RG_USE_MODEL=0 to play purely on the rule engine)
 ```
+
+**NPC dialogue model.** `RG_USE_DIALOGUE_MODEL=1` enables live, model-written NPC
+lines from the *base* MiniCPM-V-4.6 GGUF (text-only `llama.cpp` load; the first
+talk loads it in ~10s, then ~3s per line). It is **off by default** — without it,
+every NPC uses the deterministic voice tables in `src/rune_goblin/story.py`, so
+the game is always playable and quest-critical clues never disappear. Model
+output is JSON, length-clamped, and its suggested story flags are filtered
+against an allowlist before they can change the world.
 
 On a MacBook / Apple Silicon machine, prefer running the mounted FastAPI app
 through `uvicorn` bound to localhost. This avoids `0.0.0.0` bind issues in
@@ -161,10 +182,12 @@ uv run uvicorn rpg_app:app --host 127.0.0.1 --port 7862
 ```
 
 **Controls:** `WASD` / arrows move · `1–9` pick runes (or click the rune deck) ·
-`Space` cast at whatever you face · `E` draw a spell (read by goblinV1) · `C`
-clear runes · `🔊` music · `⛶` fullscreen · step into portals to travel. Face an
-enemy and cast; hit its weakness for bonus damage. Locked chests/doors show what
-runes they need.
+`Space` cast at whatever you face · `E` draw a spell (read by goblinV1) ·
+`T` talk to a faced NPC · `J` open the journal (quest log, discoveries, story
+memory) · `C` clear runes · `🔊` music · `⛶` fullscreen · step into portals to
+travel. Face an enemy and cast; hit its weakness, and your equipped weapon +
+class affinity for bonus damage. Locked chests/doors show what runes they need.
+You weave up to 3 runes per cast until level 3 unlocks 4-rune casts.
 
 The world renders with real **[Tiny Swords](https://pixelfrog-assets.itch.io/tiny-swords)**
 pixel art by **Pixel Frog** (CC0): grassy islands, knight player, torch goblins,
