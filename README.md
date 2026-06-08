@@ -5,7 +5,9 @@
 A tiny dungeon crawler where players draw spells in an invented symbolic
 language (**RuneLang**) and a fine-tuned [`openbmb/MiniCPM5-1B-SFT`](https://huggingface.co/openbmb/MiniCPM5-1B-SFT)
 acts as the **spell engine** — reading glyph combinations and emitting JSON
-that drives attacks, curses and game-state changes.
+that drives attacks, curses and game-state changes. Runtime visuals are not
+image-generated; spell metadata recolors, resizes, retargets and animates
+existing/procedural game assets.
 
 See [`rune_goblin_plan.md`](./rune_goblin_plan.md) for the full design doc.
 
@@ -21,14 +23,21 @@ Rune buttons (Gradio / React)
 
 Drawn canvas (Gradio vision app)
    → canvas image + game state
-   → fine-tuned MiniCPM-V model      (rune_goblin.vision_inference)
-   → visual_reading + spell JSON     (validated by rune_goblin.schema)
-   → game state engine               (same dungeon loop)
+   → goblinV1-gguf Q4_K_M sketch reader
+   → visual_reading / rune metadata  (rune_goblin.vision_inference)
+   → fine-tuned RuneLang spell JSON  (validated by rune_goblin.schema)
+   → MiniCPM-V-4.6 Q8 asset planner  (planned)
+   → attack / VFX metadata JSON
+   → procedural renderer + game state engine
 ```
 
 The deterministic rule engine (`rune_goblin.engine`) is both the **dataset
 oracle** (it generates training targets) and the **runtime fallback** (used
 until a fine-tuned adapter exists, so the UIs run before training finishes).
+
+The full RPG direction is map exploration with NPCs, chests, powerups, bosses,
+demons, locked doors and story flags. Models propose structured spell/world/
+asset metadata; Python validates and applies the actual state changes.
 
 ## Layout
 
@@ -128,6 +137,12 @@ Transformers directory or a local `.gguf` file. For GGUF, also set
 `visual_reading` + `spell` JSON; the game applies only the validated and clamped
 `spell` object.
 
+In the full RPG pipeline, the smaller sketch model should only read the player's
+drawing and produce metadata such as detected runes, ambiguity, stroke energy
+and target hints. The stronger asset planner receives validated spell JSON plus
+player condition, weapon, statuses, power level, enemy state and room/map
+context, then returns attack/VFX metadata for the renderer.
+
 ## Notes on the model
 
 - **Fine-tuning base**: `openbmb/MiniCPM5-1B-SFT` — safetensors, llama-arch,
@@ -135,6 +150,15 @@ Transformers directory or a local `.gguf` file. For GGUF, also set
 - **Vision fine-tune**: `ASHu2/goblinV1` — merged MiniCPM-V model for canvas
   drawings. The local GGUF files live in `models/goblinV1-gguf/gguf/`; use
   `app/vision_app.py` for the first playable drawing prototype.
+- **Sketch metadata model**: `models/goblinV1-gguf/gguf/rune-goblin-v46-Q4_K_M.gguf`
+  — fast reader for user sketches and rune metadata.
+- **Asset planner model**: `models/MiniCPM-V-4.6-gguf/MiniCPM-V-4_6-Q8_0.gguf`
+  — planned higher-quality model for attack type, palette, size, area, path,
+  impact reaction, particle tags and animation timing from validated spell JSON.
 - The `MODEL` in `.env` (`openbmb/MiniCPM-o-4_5-gguf`) is a **quantized GGUF
   multimodal** model — it's the llama.cpp/serving + optional vision path and
   **cannot** be LoRA-fine-tuned. Download it with `--gguf` only if you need it.
+
+Renderer rule: do not generate new images during combat or exploration. Use
+model metadata to drive existing sprites, particles, overlays, CSS/canvas
+effects, weapon trails, colors, sizes and enemy reactions.
