@@ -1,0 +1,118 @@
+"""Rune Goblin RPG — a free-roaming canvas dungeon, hosted by Gradio.
+
+The world is an HTML5 canvas game (``app/rpg_static/rpg.js``): movement,
+rendering and exploration run client-side for smooth roaming. Spell casting is
+the only thing that round-trips to Python — rune casts hit the deterministic
+engine, drawings are read by the fine-tuned ``goblinV1`` vision model — via the
+FastAPI routes mounted alongside the Gradio app.
+
+The game page is served standalone at ``/play`` and embedded in the Gradio
+Blocks via an iframe. (Gradio drops ``head=`` under ``mount_gradio_app`` and
+``gr.HTML`` won't execute inline scripts, so the iframe is the robust way to run
+a real canvas game while still shipping as one Gradio app / HF Space.)
+
+Run::
+
+    uv run --extra gguf python app/rpg_app.py      # → http://localhost:7862
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
+import gradio as gr  # noqa: E402
+import uvicorn  # noqa: E402
+from fastapi import FastAPI  # noqa: E402
+from fastapi.responses import HTMLResponse  # noqa: E402
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+from rpg_bridge import register_routes  # noqa: E402
+
+STATIC_DIR = Path(__file__).resolve().parent / "rpg_static"
+PORT = int(os.environ.get("GRADIO_SERVER_PORT", "7862"))
+
+PLAY_PAGE = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rune Goblin RPG</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/rg/static/rpg.css?v=5">
+</head>
+<body>
+  <div id="rg-root">
+    <div id="rg-boot" class="rg-boot">Summoning the dungeon…</div>
+    <canvas id="rg-canvas" width="960" height="640" tabindex="0"></canvas>
+
+    <div class="rg-draw" id="rg-draw">
+      <h3>Draw your spell</h3>
+      <canvas id="rg-sketch" width="340" height="340"></canvas>
+      <div class="row">
+        <button class="rg-btn primary" id="rg-draw-cast">🔮 Cast Drawing</button>
+        <button class="rg-btn" id="rg-draw-clear">Clear</button>
+        <button class="rg-btn ghost" id="rg-draw-cancel">Cancel (Esc)</button>
+      </div>
+      <div class="tip">Sketch 1–4 RuneLang glyphs. The fine-tuned goblinV1 model reads your doodle (~slow on CPU).</div>
+    </div>
+
+    <div class="rg-end" id="rg-end">
+      <h2 id="rg-end-title"></h2>
+      <div id="rg-end-sub"></div>
+      <button class="rg-btn primary" id="rg-end-restart">Descend again</button>
+    </div>
+
+    <div id="rg-ui">
+      <div class="rg-palette" id="rg-palette"></div>
+      <div class="rg-actions">
+        <span class="rg-sel" id="rg-sel">no runes</span>
+        <button class="rg-btn primary" id="rg-cast">⚡ Cast (Space)</button>
+        <button class="rg-btn" id="rg-draw-open">✍ Draw (E)</button>
+        <button class="rg-btn ghost" id="rg-clear">Clear (C)</button>
+        <button class="rg-btn ghost" id="rg-reset">New Game</button>
+        <span class="rg-target" id="rg-target"></span>
+      </div>
+      <div class="rg-toast" id="rg-toast">Use WASD / arrows to roam. Face something and cast a spell.</div>
+      <div class="rg-hint">WASD / Arrows move · 1–9 pick runes · Space cast · E draw · C clear · step into portals 🌀 / 🚪 to travel</div>
+    </div>
+  </div>
+  <script src="/rg/static/rpg.js?v=5"></script>
+</body>
+</html>
+"""
+
+# The Gradio shell just frames the standalone game page.
+SHELL_HTML = """
+<div style="text-align:center">
+  <iframe src="/play" title="Rune Goblin RPG"
+    style="width:100%; max-width:1000px; height:760px; border:0; border-radius:12px;
+           box-shadow:0 0 40px #2a1140;"></iframe>
+</div>
+"""
+
+fastapi_app = FastAPI(title="Rune Goblin RPG")
+register_routes(fastapi_app)
+fastapi_app.mount("/rg/static", StaticFiles(directory=str(STATIC_DIR)), name="rg-static")
+
+
+@fastapi_app.get("/play", response_class=HTMLResponse)
+def play_page() -> str:
+    return PLAY_PAGE
+
+
+def build() -> gr.Blocks:
+    with gr.Blocks(title="Rune Goblin RPG", theme=gr.themes.Base()) as demo:
+        gr.HTML(SHELL_HTML)
+    return demo
+
+
+demo = build()
+app = gr.mount_gradio_app(fastapi_app, demo, path="/")
+
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
