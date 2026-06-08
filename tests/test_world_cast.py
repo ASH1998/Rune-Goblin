@@ -34,6 +34,42 @@ def test_build_world_has_progression_and_content():
         assert key in p
 
 
+def test_world_quality_rules_have_evidence():
+    w = build_world()
+    for aid, area in w["areas"].items():
+      types = {e["type"] for e in area["entities"]}
+      assert "story_object" in types
+      assert "npc" in types or aid == "overworld"
+      assert "shrine" in types
+      assert any(e["state"] == "locked" or e["requires"] for e in area["entities"])
+      if aid != w["start_area"]:
+          assert any(e["type"] == "portal" and e["target_area"] != aid for e in area["entities"])
+
+
+def test_required_item_paths_are_present():
+    w = build_world()
+    loot = {
+        item
+        for area in w["areas"].values()
+        for e in area["entities"]
+        for item in e.get("loot", [])
+    }
+    assert "Calendar Shard" in loot
+    assert "Calendar Key" in loot
+    # These are granted by story actions, not static chest loot.
+    for item in ("Debt Receipt", "Mirror Cap", "Tollmaster Token"):
+        assert item not in loot
+    assert validate_world() == []
+
+
+def test_boss_arena_has_movement_space_and_phase_anchors():
+    arena = build_world()["areas"]["arena"]
+    walkable = sum(ch in ".," for row in arena["rows"] for ch in row)
+    assert walkable >= 80
+    ids = {e["id"] for e in arena["entities"]}
+    assert {"calendar_beast", "arena_echo", "arena_shrine", "pylon_eye", "pylon_mirror", "pylon_leaf", "pylon_spiral"} <= ids
+
+
 def test_combat_damage_and_xp():
     tgt = {"id": "fungus_a", "type": "enemy", "name": "Mirror Fungus", "hp": 5,
            "max_hp": 5, "weakness": ["mirror", "eye"], "resistance": ["jagged_line"]}
@@ -122,6 +158,19 @@ def test_forced_door_creates_debt_pressure():
     assert "debt_accepted" in flags and "calendar_devour_pressure" in flags
 
 
+def test_bone_market_portal_accepts_receipt_or_coin_bell_or_forced_debt():
+    tgt = {"id": "portal_market", "type": "portal", "state": "locked",
+           "requires": ["Debt Receipt"]}
+    with_receipt = resolve_world_cast(["eye"], _player(inventory=["Debt Receipt"]), tgt, seed=16)
+    with_coin_bell = resolve_world_cast(["coin", "bell"], _player(), tgt, seed=16)
+    forced = resolve_world_cast(["broken_mark", "key"], _player(), tgt, seed=16)
+
+    assert "set_entity_blocking" in _types(with_receipt)
+    assert "set_entity_blocking" in _types(with_coin_bell)
+    assert any(a.get("flag") == "bone_market_entered" for a in with_coin_bell["world_actions"])
+    assert any(a.get("item") == "Debt Receipt" for a in forced["world_actions"])
+
+
 def test_boss_phase_banner_and_repaired_ending():
     # heavy hit that crosses a phase boundary (24 -> below 16)
     boss = {"id": "calendar_beast", "type": "boss", "name": "Calendar Beast",
@@ -136,3 +185,77 @@ def test_boss_phase_banner_and_repaired_ending():
     res2 = resolve_world_cast(["leaf", "spiral"], _player(story_flags=flags), boss2, seed=10)
     win = [a for a in res2["world_actions"] if a["type"] == "win_game"]
     assert win and win[0]["ending"] == "repaired"
+
+
+def test_boss_repeated_runes_adapt_and_spawn_phase_adds():
+    boss = {"id": "calendar_beast", "type": "boss", "name": "Calendar Beast",
+            "hp": 17, "max_hp": 24, "weakness": ["spiral", "eye"], "resistance": []}
+    fresh = resolve_world_cast(["spiral", "eye"], _player(), boss, seed=12)
+    repeated = resolve_world_cast(
+        ["spiral", "eye"], _player(recent_runes=["spiral", "eye"]), boss, seed=12)
+
+    assert "boss_adapted" in repeated["spell"]["status_effects"]
+    assert repeated["spell"]["enemy_hp_delta"] > fresh["spell"]["enemy_hp_delta"]
+
+    spawns = [a for a in fresh["world_actions"] if a["type"] == "spawn_entity"]
+    assert spawns and spawns[0]["entity"]["id"] == "phase2_debt_echo"
+
+
+def test_story_branches_for_spores_shelves_and_tollmaster_token():
+    nursery = {"id": "nursery", "type": "story_object", "name": "Fungus Nursery",
+               "requires": ["mirror"], "dialogue": "spared"}
+    spared = resolve_world_cast(["mirror"], _player(), nursery, seed=13)
+    burned = resolve_world_cast(["flame"], _player(), nursery, seed=13)
+    assert any(a.get("item") == "Mirror Cap" for a in spared["world_actions"])
+    assert any(a.get("flag") == "fungus_colony_burned" for a in burned["world_actions"])
+
+    shelves = {"id": "dry_shelves", "type": "story_object", "name": "Dry Archive Shelves",
+               "requires": ["flame"], "dialogue": "shortcut"}
+    shelf_res = resolve_world_cast(["flame"], _player(), shelves, seed=14)
+    assert "unlock_shortcut" in _types(shelf_res)
+    assert any(a.get("flag") == "library_shelves_burned" for a in shelf_res["world_actions"])
+
+    shrine = {"id": "bell_shrine", "type": "story_object", "name": "Hidden Bell Shrine",
+              "requires": ["bell", "coin"], "dialogue": "token"}
+    token_res = resolve_world_cast(["bell", "coin"], _player(), shrine, seed=15)
+    assert any(a.get("item") == "Tollmaster Token" for a in token_res["world_actions"])
+
+
+def test_secret_merchant_hidden_and_duplicate_trade_upgrades_weapon():
+    world = build_world()
+    secret = next(e for e in world["areas"]["bone_market"]["entities"] if e["id"] == "secret_merchant")
+    assert secret["state"] == "hidden" and secret["blocking"] is False
+
+    merchant = {"id": "market_merchant", "type": "npc", "name": "Bone Market Merchant",
+                "dialogue": "buy"}
+    res = resolve_world_cast(
+        ["coin"], _player(weapon_inventory=["clerk_wand", "mirror_shield"]), merchant, seed=17)
+    assert "upgrade_weapon" in _types(res)
+
+
+def test_clean_water_sets_sewer_shortcut_flag():
+    shrine = {"id": "clean_shrine", "type": "story_object", "name": "Clean-Water Shrine",
+              "requires": ["wave", "leaf"], "dialogue": "clean"}
+    res = resolve_world_cast(["wave", "leaf"], _player(), shrine, seed=18)
+    flags = [a["flag"] for a in res["world_actions"] if a["type"] == "set_story_flag"]
+    assert "clean_water_restored" in flags and "sewer_shortcut_open" in flags
+
+    valve = {"id": "sewer_valve", "type": "story_object", "name": "Rusted Valve",
+             "requires": ["thread", "key"], "dialogue": "aligned"}
+    valve_res = resolve_world_cast(["thread", "key"], _player(), valve, seed=19)
+    valve_flags = [a["flag"] for a in valve_res["world_actions"] if a["type"] == "set_story_flag"]
+    assert "sewer_valves_aligned" in valve_flags and "sewer_shortcut_open" in valve_flags
+
+
+def test_gate_approach_final_gate_requires_calendar_key():
+    world = build_world()
+    final_gate = next(e for e in world["areas"]["gate_approach"]["entities"] if e["id"] == "final_gate")
+    assert final_gate["state"] == "locked"
+    assert final_gate["blocking"] is True
+    assert final_gate["requires"] == ["Calendar Key"]
+
+    denied = resolve_world_cast(["key"], _player(), final_gate, seed=20)
+    assert "set_entity_blocking" not in _types(denied)
+
+    opened = resolve_world_cast(["key"], _player(inventory=["Calendar Key"]), final_gate, seed=20)
+    assert "set_entity_blocking" in _types(opened)

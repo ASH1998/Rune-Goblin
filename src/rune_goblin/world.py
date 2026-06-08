@@ -286,8 +286,9 @@ def _build_areas() -> dict[str, Area]:
                    blocking=False, target_area="library", target_x=3, target_y=2,
                    hint="step in → The Wet Library"),
             Entity("portal_market", "portal", "Bone Market Tunnel", 24, 30, sprite="🕳️",
-                   blocking=False, target_area="bone_market", target_x=2, target_y=2,
-                   hint="step in → The Bone Market (weapons & debts)"),
+                   state="locked", blocking=True, target_area="bone_market", target_x=2, target_y=2,
+                   requires=["Debt Receipt"], tags=["shop", "shortcut"],
+                   hint="sealed — needs Debt Receipt, coin+bell, or a forced cursed entrance"),
             _story("bell_shrine", "Hidden Bell Shrine", 2, 2, sprite_key="shrine_tower",
                    requires=["bell", "coin"], dialogue="A buried shrine hums. The Tollmaster's route remembers those who pay and ring.",
                    hint="cast bell+coin to wake the secret shrine"),
@@ -376,6 +377,9 @@ def _build_areas() -> dict[str, Area]:
             _story("wet_catalog", "Wet Card Catalog", 38, 8, sprite_key="goblin_house",
                    requires=["eye", "mirror"], dialogue="A smeared card points to the Ink-Locked Chest: key + eye + wave.",
                    hint="cast eye+mirror to decode the catalog"),
+            _story("dry_shelves", "Dry Archive Shelves", 29, 5, sprite_key="wood_tower_building",
+                   requires=["flame"], dialogue="The shelves burn into a shortcut. The librarian will remember this.",
+                   hint="cast flame to burn a risky shortcut"),
             Entity("emotional_door", "locked_door", "Emotional Door", 16, 20, sprite="🚪",
                    state="locked", blocking=True, tags=["door", "feelings"],
                    requires=["wave", "key"], hint="locked — calm it with wave+key"),
@@ -386,6 +390,9 @@ def _build_areas() -> dict[str, Area]:
             Entity("lib_powerup", "powerup", "Bottled Focus", 44, 5, sprite="✨",
                    blocking=False, tags=["powerup"], loot=["Bottled Focus"],
                    state="idle", hint="walk over it to grab"),
+            Entity("library_shrine", "shrine", "Dry Joke Shrine", 20, 28, sprite="⛩️",
+                   blocking=True, tags=["holy"], state="dormant",
+                   hint="cast leaf/closed_circle to dry one good joke and heal"),
             Entity("portal_home_l", "portal", "Library Exit", 2, 31, sprite="🚪",
                    blocking=False, target_area="overworld", target_x=44, target_y=16,
                    hint="step out → Toll Road"),
@@ -425,6 +432,12 @@ def _build_areas() -> dict[str, Area]:
             _story("pylon_spiral", "Spiral Pylon", 23, 15, sprite_key="shrine_tower",
                    requires=["spiral"], dialogue="The spiral pylon turns; the Beast's schedule unravels.",
                    hint="cast spiral to charge this pylon"),
+            _npc("arena_echo", "Arena Echo", 14, 20, sprite_key="glowing_wisp",
+                 dialogue="The Beast changes when wounded. Vary your runes and watch the pylons.",
+                 hint="last whisper before tomorrow chooses"),
+            Entity("arena_shrine", "shrine", "Last Tomorrow Shrine", 14, 17, sprite="⛩️",
+                   blocking=True, tags=["holy"], state="dormant",
+                   hint="cast leaf/closed_circle for one final blessing"),
             _deco("a_castle1", 2, 2, "castle_destroyed", blocking=True),
             _deco("a_castle2", 23, 2, "black_castle", blocking=True),
             _deco("a_rock3", 3, 12, "rock2"), _deco("a_rock4", 24, 18, "rock"),
@@ -451,6 +464,9 @@ def _build_areas() -> dict[str, Area]:
                    requires=["coin"],
                    dialogue="The altar tallies what you forced open. Coin closes the account.",
                    hint="cast coin to repay your debts"),
+            Entity("market_shrine", "shrine", "Refund Shrine", 12, 23, sprite="⛩️",
+                   blocking=True, tags=["holy"], state="dormant",
+                   hint="cast coin or closed_circle for a risky blessing"),
             _mob("market_brute", "Market Enforcer", 33, 24, hp=7,
                  weakness=["coin", "key"], resistance=["bone"],
                  sprite_key="adept_necromancer", mood="enforcing the spread"),
@@ -482,6 +498,9 @@ def _build_areas() -> dict[str, Area]:
                    requires=["wave", "leaf"],
                    dialogue="The water remembers the sky. A shortcut and a final ally open.",
                    hint="cast wave+leaf to restore clean water"),
+            Entity("sewer_shrine", "shrine", "Sluice Shrine", 18, 25, sprite="⛩️",
+                   blocking=True, tags=["holy"], state="dormant",
+                   hint="cast leaf/closed_circle to rinse off damage"),
             _mob("sewer_golem", "Sluice Golem", 37, 5, hp=7,
                  weakness=["flame", "jagged_line"], resistance=["wave", "thread"],
                  sprite_key="ice_golem", mood="clanking on schedule"),
@@ -519,9 +538,12 @@ def _build_areas() -> dict[str, Area]:
                    sprite_key="knight_tower_blue", requires=["eye"],
                    dialogue="The gate remembers both your kindness and your shortcuts.",
                    hint="cast eye to read who waits in the arena"),
+            Entity("gate_shrine", "shrine", "Before-Tomorrow Shrine", 12, 20, sprite="⛩️",
+                   blocking=True, tags=["holy"], state="dormant",
+                   hint="cast leaf/closed_circle before entering the final gate"),
             Entity("final_gate", "portal", "Calendar Gate", 31, 12, sprite="🌀",
-                   blocking=False, target_area="arena", target_x=14, target_y=18,
-                   hint="step in → Calendar Beast Arena"),
+                   state="locked", blocking=True, target_area="arena", target_x=14, target_y=18,
+                   requires=["Calendar Key"], hint="sealed — prove you carry the Calendar Key"),
             Entity("portal_gate_lib", "portal", "Back to Library", 2, 4, sprite="🚪",
                    blocking=False, target_area="library", target_x=46, target_y=16,
                    hint="step out → The Wet Library"),
@@ -533,6 +555,10 @@ def _build_areas() -> dict[str, Area]:
 
     all_areas = (overworld, caverns, library, bone_market, clock_sewer,
                  gate_approach, arena)
+    for e in bone_market.entities:
+        if e.id == "secret_merchant":
+            e.state = "hidden"
+            e.blocking = False
     # 1) fix anything an enlarged map / new pond displaced
     for a in all_areas:
         _relocate_invalid(a)
@@ -605,6 +631,8 @@ def _reachable(norm: list[str], spawn: tuple[int, int], blocked: set[tuple[int, 
 def validate_world() -> list[str]:
     """Return a list of placement/reachability problems (empty == all good)."""
     problems: list[str] = []
+    item_sources: dict[str, list[str]] = {}
+    required_items: dict[str, list[str]] = {}
     for a in AREAS.values():
         norm = _normalize_rows(a.rows)
         h, wdt = len(norm), len(norm[0])
@@ -622,9 +650,28 @@ def validate_world() -> list[str]:
         # reachability: blocking entities are obstacles
         blocked = {(e.x, e.y) for e in a.entities if e.blocking}
         reach = _reachable(norm, a.spawn, blocked)
+        has_return = a.id == START_AREA
+        quality = {
+            "story": False, "npc": False, "shrine": False, "locked": False,
+            "return": a.id == START_AREA,
+        }
         for e in a.entities:
             if (e.x, e.y) in problems:
                 continue
+            if e.loot:
+                for item in e.loot:
+                    item_sources.setdefault(item, []).append(f"{a.id}/{e.id}")
+            for req in e.requires:
+                if req and req not in GLYPHS and req not in {"Debt Receipt"}:
+                    required_items.setdefault(req, []).append(f"{a.id}/{e.id}")
+            if e.type == "story_object":
+                quality["story"] = True
+            if e.type == "npc":
+                quality["npc"] = True
+            if e.type == "shrine":
+                quality["shrine"] = True
+            if e.state == "locked" or e.requires:
+                quality["locked"] = True
             if not e.blocking:  # stepped onto (portal/powerup): tile itself must be reachable
                 if (e.x, e.y) not in reach:
                     problems.append(f"{a.id}/{e.id}: unreachable tile ({e.x},{e.y})")
@@ -644,6 +691,21 @@ def validate_world() -> list[str]:
                         problems.append(
                             f"{a.id}/{e.id}: portal lands on non-walkable "
                             f"({e.target_x},{e.target_y}) in {e.target_area}")
+                    if e.target_area != a.id:
+                        has_return = True
+                        quality["return"] = True
+        if a.id == "arena" and len(reach) < 80:
+            problems.append(f"{a.id}: boss arena has only {len(reach)} reachable tiles")
+        for key, ok in quality.items():
+            if not ok:
+                problems.append(f"{a.id}: missing required map quality '{key}'")
+    # Manual story/item sources that come from world actions rather than static loot.
+    item_sources.setdefault("Debt Receipt", []).append("forced broken_mark+key entry")
+    item_sources.setdefault("Mirror Cap", []).append("caverns/nursery spare")
+    item_sources.setdefault("Tollmaster Token", []).append("overworld/bell_shrine")
+    for item, uses in required_items.items():
+        if item not in item_sources:
+            problems.append(f"item '{item}' required by {', '.join(uses)} has no acquisition path")
     return problems
 
 
@@ -651,6 +713,7 @@ def _class_to_dict(c: story.GoblinClass) -> dict:
     return {
         "id": c.id, "label": c.label, "sprite": c.sprite,
         "preview_gif": c.preview_gif, "hp": c.hp, "courage": c.courage,
+        "speed": c.speed,
         "affinity": list(c.affinity), "passive": c.passive,
         "king_ability": c.king_ability, "fantasy": c.fantasy,
         "select_line": c.select_line, "king_line": c.king_line,
@@ -661,6 +724,8 @@ def _weapon_to_dict(w: story.Weapon) -> dict:
     return {
         "id": w.id, "label": w.label, "identity": w.identity,
         "school": list(w.school), "bonus_damage": w.bonus_damage,
+        "courage_relief": w.courage_relief, "shield_chance": w.shield_chance,
+        "unlock_bonus": w.unlock_bonus, "xp_bonus": w.xp_bonus,
         "npc_reaction": w.npc_reaction, "story_flag": w.story_flag,
     }
 
@@ -675,9 +740,9 @@ def build_world() -> dict:
             "hp": start.hp, "max_hp": start.hp, "courage": start.courage,
             "max_courage": max(9, start.courage + 2),
             "level": 1, "xp": 0, "xp_to_next": story.xp_to_next(1),
-            "goblin_class": start.id, "evolved": False,
+            "goblin_class": start.id, "evolved": False, "evolved_form": "",
             "weapon": story.STARTING_WEAPON, "weapon_inventory": [story.STARTING_WEAPON],
-            "gold": 0, "rune_mastery": {}, "story_flags": [], "journal": [],
+            "gold": 0, "rune_mastery": {}, "story_flags": [], "ending_flags": [], "journal": [],
             "four_rune_unlocked": False,
             "inventory": ["wet candle"], "score": 0, "statuses": [],
             "quest_log": ["Find the Calendar Shard in the Mirror Fungus Caverns."],
@@ -710,10 +775,36 @@ def _combat_bonus(runes: list[str], player: dict) -> int:
     return bonus
 
 
+def _class_king_bonus(runes: list[str], player: dict, target: dict) -> tuple[int, list[str]]:
+    """Final-form class abilities from the plan, exposed as deterministic combat bonuses."""
+    if not player.get("evolved"):
+        return 0, []
+    cls = player.get("goblin_class")
+    flags: list[str] = []
+    bonus = 0
+    if cls == "warrior" and "closed_circle" in runes:
+        bonus += 1
+        flags.append("player_shielded")
+    elif cls == "rogue" and any(r in runes for r in ("key", "coin")):
+        bonus += 2
+    elif cls == "poison" and any(r in runes for r in ("leaf", "tooth", "broken_mark")):
+        bonus += 1
+        flags.append("enemy_bound")
+    elif cls == "hunter" and any(r in runes for r in ("eye", "thread")):
+        bonus += 2
+        flags.append("weakness_revealed")
+    elif cls == "barbarian" and any(r in runes for r in ("flame", "bone", "tooth")):
+        bonus += 3 if target.get("type") == "boss" else 2
+    return bonus, flags
+
+
 def _xp_actions(player: dict, gained: int) -> list[dict]:
     """Grant XP and surface any level-up rewards as world actions."""
     level = int(player.get("level", 1))
     xp = int(player.get("xp", 0))
+    weapon = story.weapon_or_default(player.get("weapon"))
+    if gained > 0 and weapon.xp_bonus:
+        gained += weapon.xp_bonus
     new_level, new_xp, rewards = story.apply_xp(level, xp, gained)
     acts: list[dict] = [{
         "type": "set_progress", "level": new_level, "xp": new_xp,
@@ -752,11 +843,33 @@ _NPC_FLAG: dict[tuple[str, str], str] = {
 _STORY_FLAG: dict[str, tuple[str, ...]] = {
     "cave_echo": ("mirror_truth_seen",),
     "wet_catalog": ("wet_catalog_read", "calendar_truth_read"),
+    "dry_shelves": ("library_shelves_burned", "calendar_devour_pressure"),
     "toll_board": (),
     "bell_shrine": ("secret_bell_shrine_seen", "tollmaster_route_open"),
     "debt_altar": ("debt_repaid",),
-    "clean_shrine": ("clean_water_restored",),
+    "clean_shrine": ("clean_water_restored", "sewer_shortcut_open"),
+    "sewer_valve": ("sewer_valves_aligned", "sewer_shortcut_open"),
     "nursery": ("fungus_colony_spared",),
+    "pylon_eye": ("mirror_truth_seen",),
+    "pylon_mirror": ("calendar_repair_possible",),
+    "pylon_leaf": ("calendar_repair_possible",),
+    "pylon_spiral": ("calendar_repair_possible",),
+}
+
+_MERCHANT_STOCK = {
+    "market_merchant": {
+        "coin": "mirror_shield",
+        "bell": "bell_staff",
+        "bone": "bone_blade",
+        "tooth": "bone_blade",
+        "broken_mark": "bone_blade",
+        "wave": "river_thread",
+        "leaf": "river_thread",
+    },
+    "secret_merchant": {
+        "coin": "coin_sling",
+        "bell": "coin_sling",
+    },
 }
 
 
@@ -789,6 +902,23 @@ def _flavor_world(runes: list[str], target: dict | None, combo) -> str:
     if target:
         return f"Your {glyphs} spell coils toward the {target.get('name', 'air').lower()}."
     return f"A spell of {glyphs} fizzes harmlessly into the {('damp ' if combo else '')}air."
+
+
+def _spawn_entity(eid: str, etype: str, name: str, x: int, y: int, *,
+                  sprite_key: str, hp: int = 0, weakness=(), resistance=(),
+                  mood: str = "", blocking: bool = True) -> dict:
+    """Action payload for temporary enemies/hazards spawned by boss phases."""
+    return {
+        "id": eid, "type": etype, "name": name, "x": x, "y": y,
+        "sprite": enemy_sprite(name) if etype in {"enemy", "boss"} else "⚠",
+        "state": "idle", "blocking": blocking, "hp": hp, "max_hp": hp,
+        "weakness": list(weakness), "resistance": list(resistance),
+        "mood": mood, "tags": ["hostile"] if etype == "enemy" else ["hazard"],
+        "requires": [], "loot": [], "dialogue": "", "target_area": "",
+        "target_x": 0, "target_y": 0,
+        "hint": "phase consequence — cast to clear" if etype == "enemy" else "phase hazard",
+        "sprite_key": sprite_key,
+    }
 
 
 def resolve_world_cast(
@@ -834,6 +964,10 @@ def resolve_world_cast(
             phase_info = story.boss_phase_for(cur_hp, max_hp)
             weakness = tuple(phase_info["weakness"])
             resistance = tuple(phase_info["resistance"])
+            recent = tuple(player.get("recent_runes") or ())
+            if recent and any(r in recent for r in runes):
+                repeated = tuple(dict.fromkeys(recent + tuple(runes)))
+                resistance = tuple(dict.fromkeys(resistance + repeated))
 
         state = GameState(
             player_hp=player.get("hp", 10), player_max_hp=player.get("max_hp", 10),
@@ -844,15 +978,28 @@ def resolve_world_cast(
             weakness_override=weakness, resistance_override=resistance,
         )
         spell = resolve_spell(state, runes, seed=seed)
+        if ttype == "boss" and player.get("recent_runes") and any(r in player.get("recent_runes", []) for r in runes):
+            # The Calendar Beast learns repeated rune spam. Clamp after normal
+            # spell resolution so the deterministic engine still owns base math.
+            if spell.enemy_hp_delta < 0:
+                spell.enemy_hp_delta = min(0, spell.enemy_hp_delta + 2)
+            spell.effect = f"{spell.effect} The Beast remembers that pattern and resists it."
+            if "boss_adapted" not in spell.status_effects:
+                spell.status_effects.append("boss_adapted")
 
         # Weapon + class affinity bonus damage (visible in HUD metadata).
         bonus = _combat_bonus(runes, player)
+        king_bonus, king_statuses = _class_king_bonus(runes, player, target)
+        bonus += king_bonus
         delta = spell.enemy_hp_delta
         if bonus and delta < 0:
             delta = max(-cur_hp, delta - bonus)
             spell.enemy_hp_delta = delta
             if bonus:
                 spell.effect = f"{spell.effect} (+{bonus} from gear/affinity)"
+        for st in king_statuses:
+            if st not in spell.status_effects:
+                spell.status_effects.append(st)
         new_hp = max(0, cur_hp + delta)
         actions.append({"type": "set_entity_hp", "target_id": tid, "hp": new_hp})
         # rune mastery grows with offensive use of each rune
@@ -866,8 +1013,34 @@ def resolve_world_cast(
                                 "banner": new_phase["banner"], "line": new_phase["line"]})
                 if new_phase["phase"] >= 2:
                     actions += _flag_actions(["calendar_beast_phase_2"])
+                    actions.append({"type": "spawn_entity", "entity": _spawn_entity(
+                        "phase2_debt_echo", "enemy", "Debt Echo", 11, 11,
+                        hp=5, weakness=["coin", "bell"], resistance=["broken_mark"],
+                        sprite_key="red_warrior", mood="collecting repeated mistakes")})
                 if new_phase["phase"] >= 3:
                     actions += _flag_actions(["calendar_beast_phase_3"])
+                    actions.append({"type": "spawn_entity", "entity": _spawn_entity(
+                        "phase3_fungus_echo", "enemy", "Fungus Echo", 17, 10,
+                        hp=5, weakness=["mirror", "eye"], resistance=["flame"],
+                        sprite_key="glowing_wisp", mood="copying old spellwork")})
+                    actions.append({"type": "spawn_entity", "entity": _spawn_entity(
+                        "phase3_time_hazard", "hazard", "Calendar Hazard", 14, 12,
+                        sprite_key="water_foam", mood="phase hazard", blocking=False)})
+                    if "tourist_helped" in flags:
+                        actions.append({"type": "heal_player", "amount": 2})
+                        actions.append({"type": "add_journal_entry",
+                                        "text": "The Lost Tourist reaches the arena with sandwiches and limited courage."})
+                        actions += _flag_actions(["boss_ally_tourist"])
+                    if "librarian_trust" in flags:
+                        actions.append({"type": "add_courage", "amount": 2})
+                        actions.append({"type": "add_journal_entry",
+                                        "text": "The Mold Librarian objects to being eaten by an overdue date."})
+                        actions += _flag_actions(["boss_ally_librarian"])
+                    if "clean_water_restored" in flags:
+                        actions.append({"type": "heal_player", "amount": 2})
+                        actions.append({"type": "add_journal_entry",
+                                        "text": "The clean river enters the final room as promised."})
+                        actions += _flag_actions(["boss_ally_water"])
 
         if new_hp <= 0:
             actions.append({"type": "defeat_entity", "target_id": tid})
@@ -881,7 +1054,7 @@ def resolve_world_cast(
                     mastery=player.get("rune_mastery"))
                 _ending_flag = {"repaired": "calendar_repaired",
                                 "devoured": "calendar_devoured",
-                                "tollmaster": "tollmaster_route_open"}.get(
+                                "tollmaster": "tollmaster_ending"}.get(
                     ending.key, "calendar_broken")
                 actions += _flag_actions([_ending_flag])
                 actions.append({"type": "win_game", "ending": ending.key,
@@ -906,6 +1079,7 @@ def resolve_world_cast(
                 actions.append({"type": "add_inventory", "item": item})
                 if item in story.WEAPONS:
                     actions.append({"type": "add_weapon", "weapon": item})
+                    actions += _flag_actions(["weapon_bought"])
             if any("Calendar Key" in str(i) for i in loot):
                 actions += _flag_actions(["calendar_key_found"])
             if any("Shard" in str(i) for i in loot):
@@ -930,14 +1104,21 @@ def resolve_world_cast(
     # --- locked door / portal seal ----------------------------------------
     if ttype in {"locked_door", "portal"} and target.get("state") == "locked":
         requires = target.get("requires", [])
+        weapon = story.weapon_or_default(player.get("weapon"))
         forced = "broken_mark" in runes and "key" in runes
-        if _matches_requirement(runes, requires, inventory) or forced:
+        weapon_unlock = weapon.unlock_bonus and "key" in requires and any(r in {"coin", "bell", "key"} for r in runes)
+        market_pass = tid == "portal_market" and (
+            ("Debt Receipt" in inventory) or {"coin", "bell"}.issubset(set(runes)) or forced
+        )
+        if _matches_requirement(runes, requires, inventory) or forced or weapon_unlock or market_pass:
             actions.append({"type": "set_entity_state", "target_id": tid, "state": "open"})
             actions.append({"type": "set_entity_blocking", "target_id": tid, "blocking": False})
             side = "A small debt appears in your satchel." if forced else ""
             if forced:
-                actions.append({"type": "add_inventory", "item": "small debt"})
-                actions += _flag_actions(["debt_accepted", "calendar_devour_pressure"])
+                actions.append({"type": "add_inventory", "item": "Debt Receipt"})
+                actions += _flag_actions(["debt_accepted", "debt_receipt", "calendar_devour_pressure"])
+            if tid == "portal_market":
+                actions += _flag_actions(["bone_market_entered"])
             spell = SpellResult(
                 spell_name="Emotional Unlocking" if not forced else "Forced Apology",
                 spell_type="unlock_emotion", flavor=_flavor_world(runes, target, combo),
@@ -980,12 +1161,21 @@ def resolve_world_cast(
         if voice and voice.journal:
             actions.append({"type": "add_journal_entry", "text": voice.journal})
 
-        # Bone Market merchant sells a weapon when paid with coin.
-        if tid == "market_merchant" and "coin" in runes:
-            weap = target.get("loot", ["bell_staff"])
-            wid = next((w for w in weap if w in story.WEAPONS), "bell_staff")
-            actions.append({"type": "add_weapon", "weapon": wid})
+        # Bone Market merchants sell deterministic weapons by rune intent.
+        stock = _MERCHANT_STOCK.get(tid, {})
+        wid = next((stock[r] for r in runes if r in stock), "")
+        if wid:
+            if wid in (player.get("weapon_inventory") or []):
+                actions.append({"type": "upgrade_weapon", "weapon": wid,
+                                "message": f"{story.WEAPONS[wid].label} is honed by the market's bad advice."})
+            else:
+                actions.append({"type": "add_weapon", "weapon": wid})
+                actions.append({"type": "add_inventory", "item": story.WEAPONS[wid].label})
             actions += _flag_actions(["weapon_bought", "bone_market_entered"])
+            if tid == "secret_merchant":
+                actions += _flag_actions(["secret_merchant_met", "tollmaster_route_open"])
+            if story.WEAPONS[wid].story_flag:
+                actions += _flag_actions([story.WEAPONS[wid].story_flag])
 
         if gift:
             _, msg, kind, amt = gift
@@ -1026,12 +1216,31 @@ def resolve_world_cast(
     # --- story object ------------------------------------------------------
     if ttype == "story_object":
         requires = target.get("requires", [])
+        if tid == "nursery" and any(r in {"flame", "bone", "tooth"} for r in runes):
+            text = "The nursery blackens. The shortcut smells useful and unforgiven."
+            actions.append({"type": "set_entity_state", "target_id": tid, "state": "burned"})
+            actions.append({"type": "add_discovery", "text": text})
+            actions.append({"type": "add_journal_entry", "text": text})
+            actions += _flag_actions(["fungus_colony_burned", "calendar_devour_pressure"])
+            spell = SpellResult(
+                spell_name="Spore Fire Receipt", spell_type="lore",
+                flavor=_flavor_world(runes, target, combo), effect=text,
+                status_effects=["enemy_burning"], chaos=6,
+            )
+            return {"spell": spell.model_dump(), "world_actions": actions, "target_id": tid, "runes": runes}
         if _matches_requirement(runes, requires, inventory):
             text = target.get("dialogue") or "The world gives up a small secret."
             actions.append({"type": "set_entity_state", "target_id": tid, "state": "read"})
             actions.append({"type": "add_discovery", "text": text})
             actions.append({"type": "add_journal_entry", "text": text})
             actions += _flag_actions(_STORY_FLAG.get(tid, ()))
+            if tid == "nursery":
+                actions.append({"type": "add_inventory", "item": "Mirror Cap"})
+            if tid == "bell_shrine":
+                actions.append({"type": "add_inventory", "item": "Tollmaster Token"})
+            if tid == "dry_shelves":
+                actions.append({"type": "unlock_shortcut", "target_id": "emotional_door",
+                                "message": "Burned shelves opened a library shortcut, but worsened the ending pressure."})
             actions += _xp_actions(player, story.XP_READ_STORY)
             spell = SpellResult(
                 spell_name="World-Reading Glyph", spell_type="lore",

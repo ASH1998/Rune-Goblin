@@ -17,6 +17,7 @@
   let toastMsg = "";
   let vfx = [];                 // active visual effects
   let turnNo = 0;
+  let recentRunes = [];
   let enemyCooldown = {};
   let selecting = false;        // title-screen character select active
   let chosenClass = null;       // selected goblin class id
@@ -310,6 +311,7 @@
   }
   function hasFlag(f) { return (P.story_flags || []).includes(f); }
   function addFlag(f) { if (f && !hasFlag(f)) P.story_flags.push(f); }
+  function addInventory(item) { if (item && !P.inventory.includes(item)) P.inventory.push(item); }
   function weaponLabel(id) { return (WEAPONS[id] && WEAPONS[id].label) || id; }
   function addUnique(arr, text) { if (text && !arr.includes(text)) arr.push(text); }
   function questText() {
@@ -358,12 +360,19 @@
       const e = ar.entities.find((x) => x.id === id);
       if (!e || e.state === "defeated") return;
       e.state = show ? "idle" : "hidden";
+      if (e.type === "npc") e.blocking = !!show;
       if (show && flagWhenShown) addFlag(flagWhenShown);
     };
     if (areaId === "gate_approach") {
       const debtUnpaid = (hasFlag("debt_accepted") || hasFlag("debt_deepened")) && !hasFlag("debt_repaid");
       set("debt_collector", debtUnpaid, "debt_collector_spawned");
       set("gate_tourist", hasFlag("tourist_helped"), "boss_ally_tourist");
+    } else if (areaId === "bone_market") {
+      const mastery = P.rune_mastery || {};
+      const coinBellMastery = (mastery.coin || 0) >= 5 || (mastery.bell || 0) >= 5;
+      const secretReady = hasFlag("secret_merchant_met") || hasFlag("tollmaster_route_open") ||
+        coinBellMastery || ["coin_sling", "bell_staff"].includes(P.weapon);
+      set("secret_merchant", secretReady, null);
     }
   }
   function entityAt(x, y) { return liveEntities().find((e) => e.x === x && e.y === y); }
@@ -426,6 +435,7 @@
     if (e && !e.blocking) {
       if (e.type === "portal" && e.state !== "locked") travel(e);
       else if (e.type === "powerup") collect(e);
+      else if (e.type === "hazard") triggerHazard(e);
     }
     enemyTurn();
     updateTarget();
@@ -439,15 +449,25 @@
     P.x = portal.target_x; P.y = portal.target_y;
     enemyCooldown = {};
     regionCue();
+    if (P.area === "gate_approach") addFlag("arena_approach_reached");
     toast("You enter <b>" + A.name + "</b>. " + moodLine());
   }
 
   function collect(e) {
     e.state = "collected";
-    (e.loot || []).forEach((it) => P.inventory.push(it));
+    (e.loot || []).forEach((it) => addInventory(it));
     P.score += 25;
     addUnique(P.discoveries, "Found " + (e.loot.join(", ") || e.name) + ".");
     toast("Picked up <b>" + (e.loot.join(", ") || e.name) + "</b>.");
+  }
+
+  function triggerHazard(e) {
+    if (now() - (enemyCooldown[e.id] || 0) < 900) return;
+    enemyCooldown[e.id] = now();
+    P.hp = clamp(P.hp - 1, 0, P.max_hp);
+    spawnHit();
+    toast("<b>" + e.name + "</b> bites one HP off your schedule.");
+    if (P.hp <= 0 && !over) lose();
   }
 
   function moodLine() { return "<i>" + A.mood + "</i>"; }
@@ -472,8 +492,9 @@
     return { hp: P.hp, max_hp: P.max_hp, courage: P.courage, max_courage: P.max_courage,
              inventory: P.inventory.slice(), statuses: P.statuses.slice(),
              level: P.level, xp: P.xp, goblin_class: P.goblin_class, weapon: P.weapon,
+             weapon_inventory: (P.weapon_inventory || []).slice(),
              story_flags: (P.story_flags || []).slice(), rune_mastery: P.rune_mastery || {},
-             gold: P.gold };
+             gold: P.gold, recent_runes: recentRunes.slice(), evolved: P.evolved };
   }
   function targetCtx(t) {
     if (!t) return null;
@@ -535,8 +556,10 @@
           toast("<b>" + e.name + "</b> is defeated!"); } break;
         case "set_entity_state": if (e) e.state = a.state; break;
         case "set_entity_blocking": if (e) e.blocking = a.blocking; break;
-        case "add_inventory": P.inventory.push(a.item); break;
+        case "add_inventory": addInventory(a.item); break;
         case "remove_inventory": { const i = P.inventory.indexOf(a.item); if (i >= 0) P.inventory.splice(i, 1); } break;
+        case "add_gold": P.gold = Math.max(0, (P.gold || 0) + (a.amount || 0)); break;
+        case "add_xp": applyProgressGain(a.amount || 0); break;
         case "heal_player": P.hp = clamp(P.hp + a.amount, 0, P.max_hp); break;
         case "add_courage": P.courage = clamp(P.courage + a.amount, 0, P.max_courage); break;
         case "change_npc_trust":
@@ -548,7 +571,13 @@
         case "add_discovery": addUnique(P.discoveries, a.text); break;
         case "add_quest": addUnique(P.quest_log, a.text); break;
         case "add_journal_entry": addUnique(P.journal, a.text); addUnique(P.discoveries, a.text); break;
-        case "set_story_flag": addFlag(a.flag); break;
+        case "set_story_flag":
+          addFlag(a.flag);
+          if (a.flag && (a.flag.startsWith("calendar_") || a.flag === "tollmaster_ending")) {
+            P.ending_flags = P.ending_flags || [];
+            addUnique(P.ending_flags, a.flag);
+          }
+          break;
         case "bump_mastery":
           (a.runes || []).forEach((r) => {
             const before = P.rune_mastery[r] || 0;
@@ -564,6 +593,7 @@
           if (a.max_hp) { P.max_hp += a.max_hp; P.hp = clamp(P.hp + a.max_hp, 0, P.max_hp); }
           if (a.max_courage) { P.max_courage += a.max_courage; P.courage = clamp(P.courage + a.max_courage, 0, P.max_courage); }
           if (a.unlock_four_runes) P.four_rune_unlocked = true;
+          if (a.rune_mastery_choice) grantMasteryChoice();
           showBanner("⬆ LEVEL " + a.level + "<br><span style='font-size:11px'>" + (a.note || "") + "</span>");
           break;
         case "add_weapon":
@@ -573,6 +603,18 @@
           toast("🗡️ You acquire the <b>" + weaponLabel(a.weapon) + "</b>. " + ((WEAPONS[a.weapon] || {}).identity || ""));
           break;
         case "equip_weapon": if (P.weapon_inventory.includes(a.weapon)) P.weapon = a.weapon; break;
+        case "upgrade_weapon":
+          if (a.weapon && !P.weapon_inventory.includes(a.weapon)) P.weapon_inventory.push(a.weapon);
+          if (a.weapon) P.weapon = a.weapon;
+          if (a.message) addUnique(P.journal, a.message);
+          break;
+        case "spawn_entity":
+          if (a.entity && !byId(a.entity.id)) A.entities.push(a.entity);
+          break;
+        case "unlock_shortcut":
+          if (a.target_id && e) { e.state = "open"; e.blocking = false; }
+          if (a.message) addUnique(P.discoveries, a.message);
+          break;
         case "start_boss_phase":
           showBanner(a.banner || ("PHASE " + a.phase));
           setTimeout(() => toast("<b>Calendar Beast</b>: " + (a.line || "")), 700);
@@ -582,6 +624,7 @@
         default: break;
       }
     });
+    if (runes && runes.length) recentRunes = runes.slice();
     P.score += Math.max(0, -(s.enemy_hp_delta || 0)) * 10 + (s.chaos || 0);
 
     spawnSpellVfx(s, target, runes);
@@ -607,6 +650,27 @@
     if (!over && target && target.type === "npc") openDialogue(target, runes);
     updateTarget();
     if (P.hp <= 0 && !over) lose();
+  }
+
+  function applyProgressGain(amount) {
+    if (!amount) return;
+    P.xp += amount;
+    while (P.xp_to_next > 0 && P.xp >= P.xp_to_next) {
+      P.xp -= P.xp_to_next;
+      P.level += 1;
+      if (P.level === 2) { P.max_hp += 2; P.hp = clamp(P.hp + 2, 0, P.max_hp); }
+      if (P.level === 3) P.four_rune_unlocked = true;
+      if (P.level === 4) grantMasteryChoice();
+      if (P.level >= 5) { P.max_courage += 2; P.courage = P.max_courage; P.xp_to_next = 0; break; }
+      P.xp_to_next = P.level === 2 ? 16 : (P.level === 3 ? 28 : (P.level === 4 ? 44 : 0));
+    }
+  }
+
+  function grantMasteryChoice() {
+    const counts = Object.entries(P.rune_mastery || {}).sort((a, b) => b[1] - a[1]);
+    const picked = (counts[0] && counts[0][0]) || selected[0] || "closed_circle";
+    P.rune_mastery[picked] = Math.max(5, P.rune_mastery[picked] || 0);
+    addUnique(P.journal, "Level 4 mastery: " + picked.replace(/_/g, " ") + " is now steady enough to hit harder.");
   }
 
   function retaliate(enemy, statuses) {
@@ -700,6 +764,7 @@
     P.evolved = true;
     P.courage = P.max_courage;          // refill courage
     P.four_rune_unlocked = true;
+    P.rune_mastery[(cls.affinity || ["closed_circle"])[0]] = Math.max(5, P.rune_mastery[(cls.affinity || ["closed_circle"])[0]] || 0);
     showBanner("👑 GOBLIN KING<br><span style='font-size:11px'>" + (cls.king_line || "") + "</span>");
     toast("<b>You evolve into the Goblin King!</b> " + (cls.king_ability || ""));
   }
@@ -1031,7 +1096,8 @@
     ctx.fillStyle = "#6df5a0"; ctx.fillRect(xb, cy - 5, xpw * frac, 10);
     ctx.strokeStyle = "#34254d"; ctx.strokeRect(xb, cy - 5, xpw, 10);
     hx += xpw + 16;
-    ctx.fillStyle = "#9c8bc4"; ctx.fillText("BAG " + P.inventory.length, hx, cy);
+    ctx.fillStyle = "#9c8bc4"; ctx.fillText("BAG " + P.inventory.length, hx, cy); hx += 95;
+    ctx.fillStyle = "#ffd24a"; ctx.fillText("G " + (P.gold || 0), hx, cy);
     ctx.textAlign = "right"; ctx.fillStyle = "#b07cff";
     ctx.fillText(A.name.toUpperCase(), canvas.width - 14, cy);
     // bottom row: weapon + objective + latest discovery

@@ -24,8 +24,8 @@ from dataclasses import dataclass, field
 # Goblin hero classes (title-screen character select)
 # ---------------------------------------------------------------------------
 # Stats follow map_plan.md "Recommended starting balance". `sprite` is the
-# in-game runtime sprite (we only have colored-goblin sheets, not exported
-# hero sheets), `preview_gif` is the animated title-screen art from the pack.
+# in-game runtime sprite is the exported hero sheet; `preview_gif` is the
+# animated title-screen art from the pack.
 
 
 @dataclass(frozen=True)
@@ -36,6 +36,7 @@ class GoblinClass:
     preview_gif: str  # title-screen animated preview (under /rg/static/heroes)
     hp: int
     courage: int
+    speed: int
     affinity: tuple[str, ...]  # rune keys this class is good at
     passive: str  # one-line passive summary
     king_ability: str  # final-evolution ability summary
@@ -46,8 +47,8 @@ class GoblinClass:
 
 GOBLIN_CLASSES: dict[str, GoblinClass] = {
     "warrior": GoblinClass(
-        id="warrior", label="Goblin Warrior", sprite="goblin_red",
-        preview_gif="heroes/GoblinWarrior.gif", hp=13, courage=5,
+        id="warrior", label="Goblin Warrior", sprite="hero_warrior",
+        preview_gif="heroes/GoblinWarrior.gif", hp=13, courage=5, speed=3,
         affinity=("closed_circle", "jagged_line"),
         passive="Shield affinity: +1 shield on circle spells.",
         king_ability="Warrior King: shield yourself and punish boss retaliation.",
@@ -56,8 +57,8 @@ GOBLIN_CLASSES: dict[str, GoblinClass] = {
         king_line="The shield becomes a crown. The crown remembers every hit you took and gives one back.",
     ),
     "rogue": GoblinClass(
-        id="rogue", label="Goblin Rogue", sprite="goblin_yellow",
-        preview_gif="heroes/GoblinRogue.gif", hp=10, courage=7,
+        id="rogue", label="Goblin Rogue", sprite="hero_rogue",
+        preview_gif="heroes/GoblinRogue.gif", hp=10, courage=7, speed=4,
         affinity=("key", "coin", "thread"),
         passive="Key/coin affinity: better chests and shortcuts.",
         king_ability="Rogue King: open one final lock or phase weakness without a key.",
@@ -66,8 +67,8 @@ GOBLIN_CLASSES: dict[str, GoblinClass] = {
         king_line="Every stolen key turns in the air. The lock on tomorrow clicks.",
     ),
     "poison": GoblinClass(
-        id="poison", label="Goblin Rogue Poison", sprite="goblin_purple",
-        preview_gif="heroes/GoblinRoguePoison.gif", hp=9, courage=7,
+        id="poison", label="Goblin Rogue Poison", sprite="hero_poison",
+        preview_gif="heroes/GoblinRoguePoison.gif", hp=9, courage=7, speed=4,
         affinity=("leaf", "tooth", "broken_mark"),
         passive="Poison affinity: stronger status effects, more chaos risk.",
         king_ability="Poison King: apply a boss debuff that weakens repeated resistance.",
@@ -76,8 +77,8 @@ GOBLIN_CLASSES: dict[str, GoblinClass] = {
         king_line="The venom becomes medicine for the future and poison for the Beast.",
     ),
     "hunter": GoblinClass(
-        id="hunter", label="Goblin Hunter", sprite="goblin_blue",
-        preview_gif="heroes/GoblinHunter.gif", hp=11, courage=6,
+        id="hunter", label="Goblin Hunter", sprite="hero_hunter",
+        preview_gif="heroes/GoblinHunter.gif", hp=11, courage=6, speed=4,
         affinity=("eye", "thread", "jagged_line"),
         passive="Eye affinity: better weakness reveals and first-strike bonuses.",
         king_ability="Hunter King: reveal and mark the true Calendar Beast weak point.",
@@ -86,8 +87,8 @@ GOBLIN_CLASSES: dict[str, GoblinClass] = {
         king_line="You see the weak point at last: not the Beast's heart, but its hunger.",
     ),
     "barbarian": GoblinClass(
-        id="barbarian", label="Goblin Barbarian", sprite="goblin_red",
-        preview_gif="heroes/GoblinBarbarian.gif", hp=15, courage=4,
+        id="barbarian", label="Goblin Barbarian", sprite="hero_barbarian",
+        preview_gif="heroes/GoblinBarbarian.gif", hp=15, courage=4, speed=2,
         affinity=("flame", "bone", "tooth"),
         passive="Flame/bone affinity: higher damage, worse NPC trust if reckless.",
         king_ability="Barbarian King: break a boss pylon at the cost of courage.",
@@ -223,9 +224,11 @@ ALLOWED_FLAGS: frozenset[str] = frozenset({
     # dungeon choices
     "mirror_truth_seen", "fungus_colony_spared", "fungus_colony_burned",
     "wet_catalog_read", "library_shelves_burned", "clean_water_restored",
+    "sewer_valves_aligned", "sewer_shortcut_open",
     # debt / weapon
-    "debt_accepted", "debt_repaid", "debt_deepened", "weapon_bought",
-    "secret_merchant_met", "bone_market_entered", "secret_bell_shrine_seen",
+    "debt_accepted", "debt_repaid", "debt_deepened", "debt_receipt",
+    "weapon_bought", "secret_merchant_met", "bone_market_entered",
+    "secret_bell_shrine_seen",
     # toll road
     "toll_paid", "toll_forced",
     # mirror caverns
@@ -235,8 +238,9 @@ ALLOWED_FLAGS: frozenset[str] = frozenset({
     "calendar_devour_pressure", "tollmaster_route_open",
     "calendar_beast_phase_2", "calendar_beast_phase_3",
     "calendar_broken", "calendar_repaired", "calendar_devoured",
+    "tollmaster_ending",
     "boss_ally_tourist", "boss_ally_librarian", "boss_ally_water",
-    "debt_collector_spawned", "player_evolved",
+    "arena_approach_reached", "debt_collector_spawned", "player_evolved",
 })
 
 # Flags that, when present, increase the "devour" pressure (bad-ending weight).
