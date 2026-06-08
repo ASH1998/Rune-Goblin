@@ -65,6 +65,8 @@ travel-gate…). Python stays the spell engine and balance authority.
 | `app/rpg_app.py` | **Gradio + canvas RPG** — free-roaming sandbox (the main game) |
 | `app/rpg_bridge.py` | FastAPI `/rg/world` + `/rg/cast` bridge for the canvas client |
 | `app/rpg_static/` | `rpg.js` + `rpg.css` — the HTML5 canvas game client |
+| `app/rpg_static/sprites/` | curated Tiny Swords sprites (CC0) baked for the renderer |
+| `assets/` | raw Tiny Swords packs (git-ignored; drop the itch download here) |
 | `app/vision_app.py` | **Gradio** — linear 5-room combat game (draw + tap, VFX, rune guide) |
 | `app/app.py` | minimal Gradio rune-button game (legacy) |
 | `api/server.py` | FastAPI backend for the React frontend |
@@ -143,8 +145,15 @@ uv run --extra gguf python app/rpg_app.py
 
 **Controls:** `WASD` / arrows move · `1–9` pick runes (or click the rune deck) ·
 `Space` cast at whatever you face · `E` draw a spell (read by goblinV1) · `C`
-clear runes · step into portals (🌀 / 🕳️ / 🚪) to travel. Face an enemy and cast;
-hit its weakness for bonus damage. Locked chests/doors show what runes they need.
+clear runes · `🔊` music · `⛶` fullscreen · step into portals to travel. Face an
+enemy and cast; hit its weakness for bonus damage. Locked chests/doors show what
+runes they need.
+
+The world renders with real **[Tiny Swords](https://pixelfrog-assets.itch.io/tiny-swords)**
+pixel art by **Pixel Frog** (CC0): grassy islands, knight player, torch goblins,
+towers and chests. Background music is an original procedural chiptune (Web
+Audio) that starts on your first click/keypress — toggle it with `🔊`. If a
+sprite is missing the game falls back to emoji, so it always runs.
 
 > Deployment note: `rpg_app.py` mounts FastAPI routes alongside Gradio
 > (`gr.mount_gradio_app`) and runs under `uvicorn`. For a Hugging Face Space, use
@@ -212,3 +221,25 @@ context, then returns attack/VFX metadata for the renderer.
 Renderer rule: do not generate new images during combat or exploration. Use
 model metadata to drive existing sprites, particles, overlays, CSS/canvas
 effects, weapon trails, colors, sizes and enemy reactions.
+
+## Credits
+
+All art/audio packs are free / CC0. The raw packs live in the git-ignored
+`assets/`; a curated subset is baked into `app/rpg_static/{sprites,vfx,icons,sfx}/`
+with a generated `manifest.json` (regenerate by re-running the bake step).
+
+- **Terrain & buildings**: [Tiny Swords](https://pixelfrog-assets.itch.io/tiny-swords) by **Pixel Frog** (CC0).
+- **Creatures (enemies/NPCs)**: Basic magical animations pack — elementals,
+  golems, witch, treant, fairy, pixie, necromancer, sorceress, druid, wisp.
+- **Spell VFX**: GameFX spritesheets — fireball/cast/burst, ice cast/shatter,
+  poison, tornado, holy explosion, magic barrier, explosions, stars. Cast magic
+  is layered so it grows more elaborate with the spell's tier (rune count, chaos,
+  damage, curse).
+- **Spell sounds**: Retro Magic FX — element spell SFX (fire/ice/electric/
+  light/dark/earth/water/wind) plus charging/sweeps, played per element on cast.
+- **Magic circles**: Rune Goblin Magic Circles pack — a 100-spell atlas (8-frame
+  96px rings). On cast, the circle whose runes best match the drawn spell animates
+  under the caster (and the target at higher tiers), growing with the spell tier.
+- **Rune icons**: Mythril Age Icons — one icon per RuneLang glyph (no emoji).
+- **Music**: original procedural chiptune synthesized in-browser via the Web
+  Audio API (no external audio files). `🔊` toggles all music + SFX.

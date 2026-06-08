@@ -22,6 +22,9 @@
 | Full playable game (draw + rune board, VFX, guide) | Done: `app/vision_app.py` |
 | Deterministic VFX/asset planner | Done: `src/rune_goblin/vfx.py` |
 | Free-roaming RPG sandbox (canvas world) | Done: `app/rpg_app.py` + `world.py` |
+| Real Tiny Swords art + music + full screen | Done: `app/rpg_static/` |
+| Spell VFX + magic SFX + icon runes + creatures + camera | Done |
+| Magic circles, animated enemies, fuller world, tuned audio | Done |
 | Task-level eval over validation set | Pending |
 
 ---
@@ -75,6 +78,19 @@
 The Gradio `head=`/`js=` hooks are dropped under `mount_gradio_app` and `gr.HTML`
 won't run inline scripts, so the canvas game is served as a standalone page and
 embedded via a same-origin iframe — robust, and still one Gradio app.
+
+Polish (real assets, music, full screen):
+
+- Art is **Tiny Swords** by Pixel Frog (CC0). The raw packs sit in the
+  git-ignored `assets/`; a curated subset (grass/water tiles, blue Warrior =
+  player, Torch goblins = enemies, Tower = shrine, gold = chest) is baked into
+  `app/rpg_static/sprites/` and drawn by a sprite loader with emoji fallback.
+  Walkable tiles render as grass, walls/voids as water → a clean island look.
+- Music is an original procedural chiptune (Web Audio), `🔊` mute toggle; starts
+  on the first click/keypress (browser autoplay policy).
+- The game is full-bleed: the iframe fills the viewport, the canvas resizes to
+  the stage, and the Gradio container padding/footer are hidden. `⛶` requests
+  true browser fullscreen.
 
 ### Fine-tune and docs
 
@@ -197,6 +213,22 @@ metadata patch may need to be repeated or the GGUF re-exported correctly.
   Queue Goblin + retaliation), chest unlock with loot, shrine heal/courage,
   portal travel overworld→library, then the full quest chain — ink chest →
   Calendar Key → open sealed gate → arena → Calendar Beast 18→0 → 🏆 win screen.
+- Asset/full-screen pass (canvas :7862): all 11 Tiny Swords sprites load, canvas
+  fills the viewport (1280×625 in a 1280×760 window), combat unaffected
+  (Queue Goblin 5→1, score 46) — verified by screenshot + state introspection.
+  No console errors. Music is wired but not audibly checked headless (autoplay).
+- Asset-rich polish pass (:7862): manifest loads all VFX/creature/deco/icon/sfx
+  assets; bigger maps (overworld 30×20) with a follow-camera; rune deck shows
+  Mythril icons (no emoji), HUD uses text labels; magical-creature enemies/NPCs
+  + Tiny Swords deco render; a tier-4 cast draws layered VFX (fire cast →
+  projectile → explosion → tornado ring + screen shake) — verified by screenshots.
+  Element spell SFX wired (not audible headless). No console errors.
+- Polish round (:7862): trees/deco now static (no shake); ~26 scattered Update-010
+  decorations per area fill the world (overworld 46 entities); creatures shrunk via
+  per-creature scale (fairy/pixie/wisp ~0.85); goblins animate (idle row 0, 7
+  frames); BGM 0.05 / SFX 0.22 (lowered); magic-circle atlas plays under caster +
+  target on cast (vfx list shows 2 circles + projectile + impacts + damage num,
+  atlas ready) — verified by screenshots + state. No console errors.
 
 ---
 
