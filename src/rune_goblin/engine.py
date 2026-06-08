@@ -34,14 +34,22 @@ class GameState:
     room_mood: str = "paranoid"
     inventory: tuple[str, ...] = ()
     courage: int = 5
+    # RPG entities carry their own weakness/resistance (not in the ENEMIES table);
+    # set these to override the lookup.
+    weakness_override: tuple[str, ...] | None = None
+    resistance_override: tuple[str, ...] | None = None
 
     @property
     def weakness(self) -> tuple[str, ...]:
+        if self.weakness_override is not None:
+            return self.weakness_override
         e = ENEMIES.get(self.enemy_name)
         return e.weakness if e else ()
 
     @property
     def resistance(self) -> tuple[str, ...]:
+        if self.resistance_override is not None:
+            return self.resistance_override
         e = ENEMIES.get(self.enemy_name)
         return e.resistance if e else ()
 

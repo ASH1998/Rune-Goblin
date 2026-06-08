@@ -54,6 +54,7 @@ class Entity:
     target_x: int = 0
     target_y: int = 0
     hint: str = ""  # short interaction hint shown to the player
+    sprite_key: str = ""  # explicit client sprite (creature/deco), else type-mapped
 
 
 @dataclass
@@ -67,6 +68,17 @@ class Area:
     spawn: tuple[int, int]
 
 
+def _mob(eid, name, x, y, *, hp, weakness, resistance, sprite_key,
+         mood="", boss=False) -> Entity:
+    return Entity(
+        id=eid, type="boss" if boss else "enemy", name=name, x=x, y=y,
+        sprite=enemy_sprite(name), sprite_key=sprite_key, hp=hp, max_hp=hp,
+        weakness=list(weakness), resistance=list(resistance), mood=mood,
+        tags=["hostile"] + (["boss"] if boss else []),
+        hint=("the floor's master — cast to fight" if boss else "cast a spell to fight"),
+    )
+
+
 def _enemy(eid: str, name: str, x: int, y: int, mood: str = "") -> Entity:
     e = ENEMIES[name]
     return Entity(
@@ -77,176 +89,197 @@ def _enemy(eid: str, name: str, x: int, y: int, mood: str = "") -> Entity:
     )
 
 
-def _boss(eid: str, name: str, x: int, y: int, hp: int) -> Entity:
-    e = ENEMIES.get(name)
-    weak = list(e.weakness) if e else ["spiral", "eye"]
-    res = list(e.resistance) if e else ["flame"]
-    return Entity(
-        id=eid, type="boss", name=name, x=x, y=y, sprite=enemy_sprite(name),
-        hp=hp, max_hp=hp, weakness=weak, resistance=res, mood="overbooked and furious",
-        tags=["hostile", "boss"], hint="the floor's master — cast to fight",
-    )
+def _npc(eid, name, x, y, *, sprite_key, dialogue, hint) -> Entity:
+    return Entity(id=eid, type="npc", name=name, x=x, y=y, sprite_key=sprite_key,
+                  blocking=True, tags=["friendly"], dialogue=dialogue, hint=hint)
+
+
+def _deco(eid, x, y, sprite_key, blocking=False) -> Entity:
+    # decorations never block movement (avoids sealed paths / "stuck" feel)
+    return Entity(id=eid, type="deco", name=sprite_key.replace("_", " "), x=x, y=y,
+                  sprite_key=sprite_key, blocking=blocking, tags=["deco"])
+
+
+# Ground clutter pool (small 64px deco + bushes/rocks) for filling the world.
+_DECO_POOL = ["bush", "rock", "rock2", "d01", "d02", "d03", "d04", "d05", "d06",
+              "d07", "d08", "d09", "d10", "d11", "d12", "d13", "d14", "d15"]
+
+
+def _scatter_deco(area: Area, n: int, seed: int) -> None:
+    """Sprinkle non-blocking decorations on free floor tiles to fill the map."""
+    rng = random.Random(seed)
+    rows = area.rows
+    h, w = len(rows), len(rows[0])
+    occupied = {(e.x, e.y) for e in area.entities}
+    sx0, sy0 = area.spawn
+    placed = idx = tries = 0
+    while placed < n and tries < n * 40:
+        tries += 1
+        x, y = rng.randint(1, w - 2), rng.randint(1, h - 2)
+        if rows[y][x] not in WALKABLE or (x, y) in occupied:
+            continue
+        if abs(x - sx0) <= 1 and abs(y - sy0) <= 1:
+            continue
+        occupied.add((x, y))
+        area.entities.append(_deco(f"{area.id}_sc{idx}", x, y, rng.choice(_DECO_POOL)))
+        idx += 1
+        placed += 1
+
+
+def _field(w: int, h: int, feats=()) -> list[str]:
+    """A bordered open field. ``feats`` stamps (x, y, w, h, char) rectangles
+    (e.g. ``~`` ponds) into the interior — never the border."""
+    grid = [["#" if (y == 0 or y == h - 1 or x == 0 or x == w - 1) else "."
+             for x in range(w)] for y in range(h)]
+    for (fx, fy, fw, fh, ch) in feats:
+        for yy in range(fy, fy + fh):
+            for xx in range(fx, fx + fw):
+                if 0 < yy < h - 1 and 0 < xx < w - 1:
+                    grid[yy][xx] = ch
+    return ["".join(r) for r in grid]
 
 
 # ---------------------------------------------------------------------------
-# Areas. Maps are small, hand-built grids. Player spawns at 'P'.
+# Areas — big open fields dotted with ponds, creatures, NPCs and decorations.
 # ---------------------------------------------------------------------------
 def _build_areas() -> dict[str, Area]:
     overworld = Area(
-        id="overworld",
-        name="Goblin Toll Road",
-        biome="toll_road",
-        mood="impatient",
-        rows=[
-            "####################",
-            "#........#.........#",
-            "#..P.....#....C....#",
-            "#........#.........#",
-            "#....N...+.........#",
-            "########.+.#########",
-            "#........G.........#",
-            "#........+.........#",
-            "#...L....+....S....#",
-            "#........+.........#",
-            "#..a.....+.....b...#",
-            "#........+.........#",
-            "####################",
-        ],
-        spawn=(3, 2),
+        id="overworld", name="Goblin Toll Road", biome="toll_road", mood="impatient",
+        rows=_field(30, 20, [(9, 5, 4, 3, "~"), (21, 13, 5, 3, "~")]),
+        spawn=(3, 3),
         entities=[
-            _enemy("toll_goblin", "Queue Goblin", 9, 6, "blocking the toll gate"),
-            Entity("tourist", "npc", "Lost Tourist", 5, 4, sprite="🧍", blocking=True,
-                   tags=["friendly"], dialogue="I lost my map. Soothe me (wave) and I'll bless your courage.",
-                   hint="cast wave/leaf to comfort, learn a secret"),
-            Entity("road_chest", "chest", "Roadside Chest", 14, 2, sprite="🧰",
+            _enemy("toll_goblin", "Queue Goblin", 15, 9, "blocking the toll gate"),
+            _mob("ember_sprite", "Ember Sprite", 25, 4, hp=6, weakness=["wave", "closed_circle"],
+                 resistance=["flame"], sprite_key="fire_elemental", mood="crackling"),
+            _mob("toll_wisp", "Toll Wisp", 5, 15, hp=5, weakness=["bone", "broken_mark"],
+                 resistance=["jagged_line"], sprite_key="glowing_wisp", mood="flickering"),
+            _npc("tourist", "Lost Tourist", 5, 6, sprite_key="magical_fairy",
+                 dialogue="I lost my map. Soothe me (wave) and I'll bless your courage.",
+                 hint="cast wave/leaf to comfort"),
+            _npc("toll_pixie", "Toll Pixie", 16, 3, sprite_key="fluttering_pixie",
+                 dialogue="The goblin hates bells and coins. Just saying.",
+                 hint="a helpful hint about the gate goblin"),
+            _npc("road_druid", "Road Druid", 24, 17, sprite_key="expert_druid",
+                 dialogue="Two doors west and east. The Library hides a Calendar Key.",
+                 hint="cast leaf and I may share growth"),
+            Entity("road_chest", "chest", "Roadside Chest", 27, 16, sprite="🧰",
                    state="locked", tags=["wood"], requires=["key"],
                    loot=["spare courage"], hint="locked — needs a key rune"),
-            Entity("toll_shrine", "shrine", "Mile-Marker Shrine", 14, 8, sprite="⛩️",
+            Entity("coin_chest", "chest", "Toll Coffer", 3, 17, sprite="🧰",
+                   state="locked", tags=["coin"], requires=["coin"],
+                   loot=["lucky coin"], hint="locked — pay with a coin rune"),
+            Entity("toll_shrine", "shrine", "Mile-Marker Shrine", 14, 3, sprite="⛩️",
                    blocking=True, tags=["holy"], state="dormant",
-                   loot=[], hint="cast leaf/closed_circle to bless yourself"),
-            Entity("portal_caverns", "portal", "Cavern Mouth", 3, 10, sprite="🕳️",
-                   blocking=False, target_area="caverns", target_x=2, target_y=2,
+                   hint="cast leaf/closed_circle to bless yourself"),
+            Entity("portal_caverns", "portal", "Cavern Mouth", 2, 10, sprite="🕳️",
+                   blocking=False, target_area="caverns", target_x=3, target_y=2,
                    hint="step in → Mirror Fungus Caverns"),
-            Entity("portal_library", "portal", "Soggy Archway", 15, 10, sprite="🌀",
-                   blocking=False, target_area="library", target_x=2, target_y=2,
+            Entity("portal_library", "portal", "Soggy Archway", 28, 9, sprite="🌀",
+                   blocking=False, target_area="library", target_x=3, target_y=2,
                    hint="step in → The Wet Library"),
+            _deco("o_tree1", 8, 11, "tree"), _deco("o_tree2", 20, 4, "tree"),
+            _deco("o_tree3", 12, 16, "tree"), _deco("o_rock1", 18, 16, "rock"),
+            _deco("o_rock2", 7, 3, "rock2"),
+            _deco("o_bush1", 6, 13, "bush", blocking=False),
+            _deco("o_bush2", 22, 8, "bush", blocking=False),
+            _deco("o_bush3", 11, 3, "bush", blocking=False),
+            _deco("o_bush4", 25, 11, "bush", blocking=False),
         ],
     )
 
     caverns = Area(
-        id="caverns",
-        name="Mirror Fungus Caverns",
-        biome="cavern",
-        mood="suspiciously moist",
-        rows=[
-            "####################",
-            "#..P...............#",
-            "#......##....##....#",
-            "#..m...##....##.c..#",
-            "#..................#",
-            "#..........m.......#",
-            "#...##.......##....#",
-            "#...##.......##....#",
-            "#........s.....~~~.#",
-            "#..............~~~.#",
-            "#......O.....m.....#",
-            "#..................#",
-            "####################",
-        ],
-        spawn=(3, 1),
+        id="caverns", name="Mirror Fungus Caverns", biome="cavern", mood="suspiciously moist",
+        rows=_field(28, 18, [(6, 3, 3, 3, "~"), (18, 10, 4, 3, "~"), (12, 7, 3, 2, "~")]),
+        spawn=(3, 2),
         entities=[
-            _enemy("fungus_a", "Mirror Fungus", 3, 3),
-            _enemy("fungus_b", "Mirror Fungus", 11, 5),
-            _enemy("fungus_c", "Mirror Fungus", 13, 10),
-            Entity("cavern_chest", "chest", "Spore Coffer", 16, 3, sprite="🧰",
+            _mob("fungus_a", "Mirror Fungus", 9, 8, hp=5, weakness=["mirror", "eye"],
+                 resistance=["jagged_line"], sprite_key="glowing_wisp", mood="reflective"),
+            _mob("fungus_b", "Mirror Fungus", 15, 5, hp=5, weakness=["mirror", "eye"],
+                 resistance=["jagged_line"], sprite_key="glowing_wisp", mood="reflective"),
+            _mob("fungus_c", "Mirror Fungus", 24, 11, hp=5, weakness=["mirror", "eye"],
+                 resistance=["jagged_line"], sprite_key="glowing_wisp", mood="reflective"),
+            _mob("drip_horror", "Drip Horror", 23, 3, hp=7, weakness=["jagged_line", "bone"],
+                 resistance=["flame"], sprite_key="water_elemental", mood="sloshing"),
+            _mob("cave_golem", "Mossy Golem", 6, 13, hp=8, weakness=["flame", "jagged_line"],
+                 resistance=["wave", "thread"], sprite_key="earth_elemental", mood="grinding"),
+            _npc("cave_hermit", "Cave Hermit", 4, 15, sprite_key="grizzled_treant",
+                 dialogue="The mirrors fear themselves. Reflect them (mirror) to win.",
+                 hint="a mossy hint about the fungus"),
+            Entity("cavern_chest", "chest", "Spore Coffer", 24, 14, sprite="🧰",
                    state="locked", tags=["fungal"], requires=["flame", "key"],
                    loot=["jar of teeth", "minor powerup"], hint="locked — flame or key"),
-            Entity("cavern_shrine", "shrine", "Dripping Shrine", 9, 8, sprite="⛩️",
+            Entity("cavern_shrine", "shrine", "Dripping Shrine", 13, 9, sprite="⛩️",
                    blocking=True, tags=["holy"], state="dormant",
                    hint="cast leaf to heal at the shrine"),
-            Entity("portal_home_c", "portal", "Cave Exit", 7, 10, sprite="🚪",
-                   blocking=False, target_area="overworld", target_x=3, target_y=10,
+            Entity("portal_home_c", "portal", "Cave Exit", 2, 16, sprite="🚪",
+                   blocking=False, target_area="overworld", target_x=2, target_y=10,
                    hint="step out → Toll Road"),
+            _deco("c_rock1", 10, 3, "rock"), _deco("c_rock2", 16, 13, "rock2"),
+            _deco("c_bush1", 5, 6, "bush", blocking=False),
+            _deco("c_bush2", 20, 7, "bush", blocking=False),
         ],
     )
 
     library = Area(
-        id="library",
-        name="The Wet Library",
-        biome="library",
-        mood="overdue and damp",
-        rows=[
-            "####################",
-            "#..P......#........#",
-            "#.........#...w....#",
-            "#..M......D........#",
-            "#.........#........#",
-            "#####.#####....i...#",
-            "#.................p#",
-            "#....w....#........#",
-            "#.........#...K....#",
-            "#.........#........#",
-            "#..O......#........#",
-            "#.........#........#",
-            "####################",
-        ],
-        spawn=(3, 1),
+        id="library", name="The Wet Library", biome="library", mood="overdue and damp",
+        rows=_field(28, 18, [(13, 0, 2, 8, "#"), (8, 7, 3, 2, "~")]),
+        spawn=(3, 2),
         entities=[
-            _enemy("pdf_a", "PDF Wraith", 14, 2),
-            _enemy("pdf_b", "PDF Wraith", 5, 7),
-            Entity("librarian", "npc", "Mold Librarian", 3, 3, sprite="🧙",
-                   blocking=True, tags=["friendly", "quest"],
-                   dialogue="The Ink-Locked Chest hides the Calendar Key. Reveal its weakness with eye+mirror.",
-                   hint="cast eye/mirror to learn the chest's secret"),
-            Entity("emotional_door", "locked_door", "Emotional Door", 10, 3, sprite="🚪",
+            _mob("pdf_a", "PDF Wraith", 17, 4, hp=6, weakness=["mirror", "bell"],
+                 resistance=["tooth"], sprite_key="vile_witch", mood="compressed"),
+            _mob("tax_wraith", "Tax Wraith", 22, 13, hp=7, weakness=["coin", "key"],
+                 resistance=["bone"], sprite_key="adept_necromancer", mood="audit-hungry"),
+            _mob("mold_knight", "Mold Knight", 6, 12, hp=7, weakness=["leaf", "flame"],
+                 resistance=["wave"], sprite_key="corrupted_treant", mood="damply chivalrous"),
+            _npc("librarian", "Mold Librarian", 3, 4, sprite_key="expert_druid",
+                 dialogue="The Ink-Locked Chest hides the Calendar Key. Reveal it with eye+mirror.",
+                 hint="cast eye/mirror to learn the chest's secret"),
+            _npc("lost_wisp", "Index Wisp", 24, 3, sprite_key="glowing_wisp",
+                 dialogue="The east gate is sealed. Only the Calendar Key opens it.",
+                 hint="a glowing hint about the gate"),
+            Entity("emotional_door", "locked_door", "Emotional Door", 14, 8, sprite="🚪",
                    state="locked", blocking=True, tags=["door", "feelings"],
                    requires=["wave", "key"], hint="locked — calm it with wave+key"),
-            Entity("ink_chest", "chest", "Ink-Locked Chest", 14, 8, sprite="🗃️",
+            Entity("ink_chest", "chest", "Ink-Locked Chest", 20, 9, sprite="🗃️",
                    state="locked", blocking=True, tags=["ink", "locked"],
                    requires=["key", "eye", "wave"], loot=["Calendar Key"],
                    hint="needs key + eye + wave"),
-            Entity("lib_powerup", "powerup", "Bottled Focus", 18, 6, sprite="✨",
+            Entity("lib_powerup", "powerup", "Bottled Focus", 24, 6, sprite="✨",
                    blocking=False, tags=["powerup"], loot=["Bottled Focus"],
                    state="idle", hint="walk over it to grab"),
-            Entity("portal_home_l", "portal", "Library Exit", 3, 10, sprite="🚪",
-                   blocking=False, target_area="overworld", target_x=15, target_y=10,
+            Entity("portal_home_l", "portal", "Library Exit", 2, 15, sprite="🚪",
+                   blocking=False, target_area="overworld", target_x=28, target_y=9,
                    hint="step out → Toll Road"),
-            Entity("portal_arena", "portal", "Calendar Gate", 17, 8, sprite="🌀",
+            Entity("portal_arena", "portal", "Calendar Gate", 25, 9, sprite="🌀",
                    blocking=True, state="locked", target_area="arena",
-                   target_x=10, target_y=11, requires=["Calendar Key"],
+                   target_x=11, target_y=13, requires=["Calendar Key"],
                    hint="sealed — needs the Calendar Key"),
+            _deco("l_tree1", 9, 12, "tree"), _deco("l_tree2", 18, 14, "tree"),
+            _deco("l_bush1", 6, 8, "bush", blocking=False),
+            _deco("l_bush2", 21, 5, "bush", blocking=False),
         ],
     )
 
     arena = Area(
-        id="arena",
-        name="Calendar Beast Arena",
-        biome="arena",
-        mood="overbooked",
-        rows=[
-            "####################",
-            "#..................#",
-            "#.......B..........#",
-            "#..................#",
-            "#..................#",
-            "#..................#",
-            "#..................#",
-            "#..................#",
-            "#..................#",
-            "#..................#",
-            "#.........P........#",
-            "#..................#",
-            "####################",
-        ],
-        spawn=(10, 10),
+        id="arena", name="Calendar Beast Arena", biome="arena", mood="overbooked",
+        rows=_field(24, 16),
+        spawn=(11, 13),
         entities=[
-            _boss("calendar_beast", "Calendar Beast", 7, 2, hp=18),
-            Entity("portal_home_a", "portal", "Arena Exit", 1, 11, sprite="🚪",
-                   blocking=False, target_area="library", target_x=17, target_y=8,
+            _mob("calendar_beast", "Calendar Beast", 11, 3, hp=24, boss=True,
+                 weakness=["spiral", "eye"], resistance=["flame"],
+                 sprite_key="adept_necromancer", mood="overbooked and furious"),
+            Entity("portal_home_a", "portal", "Arena Exit", 1, 14, sprite="🚪",
+                   blocking=False, target_area="library", target_x=25, target_y=9,
                    hint="flee → The Wet Library"),
+            _deco("a_rock1", 3, 3, "rock"), _deco("a_rock2", 20, 3, "rock2"),
+            _deco("a_rock3", 3, 12, "rock2"), _deco("a_rock4", 20, 12, "rock"),
         ],
     )
 
+    _scatter_deco(overworld, 26, 11)
+    _scatter_deco(caverns, 18, 22)
+    _scatter_deco(library, 16, 33)
+    _scatter_deco(arena, 10, 44)
     return {a.id: a for a in (overworld, caverns, library, arena)}
 
 
@@ -409,6 +442,8 @@ def resolve_world_cast(
             enemy_hp=target.get("hp", 5), enemy_max_hp=target.get("max_hp", 5),
             room_mood=target.get("mood", ""), inventory=tuple(inventory),
             courage=player.get("courage", 5),
+            weakness_override=tuple(target.get("weakness") or ()),
+            resistance_override=tuple(target.get("resistance") or ()),
         )
         spell = resolve_spell(state, runes, seed=seed)
         new_hp = max(0, target.get("hp", 5) + spell.enemy_hp_delta)
