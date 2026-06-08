@@ -100,6 +100,12 @@ def _deco(eid, x, y, sprite_key, blocking=False) -> Entity:
                   sprite_key=sprite_key, blocking=blocking, tags=["deco"])
 
 
+def _story(eid, name, x, y, *, sprite_key, requires, dialogue, hint) -> Entity:
+    return Entity(id=eid, type="story_object", name=name, x=x, y=y, sprite="✨",
+                  sprite_key=sprite_key, blocking=True, tags=["story"],
+                  requires=list(requires), dialogue=dialogue, hint=hint)
+
+
 # Ground clutter pool (small 64px deco + bushes/rocks) for filling the world.
 _DECO_POOL = ["bush", "rock", "rock2", "d01", "d02", "d03", "d04", "d05", "d06",
               "d07", "d08", "d09", "d10", "d11", "d12", "d13", "d14", "d15"]
@@ -162,6 +168,12 @@ def _build_areas() -> dict[str, Area]:
             _npc("road_druid", "Road Druid", 24, 17, sprite_key="expert_druid",
                  dialogue="Two doors west and east. The Library hides a Calendar Key.",
                  hint="cast leaf and I may share growth"),
+            _npc("watch_archer", "Blue Watch Archer", 10, 14, sprite_key="blue_archer",
+                 dialogue="Weaknesses matter. Face a creature, read its weak runes, then exploit them.",
+                 hint="cast eye to ask for combat advice"),
+            _story("toll_board", "Toll Notice Board", 13, 6, sprite_key="goblin_house",
+                   requires=["eye"], dialogue="The toll road ledger names three debts: fungus mirrors, wet books, and the Calendar Beast.",
+                   hint="cast eye to read the road story"),
             Entity("road_chest", "chest", "Roadside Chest", 27, 16, sprite="🧰",
                    state="locked", tags=["wood"], requires=["key"],
                    loot=["spare courage"], hint="locked — needs a key rune"),
@@ -180,6 +192,10 @@ def _build_areas() -> dict[str, Area]:
             _deco("o_tree1", 8, 11, "tree"), _deco("o_tree2", 20, 4, "tree"),
             _deco("o_tree3", 12, 16, "tree"), _deco("o_rock1", 18, 16, "rock"),
             _deco("o_rock2", 7, 3, "rock2"),
+            _deco("o_bridge1", 10, 8, "bridge_all"),
+            _deco("o_sheep1", 6, 16, "happy_sheep"),
+            _deco("o_house1", 4, 5, "goblin_house", blocking=True),
+            _deco("o_tower1", 26, 7, "goblin_tower_red", blocking=True),
             _deco("o_bush1", 6, 13, "bush", blocking=False),
             _deco("o_bush2", 22, 8, "bush", blocking=False),
             _deco("o_bush3", 11, 3, "bush", blocking=False),
@@ -205,6 +221,9 @@ def _build_areas() -> dict[str, Area]:
             _npc("cave_hermit", "Cave Hermit", 4, 15, sprite_key="grizzled_treant",
                  dialogue="The mirrors fear themselves. Reflect them (mirror) to win.",
                  hint="a mossy hint about the fungus"),
+            _story("cave_echo", "Echoing Mirror Stone", 12, 12, sprite_key="knight_tower_blue",
+                   requires=["mirror", "eye"], dialogue="The stone repeats your last spell and reveals hidden weakness patterns.",
+                   hint="cast mirror+eye to study the cave"),
             Entity("cavern_chest", "chest", "Spore Coffer", 24, 14, sprite="🧰",
                    state="locked", tags=["fungal"], requires=["flame", "key"],
                    loot=["jar of teeth", "minor powerup"], hint="locked — flame or key"),
@@ -237,6 +256,12 @@ def _build_areas() -> dict[str, Area]:
             _npc("lost_wisp", "Index Wisp", 24, 3, sprite_key="glowing_wisp",
                  dialogue="The east gate is sealed. Only the Calendar Key opens it.",
                  hint="a glowing hint about the gate"),
+            _npc("red_guard", "Red Guard", 11, 5, sprite_key="red_warrior",
+                 dialogue="The boss resists flame. Spiral and eye fold time around it.",
+                 hint="cast spiral or eye for boss advice"),
+            _story("wet_catalog", "Wet Card Catalog", 18, 7, sprite_key="goblin_house",
+                   requires=["eye", "mirror"], dialogue="A smeared card points to the Ink-Locked Chest: key + eye + wave.",
+                   hint="cast eye+mirror to decode the catalog"),
             Entity("emotional_door", "locked_door", "Emotional Door", 14, 8, sprite="🚪",
                    state="locked", blocking=True, tags=["door", "feelings"],
                    requires=["wave", "key"], hint="locked — calm it with wave+key"),
@@ -367,6 +392,8 @@ def build_world() -> dict:
         "player": {
             "hp": 12, "max_hp": 12, "courage": 5, "max_courage": 9,
             "inventory": ["wet candle"], "score": 0, "statuses": [],
+            "quest_log": ["Find the Calendar Key in the Wet Library."],
+            "discoveries": [], "trust": {},
         },
         "runes": [{"key": k, "symbol": g.symbol, "label": g.label,
                    "meanings": list(g.meanings)} for k, g in GLYPHS.items()],
@@ -525,6 +552,7 @@ def resolve_world_cast(
     # --- npc ---------------------------------------------------------------
     if ttype == "npc":
         gift = next((_NPC_GIFTS[r] for r in runes if r in _NPC_GIFTS), None)
+        insight = any(r in {"eye", "spiral", "mirror"} for r in runes)
         if gift:
             _, msg, kind, amt = gift
             if kind == "courage":
@@ -532,10 +560,20 @@ def resolve_world_cast(
             else:
                 actions.append({"type": "heal_player", "amount": amt})
             actions.append({"type": "change_npc_trust", "target_id": tid, "delta": 1})
+            actions.append({"type": "add_discovery", "text": f"{target.get('name')} trusts you."})
             spell = SpellResult(
                 spell_name="Kindly Hex", spell_type="npc",
                 flavor=_flavor_world(runes, target, combo), effect=msg,
                 player_hp_delta=amt if kind == "hp" else 0,
+                status_effects=["npc_charmed"], chaos=2,
+            )
+        elif insight:
+            actions.append({"type": "change_npc_trust", "target_id": tid, "delta": 1})
+            actions.append({"type": "add_discovery", "text": target.get("dialogue") or "A clue settles in your journal."})
+            spell = SpellResult(
+                spell_name="Listening Sigil", spell_type="npc",
+                flavor=_flavor_world(runes, target, combo),
+                effect=target.get("dialogue") or "They share a useful clue.",
                 status_effects=["npc_charmed"], chaos=2,
             )
         else:
@@ -547,6 +585,26 @@ def resolve_world_cast(
                 spell_name="Awkward Overture" if fear else "Friendly Spark",
                 spell_type="npc", flavor=_flavor_world(runes, target, combo),
                 effect=effect, status_effects=["npc_scared"] if fear else [], chaos=1,
+            )
+        return {"spell": spell.model_dump(), "world_actions": actions, "target_id": tid, "runes": runes}
+
+    # --- story object ------------------------------------------------------
+    if ttype == "story_object":
+        requires = target.get("requires", [])
+        if _matches_requirement(runes, requires, inventory):
+            text = target.get("dialogue") or "The world gives up a small secret."
+            actions.append({"type": "set_entity_state", "target_id": tid, "state": "read"})
+            actions.append({"type": "add_discovery", "text": text})
+            spell = SpellResult(
+                spell_name="World-Reading Glyph", spell_type="lore",
+                flavor=_flavor_world(runes, target, combo), effect=text,
+                status_effects=["weakness_revealed"], chaos=3,
+            )
+        else:
+            spell = SpellResult(
+                spell_name="Unreadable Scratch", spell_type="lore",
+                flavor=_flavor_world(runes, target, combo),
+                effect=f"It needs: {' + '.join(requires)}.", chaos=1,
             )
         return {"spell": spell.model_dump(), "world_actions": actions, "target_id": tid, "runes": runes}
 

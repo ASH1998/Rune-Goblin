@@ -42,7 +42,7 @@ PLAY_PAGE = """<!doctype html>
   <title>Rune Goblin RPG</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/rg/static/rpg.css?v=12">
+  <link rel="stylesheet" href="/rg/static/rpg.css?v=15">
 </head>
 <body>
   <div id="rg-root">
@@ -84,7 +84,7 @@ PLAY_PAGE = """<!doctype html>
       <div class="rg-hint">WASD / Arrows move · 1–9 pick runes · Space cast · E draw · C clear · step into portals to travel</div>
     </div>
   </div>
-  <script src="/rg/static/rpg.js?v=12"></script>
+  <script src="/rg/static/rpg.js?v=15"></script>
 </body>
 </html>
 """

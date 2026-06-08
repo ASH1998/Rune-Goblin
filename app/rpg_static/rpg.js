@@ -16,10 +16,12 @@
   let busy = false, over = false, drawing = false, paused = false;
   let toastMsg = "";
   let vfx = [];                 // active visual effects
+  let turnNo = 0;
+  let enemyCooldown = {};
 
   let canvas, ctx, sketch, sctx;
-  let TILE = 40, OX = 0, OY = 40, COLS = 20, ROWS = 13;
-  const HUD_TOP = 42;
+  let TILE = 40, OX = 0, OY = 64, COLS = 20, ROWS = 13;
+  const HUD_TOP = 64;
 
   const DIRV = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
   const WALK = new Set([".", ","]);
@@ -57,6 +59,13 @@
     goblin_yellow: { src: "goblin_yellow.png", fw: 192, fh: 192, frames: 7, anim: true, scale: 1.35 },
     chest_gold: { src: "chest_gold.png", fw: 128, fh: 128, frames: 1, scale: 1.0 },
     shrine_tower: { src: "shrine_tower.png", fw: 128, fh: 256, frames: 1, scale: 1.4 },
+    goblin_house: { src: "goblin_house.png", fw: 128, fh: 192, frames: 1, scale: 1.45 },
+    knight_tower_blue: { src: "knight_tower_blue.png", fw: 128, fh: 256, frames: 1, scale: 1.55 },
+    goblin_tower_red: { src: "goblin_tower_red.png", fw: 128, fh: 192, frames: 8, anim: true, scale: 1.45 },
+    bridge_all: { src: "bridge_all.png", fw: 192, fh: 256, frames: 1, scale: 1.15 },
+    happy_sheep: { src: "happy_sheep.png", fw: 128, fh: 128, frames: 8, anim: true, scale: 0.9 },
+    blue_archer: { src: "blue_archer.png", fw: 192, fh: 192, frames: 6, anim: true, scale: 1.25 },
+    red_warrior: { src: "red_warrior.png", fw: 192, fh: 192, frames: 8, anim: true, scale: 1.35 },
   };
   const STATIC = "/rg/static/";
   const VFXM = {};            // name -> {img, fw, fh, frames}
@@ -142,6 +151,7 @@
     if (e.type === "boss") return "goblin_purple";
     if (e.type === "enemy") return GOBLIN_BY_NAME[e.name] || "goblin_red";
     if (e.type === "npc") return e.id === "librarian" ? "npc_monk" : "npc_pawn";
+    if (e.type === "story_object") return e.sprite_key || "shrine_tower";
     if (e.type === "chest" || e.type === "powerup") return "chest_gold";
     if (e.type === "shrine" || e.type === "locked_door") return "shrine_tower";
     return null; // portals are drawn as a glow
@@ -242,6 +252,23 @@
     return ["#b07cff", "✨"];
   }
 
+  function ensurePlayerMeta() {
+    P.inventory = P.inventory || [];
+    P.statuses = P.statuses || [];
+    P.quest_log = P.quest_log || [];
+    P.discoveries = P.discoveries || [];
+    P.trust = P.trust || {};
+  }
+  function addUnique(arr, text) { if (text && !arr.includes(text)) arr.push(text); }
+  function questText() {
+    const inv = new Set(P.inventory || []);
+    if (!inv.has("Calendar Key")) return "Find the Calendar Key in the Wet Library";
+    const gate = (areas.library || { entities: [] }).entities.find((e) => e.id === "portal_arena");
+    if (gate && gate.state === "locked") return "Open the Calendar Gate";
+    const boss = (areas.arena || { entities: [] }).entities.find((e) => e.id === "calendar_beast");
+    return boss && boss.state !== "defeated" ? "Defeat the Calendar Beast" : "The Calendar is broken";
+  }
+
   // ---- layout ----
   let shakeAmt = 0;
   function layout() {
@@ -277,6 +304,38 @@
     return e && e.blocking && e.type !== "deco" ? e : null;
   }
 
+  function distToPlayer(e) { return Math.abs(e.x - P.x) + Math.abs(e.y - P.y); }
+  function canEnemyStep(e, x, y) {
+    if (x < 0 || y < 0 || y >= A.rows.length || x >= A.rows[0].length) return false;
+    if (!WALK.has(A.rows[y][x]) || (x === P.x && y === P.y)) return false;
+    return !liveEntities().some((o) => o !== e && o.blocking && o.x === x && o.y === y);
+  }
+  function enemyAttack(e, verb) {
+    if (now() - (enemyCooldown[e.id] || 0) < 850) return;
+    enemyCooldown[e.id] = now();
+    const dmg = e.type === "boss" ? 3 : 1;
+    P.hp = clamp(P.hp - dmg, 0, P.max_hp);
+    spawnHit();
+    toast("<b>" + e.name + "</b> " + verb + " for " + dmg + ". Cast a weak rune.");
+    if (P.hp <= 0 && !over) lose();
+  }
+  function enemyTurn() {
+    if (!A || over || busy) return;
+    turnNo += 1;
+    for (const e of liveEntities()) {
+      if (!(e.type === "enemy" || e.type === "boss") || e.hp <= 0) continue;
+      const d0 = distToPlayer(e);
+      if (d0 <= 1) { enemyAttack(e, "presses in"); continue; }
+      if (e.type === "boss" || d0 > 6 || (d0 > 3 && (turnNo + e.id.length) % 3 !== 0)) continue;
+      const step = ["up", "down", "left", "right"].map((dir) => {
+        const v = DIRV[dir], nx = e.x + v[0], ny = e.y + v[1];
+        return { nx, ny, d: Math.abs(nx - P.x) + Math.abs(ny - P.y) };
+      }).sort((a, b) => a.d - b.d).find((p) => canEnemyStep(e, p.nx, p.ny));
+      if (step) { e.x = step.nx; e.y = step.ny; }
+      if (distToPlayer(e) <= 1) enemyAttack(e, "lunges");
+    }
+  }
+
   // ---- movement ----
   function tryMove(dir) {
     if (busy || over || drawing) return;
@@ -296,6 +355,7 @@
       if (e.type === "portal" && e.state !== "locked") travel(e);
       else if (e.type === "powerup") collect(e);
     }
+    enemyTurn();
     updateTarget();
   }
 
@@ -304,6 +364,7 @@
     A = areas[P.area];
     layout();
     P.x = portal.target_x; P.y = portal.target_y;
+    enemyCooldown = {};
     toast("You enter <b>" + A.name + "</b>. " + moodLine());
   }
 
@@ -311,6 +372,7 @@
     e.state = "collected";
     (e.loot || []).forEach((it) => P.inventory.push(it));
     P.score += 25;
+    addUnique(P.discoveries, "Found " + (e.loot.join(", ") || e.name) + ".");
     toast("Picked up <b>" + (e.loot.join(", ") || e.name) + "</b>.");
   }
 
@@ -324,6 +386,7 @@
       let extra = "";
       if (t.type === "enemy" || t.type === "boss") extra = " · " + t.hp + "/" + t.max_hp + " HP · weak " + (t.weakness || []).join("/");
       else if (t.requires && t.requires.length && t.state === "locked") extra = " · needs " + t.requires.join("+");
+      else if (t.requires && t.requires.length) extra = " · reads with " + t.requires.join("+");
       el.innerHTML = "🎯 " + t.name + extra;
     } else {
       el.innerHTML = "🎯 (nothing — cast into the air)";
@@ -339,7 +402,8 @@
     if (!t) return null;
     return { id: t.id, type: t.type, name: t.name, hp: t.hp, max_hp: t.max_hp,
              weakness: t.weakness, resistance: t.resistance, state: t.state,
-             requires: t.requires, tags: t.tags, mood: t.mood, loot: t.loot };
+             requires: t.requires, tags: t.tags, mood: t.mood, loot: t.loot,
+             dialogue: t.dialogue };
   }
 
   async function castRunes() {
@@ -398,7 +462,14 @@
         case "remove_inventory": { const i = P.inventory.indexOf(a.item); if (i >= 0) P.inventory.splice(i, 1); } break;
         case "heal_player": P.hp = clamp(P.hp + a.amount, 0, P.max_hp); break;
         case "add_courage": P.courage = clamp(P.courage + a.amount, 0, P.max_courage); break;
-        case "change_npc_trust": break;
+        case "change_npc_trust":
+          if (a.target_id) {
+            P.trust[a.target_id] = clamp((P.trust[a.target_id] || 0) + (a.delta || 0), -3, 5);
+            if (e) e.state = P.trust[a.target_id] > 0 ? "friendly" : (P.trust[a.target_id] < 0 ? "wary" : e.state);
+          }
+          break;
+        case "add_discovery": addUnique(P.discoveries, a.text); break;
+        case "add_quest": addUnique(P.quest_log, a.text); break;
         case "win_game": win(); break;
         default: break;
       }
@@ -411,6 +482,12 @@
       let line = "<b>" + (s.spell_name || "Spell") + "</b> — " + (s.effect || "");
       if (s.side_effect) line += " <span style='color:#ffce6b'>⚠ " + s.side_effect + "</span>";
       if (extra) line += extra;
+      if (target) {
+        const weak = runes.some((r) => (target.weakness || []).includes(r));
+        const resist = runes.some((r) => (target.resistance || []).includes(r));
+        if (weak) line += " <span style='color:#6df5a0'>weakness hit</span>";
+        if (resist) line += " <span style='color:#ffce6b'>resisted</span>";
+      }
       toast(line);
     }
 
@@ -501,9 +578,36 @@
   function spawnHit() { vfx.push({ kind: "hit", start: now(), dur: 360 }); shakeAmt = Math.max(shakeAmt, 0.35); }
 
   // ---- rendering ----
+  function waterColor() {
+    if (A.biome === "cavern") return ["#255968", "#326f7e", "#78c7d8"];
+    if (A.biome === "library") return ["#273d63", "#36527d", "#8db3dd"];
+    if (A.biome === "arena") return ["#4e275f", "#653579", "#d49cff"];
+    return ["#3f8791", "#60aeb6", "#b4ecec"];
+  }
+  function drawWater(px, py, x, y) {
+    const [deep, mid, glint] = waterColor();
+    ctx.fillStyle = deep; ctx.fillRect(px, py, TILE, TILE);
+    ctx.fillStyle = mid; ctx.fillRect(px, py, TILE, TILE);
+    ctx.fillStyle = "rgba(255,255,255,0.16)";
+    const wy = py + TILE * (0.34 + 0.18 * ((x + y) % 3));
+    ctx.fillRect(px + TILE * 0.18, wy, TILE * 0.42, 2);
+    ctx.fillStyle = glint; ctx.fillRect(px + TILE * 0.62, py + TILE * 0.68, TILE * 0.18, 2);
+    ctx.strokeStyle = "rgba(10,22,30,0.5)";
+    ctx.lineWidth = 2;
+    const waterAt = (xx, yy) => yy >= 0 && yy < A.rows.length && xx >= 0 && xx < A.rows[0].length && A.rows[yy][xx] === "~";
+    if (!waterAt(x, y - 1)) { ctx.beginPath(); ctx.moveTo(px, py + 1); ctx.lineTo(px + TILE, py + 1); ctx.stroke(); }
+    if (!waterAt(x, y + 1)) { ctx.beginPath(); ctx.moveTo(px, py + TILE - 1); ctx.lineTo(px + TILE, py + TILE - 1); ctx.stroke(); }
+    if (!waterAt(x - 1, y)) { ctx.beginPath(); ctx.moveTo(px + 1, py); ctx.lineTo(px + 1, py + TILE); ctx.stroke(); }
+    if (!waterAt(x + 1, y)) { ctx.beginPath(); ctx.moveTo(px + TILE - 1, py); ctx.lineTo(px + TILE - 1, py + TILE); ctx.stroke(); }
+  }
+  function drawSolidTile(ch, px, py, x, y, b) {
+    const col = ch === "#" ? b.wall : (ch === " " ? "#070510" : (((x + y) % 2 === 0) ? b.floor : b.alt));
+    ctx.fillStyle = col; ctx.fillRect(px, py, TILE, TILE);
+    if (ch === "#") { ctx.fillStyle = b.edge; ctx.fillRect(px, py + TILE - 5, TILE, 5); }
+  }
   function drawTiles() {
     const b = BIOME[A.biome] || DEFAULT_BIOME;
-    const haveTiles = spr("grass") && spr("water");
+    const haveGrass = !!spr("grass");
     const x0 = clamp(Math.floor((0 - OX) / TILE), 0, COLS - 1);
     const x1 = clamp(Math.ceil((canvas.width - OX) / TILE), 0, COLS - 1);
     const y0 = clamp(Math.floor((HUD_TOP - OY) / TILE), 0, ROWS - 1);
@@ -513,17 +617,22 @@
         const ch = A.rows[y][x];
         const walk = WALK.has(ch);
         const px = sx(x), py = sy(y);
-        if (haveTiles) {
-          drawTileSprite(walk ? "grass" : "water", px, py);
-          if (ch === "~") { ctx.fillStyle = "rgba(120,40,60,0.25)"; ctx.fillRect(px, py, TILE, TILE); }
+        if (ch === "~") {
+          drawWater(px, py, x, y);
+        } else if (haveGrass && walk) {
+          drawTileSprite("grass", px, py);
+          if (A.biome !== "toll_road") {
+            ctx.fillStyle = A.biome === "cavern" ? "rgba(18,76,96,0.38)" :
+              A.biome === "library" ? "rgba(36,52,84,0.42)" :
+              A.biome === "arena" ? "rgba(90,28,92,0.42)" : "rgba(20,20,30,0.25)";
+            ctx.fillRect(px, py, TILE, TILE);
+          }
+          if (walk && ((x * 7 + y * 11 + (now() / 900 | 0)) % 17 === 0)) {
+            ctx.fillStyle = "rgba(255,255,255,0.08)";
+            ctx.fillRect(px + TILE * 0.18, py + TILE * 0.72, TILE * 0.26, 2);
+          }
         } else {
-          let col;
-          if (ch === "#") col = b.wall;
-          else if (ch === "~") col = HAZARD;
-          else if (ch === " ") col = "#070510";
-          else col = ((x + y) % 2 === 0) ? b.floor : b.alt;
-          ctx.fillStyle = col; ctx.fillRect(px, py, TILE, TILE);
-          if (ch === "#") { ctx.fillStyle = b.edge; ctx.fillRect(px, py + TILE - 4, TILE, 4); }
+          drawSolidTile(ch, px, py, x, y, b);
         }
       }
     }
@@ -557,6 +666,11 @@
     if (e.type === "portal") {
       drawPortal(cx, cy, e);
     } else {
+      ctx.save();
+      ctx.globalAlpha = 0.26;
+      ctx.fillStyle = "#050309";
+      ctx.beginPath(); ctx.ellipse(cx, baseY - TILE * 0.1, TILE * 0.28, TILE * 0.08, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
       const name = entitySprite(e);
       const fi = (now() / 140) | 0;
       let drew = false;
@@ -582,6 +696,17 @@
       ctx.fillStyle = "#3a1020"; ctx.fillRect(bx, by, w, h);
       ctx.fillStyle = e.type === "boss" ? "#ffd24a" : "#ff5d73";
       ctx.fillRect(bx, by, w * clamp(e.hp / e.max_hp, 0, 1), h);
+      if (distToPlayer(e) <= 4) {
+        ctx.fillStyle = "#ffd24a";
+        ctx.font = "bold " + Math.floor(TILE * 0.24) + 'px "Press Start 2P", monospace';
+        ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        ctx.fillText("!", cx, sy(e.y) - 13);
+      }
+    }
+    if (e.type === "npc" && P.trust && P.trust[e.id]) {
+      ctx.font = Math.floor(TILE * 0.28) + "px serif";
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText(P.trust[e.id] > 0 ? "♥" : "?", cx + TILE * 0.32, sy(e.y) + TILE * 0.12);
     }
   }
 
@@ -683,6 +808,13 @@
     ctx.fillStyle = "#9c8bc4"; ctx.fillText("BAG " + P.inventory.length, hx, cy);
     ctx.textAlign = "right"; ctx.fillStyle = "#b07cff";
     ctx.fillText(A.name.toUpperCase(), canvas.width - 14, cy);
+    ctx.textAlign = "left"; ctx.fillStyle = "#e7d9ff";
+    ctx.font = '10px "Press Start 2P", monospace';
+    ctx.fillText("OBJ " + questText().toUpperCase(), 12, HUD_TOP - 14);
+    if (P.discoveries && P.discoveries.length) {
+      ctx.textAlign = "right"; ctx.fillStyle = "#9c8bc4";
+      ctx.fillText(P.discoveries[P.discoveries.length - 1].slice(0, 58).toUpperCase(), canvas.width - 14, HUD_TOP - 14);
+    }
   }
 
   function render() {
@@ -787,10 +919,11 @@
     runesMeta = W.runes;
     areas = JSON.parse(JSON.stringify(W.areas));
     P = JSON.parse(JSON.stringify(W.player));
+    ensurePlayerMeta();
     P.area = W.start_area;
     A = areas[P.area];
     const sp = A.spawn; P.x = sp[0]; P.y = sp[1];
-    facing = "down"; selected = []; vfx = []; over = false; busy = false;
+    facing = "down"; selected = []; vfx = []; over = false; busy = false; turnNo = 0; enemyCooldown = {};
     $("rg-end").className = "rg-end";
     layout(); buildPalette(); renderPalette(); updateTarget();
     toast("You wake on the <b>Goblin Toll Road</b>. " + moodLine() + " — roam and cast.");
@@ -838,7 +971,8 @@
     // lightweight debug/test hook
     window.__rg = {
       state: () => ({ area: P.area, x: P.x, y: P.y, facing, hp: P.hp, courage: P.courage,
-        score: P.score, inv: P.inventory.slice(), over,
+        score: P.score, inv: P.inventory.slice(), discoveries: P.discoveries.slice(),
+        trust: Object.assign({}, P.trust), over,
         target: (facedTarget() || {}).id || null,
         cam: { OX, OY, TILE, cw: canvas.width, ch: canvas.height, cols: COLS, rows: ROWS,
                pscreenX: OX + P.x * TILE + TILE / 2, pscreenY: OY + P.y * TILE + TILE / 2 },
