@@ -7,6 +7,10 @@
 
   // ---- state ----
   let W = null;                 // world payload from /rg/world
+  let worldSeed = null;         // optional replay seed from /play?seed=...
+  let bootFlags = [];           // optional smoke flags from /play?flags=a,b
+  let bootArea = "";            // optional smoke area from /play?area=...
+  let bootMasteryChoice = false; // optional smoke hook from /play?mastery=1
   let areas = {};               // mutable per-area state (entities/rows)
   let runesMeta = [];           // [{key,symbol,label,meanings}]
   let P = null;                 // player {area,x,y,hp,max_hp,courage,...}
@@ -19,6 +23,7 @@
   let turnNo = 0;
   let recentRunes = [];
   let enemyCooldown = {};
+  let masteryChoiceOpen = false;
   let selecting = false;        // title-screen character select active
   let chosenClass = null;       // selected goblin class id
   let journalOpen = false;
@@ -281,6 +286,16 @@
     } : undefined;
     return fetch(path, opt).then((r) => r.json());
   }
+  function worldUrl() {
+    const params = new URLSearchParams(window.location.search || "");
+    const raw = params.get("seed");
+    worldSeed = raw && /^-?\d+$/.test(raw) ? parseInt(raw, 10) : null;
+    bootFlags = (params.get("flags") || "").split(",")
+      .map((x) => x.trim()).filter(Boolean);
+    bootArea = (params.get("area") || "").trim();
+    bootMasteryChoice = params.get("mastery") === "1";
+    return "/rg/world" + (worldSeed === null ? "" : ("?seed=" + encodeURIComponent(String(worldSeed))));
+  }
 
   function toast(msg) { toastMsg = msg; const t = $("rg-toast"); if (t) t.innerHTML = msg; }
 
@@ -367,6 +382,9 @@
       const debtUnpaid = (hasFlag("debt_accepted") || hasFlag("debt_deepened")) && !hasFlag("debt_repaid");
       set("debt_collector", debtUnpaid, "debt_collector_spawned");
       set("gate_tourist", hasFlag("tourist_helped"), "boss_ally_tourist");
+      set("gate_librarian", hasFlag("librarian_trust"), "boss_ally_librarian");
+      set("gate_water_spirit", hasFlag("clean_water_restored") || hasFlag("water_spirit_helped"), "boss_ally_water");
+      set("gate_queue_goblin", hasFlag("queue_goblin_paid"), null);
     } else if (areaId === "bone_market") {
       const mastery = P.rune_mastery || {};
       const coinBellMastery = (mastery.coin || 0) >= 5 || (mastery.bell || 0) >= 5;
@@ -667,10 +685,43 @@
   }
 
   function grantMasteryChoice() {
-    const counts = Object.entries(P.rune_mastery || {}).sort((a, b) => b[1] - a[1]);
-    const picked = (counts[0] && counts[0][0]) || selected[0] || "closed_circle";
-    P.rune_mastery[picked] = Math.max(5, P.rune_mastery[picked] || 0);
-    addUnique(P.journal, "Level 4 mastery: " + picked.replace(/_/g, " ") + " is now steady enough to hit harder.");
+    const cls = CLASSES.find((c) => c.id === P.goblin_class) || {};
+    const counts = Object.entries(P.rune_mastery || {}).sort((a, b) => b[1] - a[1]).map((x) => x[0]);
+    const pool = counts.concat(selected || [], cls.affinity || [], ["closed_circle", "eye", "wave", "key", "spiral"]);
+    const choices = [];
+    pool.forEach((r) => { if (r && !choices.includes(r)) choices.push(r); });
+    openMasteryChoice(choices.slice(0, 3));
+  }
+
+  function runeLabel(key) {
+    const r = (runesMeta || []).find((x) => x.key === key);
+    return (r && r.label) || key.replace(/_/g, " ");
+  }
+
+  function chooseMasteryRune(key) {
+    if (!key) return;
+    masteryChoiceOpen = false;
+    P.rune_mastery[key] = Math.max(5, P.rune_mastery[key] || 0);
+    const line = "Level 4 mastery: " + runeLabel(key) + " is now steady enough to hit harder.";
+    addUnique(P.journal, line);
+    addUnique(P.discoveries, line);
+    closeDialogue();
+    showBanner("✦ RUNE MASTERY<br><span style='font-size:11px'>" + runeLabel(key) + "</span>");
+    toast("✦ You chose <b>" + runeLabel(key) + "</b> mastery.");
+  }
+
+  function openMasteryChoice(choices) {
+    choices = (choices && choices.length ? choices : ["closed_circle", "eye", "wave"]).slice(0, 3);
+    masteryChoiceOpen = true;
+    showDialogue({ id: "mastery_choice", name: "Rune Mastery" },
+      "<div class='rg-mastery-title'>Choose one rune to steady permanently.</div>" +
+      "<div class='rg-mastery-choices'>" + choices.map((r) =>
+        "<button class='rg-mastery-choice' data-rune='" + r + "'>" +
+        "<img src='" + ICON(r) + "' alt=''> <span>" + runeLabel(r) + "</span></button>").join("") +
+      "</div>", false);
+    document.querySelectorAll(".rg-mastery-choice").forEach((b) => {
+      b.onclick = (ev) => { ev.stopPropagation(); chooseMasteryRune(b.dataset.rune); canvas.focus(); };
+    });
   }
 
   function retaliate(enemy, statuses) {
@@ -690,10 +741,11 @@
 
   // ---- NPC dialogue (model-driven via /rg/dialogue, + deterministic fallback) ----
   function dialoguePortrait(npc) {
-    const map = { tourist: "🧳", gate_tourist: "🧳", librarian: "📚", lost_wisp: "✨",
-      sewer_wisp: "✨", water_spirit: "💧", market_merchant: "💀", cave_hermit: "🍄",
+    const map = { tourist: "🧳", gate_tourist: "🧳", librarian: "📚", gate_librarian: "📚", lost_wisp: "✨",
+      sewer_wisp: "✨", water_spirit: "💧", gate_water_spirit: "💧", market_merchant: "💀", cave_hermit: "🍄",
       watch_archer: "🏹", gate_archer: "🏹", road_druid: "🌿", toll_pixie: "🧚",
-      red_guard: "🛡️", debt_collector: "📜", toll_goblin: "👺" };
+      red_guard: "🛡️", debt_collector: "📜", toll_goblin: "👺", gate_queue_goblin: "👺",
+      mastery_choice: "✦" };
     return map[npc.id] || "🗣️";
   }
   function showDialogue(npc, text, thinking) {
@@ -704,7 +756,10 @@
     $("rg-dialogue-name").textContent = npc.name;
     $("rg-dialogue-text").innerHTML = text;
   }
-  function closeDialogue() { dialogueOpen = false; $("rg-dialogue").className = "rg-dialogue"; }
+  function closeDialogue() {
+    if (masteryChoiceOpen) return;
+    dialogueOpen = false; $("rg-dialogue").className = "rg-dialogue";
+  }
 
   function applyDialoguePayload(npc, d) {
     if (!d) return;
@@ -1250,13 +1305,14 @@
 
   // ---- boot ----
   async function newGame() {
-    if (!W) W = await api("/rg/world");
+    if (!W) W = await api(worldUrl());
     runesMeta = W.runes;
     CLASSES = W.classes || [];
     WEAPONS = {}; (W.weapons || []).forEach((w) => { WEAPONS[w.id] = w; });
     areas = JSON.parse(JSON.stringify(W.areas));
     P = JSON.parse(JSON.stringify(W.player));
     ensurePlayerMeta();
+    bootFlags.forEach(addFlag);
     over = false; lastEnding = null;
     $("rg-end").className = "rg-end";
     closeDialogue(); $("rg-journal").className = "rg-journal"; journalOpen = false;
@@ -1270,14 +1326,17 @@
       P.courage = c.courage; P.max_courage = Math.max(9, c.courage + 2);
     }
     selecting = false; $("rg-select").className = "rg-select";
-    P.area = W.start_area;
+    P.area = (bootArea && areas[bootArea]) ? bootArea : W.start_area;
     A = areas[P.area];
     applyConditionalSpawns(P.area);
     const sp = A.spawn; P.x = sp[0]; P.y = sp[1];
     facing = "down"; selected = []; vfx = []; busy = false; turnNo = 0; enemyCooldown = {};
     layout(); buildPalette(); renderPalette(); updateTarget(); regionCue();
     const label = c ? c.label : "goblin";
-    toast("You are the <b>" + label + "</b>. You broke the calendar. " + moodLine() + " — roam, talk (T), and cast.");
+    const seedLine = W.world_seed === null || W.world_seed === undefined ? "" :
+      " Loop seed <b>" + W.world_seed + "</b>: " + ((W.variation || {}).label || "seeded loop") + ".";
+    toast("You are the <b>" + label + "</b>. You broke the calendar. " + moodLine() + "." + seedLine + " — roam, talk (T), and cast.");
+    if (bootMasteryChoice) setTimeout(() => grantMasteryChoice(), 250);
   }
 
   // ---- weapons ----
@@ -1372,16 +1431,124 @@
     canvas.addEventListener("click", () => { gesture(); canvas.focus(); });
     canvas.setAttribute("tabindex", "0");
     canvas.focus();
+    function debugEntity(id, areaId) {
+      const ar = areas[areaId || (P && P.area)] || A;
+      return ar ? ar.entities.find((e) => e.id === id) || null : null;
+    }
+    function debugArea(id, x, y) {
+      if (!P || !areas[id]) return false;
+      P.area = id;
+      A = areas[id];
+      applyConditionalSpawns(P.area);
+      layout();
+      P.x = Number.isFinite(x) ? x : A.spawn[0];
+      P.y = Number.isFinite(y) ? y : A.spawn[1];
+      updateTarget();
+      return true;
+    }
+    function debugInventory(items) {
+      (items || []).forEach(addInventory);
+      updateTarget();
+      return P.inventory.slice();
+    }
+    function debugFlags(flags) {
+      (flags || []).forEach(addFlag);
+      if (P && P.area) applyConditionalSpawns(P.area);
+      updateTarget();
+      return (P.story_flags || []).slice();
+    }
+    function debugOpen(id, areaId) {
+      const e = debugEntity(id, areaId);
+      if (!e) return false;
+      e.state = "open";
+      e.blocking = false;
+      updateTarget();
+      return true;
+    }
+    function debugFace(id) {
+      const e = debugEntity(id);
+      if (!e || !A) return false;
+      const spots = [
+        { x: e.x - 1, y: e.y, dir: "right" },
+        { x: e.x + 1, y: e.y, dir: "left" },
+        { x: e.x, y: e.y - 1, dir: "down" },
+        { x: e.x, y: e.y + 1, dir: "up" },
+      ];
+      const spot = spots.find((p) => p.x >= 0 && p.y >= 0 && p.y < A.rows.length &&
+        p.x < A.rows[0].length && WALK.has(A.rows[p.y][p.x]) &&
+        !liveEntities().some((o) => o !== e && o.blocking && o.x === p.x && o.y === p.y));
+      if (!spot) return false;
+      P.x = spot.x; P.y = spot.y; facing = spot.dir;
+      updateTarget();
+      return true;
+    }
+    function debugSmoke() {
+      const out = { current_area: P ? P.area : null, selecting, areas: {}, missing_sprites: [] };
+      const startArea = W ? W.start_area : null;
+      for (const [aid, ar] of Object.entries(areas || {})) {
+        const ents = ar.entities || [];
+        const portals = ents.filter((e) => e.type === "portal").map((e) => ({
+          id: e.id, state: e.state, blocking: !!e.blocking, target_area: e.target_area,
+          target_x: e.target_x, target_y: e.target_y, requires: (e.requires || []).slice(),
+        }));
+        out.areas[aid] = {
+          size: [ar.width, ar.height],
+          portals,
+          locked: ents.filter((e) => e.state === "locked" || (e.requires || []).length)
+            .map((e) => ({ id: e.id, type: e.type, state: e.state, requires: (e.requires || []).slice(), hint: e.hint || "" })),
+          markers: ents.filter((e) => e.type === "map_marker")
+            .map((e) => ({ id: e.id, name: e.name, x: e.x, y: e.y, hint: e.hint || "" })),
+          npcs: ents.filter((e) => e.type === "npc")
+            .map((e) => ({ id: e.id, name: e.name, state: e.state, blocking: !!e.blocking })),
+          has_story: ents.some((e) => e.type === "story_object"),
+          has_npc: ents.some((e) => e.type === "npc"),
+          has_shrine: ents.some((e) => e.type === "shrine"),
+          has_return: aid === startArea || portals.some((e) => e.target_area && e.target_area !== aid),
+        };
+      }
+      ["hero_warrior", "hero_rogue", "hero_poison", "hero_hunter", "hero_barbarian",
+        "hero_king", "water_rocks", "castle_blue", "black_castle", "goblin_house_destroyed"]
+        .forEach((k) => { if (!spr(k)) out.missing_sprites.push(k); });
+      return out;
+    }
+    function publishDebugState() {
+      let el = $("rg-debug-state");
+      if (!el) {
+        el = document.createElement("script");
+        el.id = "rg-debug-state";
+        el.type = "application/json";
+        document.body.appendChild(el);
+      }
+      const state = P && A ? {
+        area: P.area, x: P.x, y: P.y, facing, hp: P.hp, courage: P.courage,
+        world_seed: W ? W.world_seed : null, variation: W ? W.variation : null,
+        selected: selected.slice(), target: (facedTarget() || {}).id || null,
+        mastery_choice_open: masteryChoiceOpen,
+        mastered: Object.keys(P.rune_mastery || {}).filter((r) => P.rune_mastery[r] >= 5),
+        selecting, over, toast: toastMsg, smoke: debugSmoke(),
+      } : { selecting, ready: false, smoke: debugSmoke() };
+      el.textContent = JSON.stringify(state);
+    }
     // lightweight debug/test hook
     window.__rg = {
       state: () => ({ area: P.area, x: P.x, y: P.y, facing, hp: P.hp, courage: P.courage,
         score: P.score, inv: P.inventory.slice(), discoveries: P.discoveries.slice(),
-        trust: Object.assign({}, P.trust), over,
+        trust: Object.assign({}, P.trust), over, toast: toastMsg,
         target: (facedTarget() || {}).id || null,
         cam: { OX, OY, TILE, cw: canvas.width, ch: canvas.height, cols: COLS, rows: ROWS,
                pscreenX: OX + P.x * TILE + TILE / 2, pscreenY: OY + P.y * TILE + TILE / 2 },
-        entities: A.entities.map((e) => ({ id: e.id, x: e.x, y: e.y, hp: e.hp, state: e.state })) }),
+        entities: A.entities.map((e) => ({ id: e.id, type: e.type, x: e.x, y: e.y,
+          hp: e.hp, state: e.state, blocking: e.blocking, requires: (e.requires || []).slice(),
+          target_area: e.target_area || "" })) }),
       goto: (x, y, dir) => { P.x = x; P.y = y; if (dir) facing = dir; updateTarget(); },
+      area: debugArea,
+      entity: debugEntity,
+      face: debugFace,
+      open: debugOpen,
+      travel: (id) => { const e = debugEntity(id); if (e && e.type === "portal" && e.state !== "locked") { travel(e); return true; } return false; },
+      inventory: (...items) => debugInventory(items),
+      flags: (...flags) => debugFlags(flags),
+      smoke: debugSmoke,
       start: (cls) => startGame(cls || "warrior"),
       selecting: () => selecting,
       prog: () => ({ level: P.level, xp: P.xp, xp_to_next: P.xp_to_next, weapon: P.weapon,
@@ -1397,6 +1564,8 @@
       circles: () => CIRCLES ? { ready: !!(CIRCLES.img.complete && CIRCLES.img.naturalWidth), frames: CIRCLES.frames, n: CIRCLES.entries.length } : null,
     };
     window.__rgReady = true;
+    setInterval(publishDebugState, 1000);
+    publishDebugState();
   }
 
   function waitFor(sel, cb, n) {

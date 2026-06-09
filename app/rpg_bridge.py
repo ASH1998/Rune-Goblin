@@ -72,8 +72,8 @@ def register_routes(app: FastAPI) -> None:
         )
 
     @app.get("/rg/world")
-    def world() -> dict:
-        return build_world()
+    def world(seed: int | None = None) -> dict:
+        return build_world(seed=seed)
 
     @app.post("/rg/cast")
     def cast(req: CastRequest) -> dict:

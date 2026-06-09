@@ -231,6 +231,87 @@
    "frames": 18
   }
  },
+ "heroes": [
+  {
+   "id": "warrior",
+   "label": "Goblin Warrior",
+   "sprite": "hero_warrior",
+   "preview_gif": "sprites/heroes/GoblinWarrior.gif",
+   "hp": 13,
+   "courage": 5,
+   "speed": 3,
+   "affinity_runes": [
+    "closed_circle",
+    "jagged_line"
+   ],
+   "passive": "Shield affinity: +1 shield on circle spells.",
+   "king_ability": "Warrior King: shield allies and punish boss retaliation."
+  },
+  {
+   "id": "rogue",
+   "label": "Goblin Rogue",
+   "sprite": "hero_rogue",
+   "preview_gif": "sprites/heroes/GoblinRogue.gif",
+   "hp": 10,
+   "courage": 7,
+   "speed": 4,
+   "affinity_runes": [
+    "key",
+    "coin",
+    "thread"
+   ],
+   "passive": "Key/coin affinity: better chests and shortcuts.",
+   "king_ability": "Rogue King: open one final lock or phase weakness without a key."
+  },
+  {
+   "id": "poison",
+   "label": "Goblin Rogue Poison",
+   "sprite": "hero_poison",
+   "preview_gif": "sprites/heroes/GoblinRoguePoison.gif",
+   "hp": 9,
+   "courage": 7,
+   "speed": 4,
+   "affinity_runes": [
+    "leaf",
+    "tooth",
+    "broken_mark"
+   ],
+   "passive": "Poison affinity: stronger status effects, more chaos risk.",
+   "king_ability": "Poison King: apply a boss debuff that weakens repeated resistance."
+  },
+  {
+   "id": "hunter",
+   "label": "Goblin Hunter",
+   "sprite": "hero_hunter",
+   "preview_gif": "sprites/heroes/GoblinHunter.gif",
+   "hp": 11,
+   "courage": 6,
+   "speed": 4,
+   "affinity_runes": [
+    "eye",
+    "thread",
+    "jagged_line"
+   ],
+   "passive": "Eye affinity: better weakness reveals and first-strike bonuses.",
+   "king_ability": "Hunter King: reveal and mark the true Calendar Beast weak point."
+  },
+  {
+   "id": "barbarian",
+   "label": "Goblin Barbarian",
+   "sprite": "hero_barbarian",
+   "preview_gif": "sprites/heroes/GoblinBarbarian.gif",
+   "hp": 15,
+   "courage": 4,
+   "speed": 2,
+   "affinity_runes": [
+    "flame",
+    "bone",
+    "tooth"
+   ],
+   "passive": "Flame/bone affinity: higher damage, worse NPC trust if reckless.",
+   "king_ability": "Barbarian King: break a boss pylon at the cost of courage."
+  }
+ ],
  "deco": {
   "tree": {
    "file": "sprites/deco_tree.png",

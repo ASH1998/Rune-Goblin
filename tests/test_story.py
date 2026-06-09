@@ -90,3 +90,15 @@ def test_fallback_dialogue_shape():
     assert set(d) >= {"story_toast", "npc_line", "journal_entry",
                       "suggested_story_flag", "mood_shift"}
     assert "Queue Goblin" in d["npc_line"]
+
+
+def test_gate_ally_fallback_dialogue_uses_recurring_characters():
+    librarian = story.fallback_dialogue("gate_librarian", ["eye"])
+    water = story.fallback_dialogue("gate_water_spirit", ["wave"])
+    queue = story.fallback_dialogue("gate_queue_goblin", ["coin"])
+
+    assert "Mold Librarian" in librarian["npc_line"]
+    assert "Water Spirit" in water["npc_line"]
+    assert "Queue Goblin" in queue["npc_line"]
+    assert librarian["journal_entry"]
+    assert water["journal_entry"]

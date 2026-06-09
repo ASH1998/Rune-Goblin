@@ -237,6 +237,8 @@ ALLOWED_FLAGS: frozenset[str] = frozenset({
     "calendar_truth_read", "calendar_key_found", "calendar_repair_possible",
     "calendar_devour_pressure", "tollmaster_route_open",
     "calendar_beast_phase_2", "calendar_beast_phase_3",
+    "pylon_eye_charged", "pylon_mirror_charged", "pylon_leaf_charged",
+    "pylon_spiral_charged",
     "calendar_broken", "calendar_repaired", "calendar_devoured",
     "tollmaster_ending",
     "boss_ally_tourist", "boss_ally_librarian", "boss_ally_water",
@@ -509,6 +511,34 @@ NPC_VOICES: dict[str, NpcVoice] = {
             "neutral": "Debt is just a monster that learned accounting.",
         },
         journal="Debt Collector appears when forced shortcuts go unpaid.",
+    ),
+    "gate_librarian": NpcVoice(
+        name="Mold Librarian",
+        greeting="For the record, I object to being eaten by an overdue date.",
+        reactions={
+            "insight": "When the Beast asks what you are, say: a clerk who learned to listen.",
+            "neutral": "The Calendar Key opened a gate. Your choices decide what comes through it.",
+        },
+        journal="The Mold Librarian reached the gate because the library trusted careful magic.",
+    ),
+    "gate_water_spirit": NpcVoice(
+        name="Water Spirit",
+        greeting="The clean river enters the room.",
+        reactions={
+            "kind": "The water remembers the sky. So will the final room.",
+            "neutral": "Clean water carries one kindness into the Beast's arena.",
+        },
+        journal="The restored water reached the Calendar Gate as a final ally.",
+    ),
+    "gate_queue_goblin": NpcVoice(
+        name="Queue Goblin",
+        greeting="I am only helping because the Beast owes toll.",
+        reactions={
+            "coin": "Payment accepted again. This is becoming suspiciously civic.",
+            "bell": "Do not ring that near the Beast unless you mean it.",
+            "neutral": "The clerk! Still alive, still undertrained. Respect.",
+        },
+        journal="The Queue Goblin respects paid tolls and may help the Tollmaster route.",
     ),
 }
 

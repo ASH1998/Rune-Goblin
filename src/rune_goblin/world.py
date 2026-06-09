@@ -531,6 +531,15 @@ def _build_areas() -> dict[str, Area]:
             _npc("gate_tourist", "Lost Tourist", 6, 20, sprite_key="magical_fairy",
                  dialogue="I found the arena! Bad news: it is awful. Good news: I packed sandwiches.",
                  hint="the tourist you helped, if you did"),
+            _npc("gate_librarian", "Mold Librarian", 11, 6, sprite_key="expert_druid",
+                 dialogue="For the record, I object to being eaten by an overdue date.",
+                 hint="a trusted librarian ally, if you earned one"),
+            _npc("gate_water_spirit", "Water Spirit", 11, 19, sprite_key="water_elemental",
+                 dialogue="The clean river enters the room. I carried one kindness here.",
+                 hint="a clean-water ally, if you restored the flow"),
+            _npc("gate_queue_goblin", "Queue Goblin", 22, 5, sprite_key="goblin_red",
+                 dialogue="I am only helping because the Beast owes toll.",
+                 hint="a paid toll-road ally, if you kept the books clean"),
             _mob("debt_collector", "Debt Collector", 24, 12, hp=8,
                  weakness=["coin", "bell"], resistance=["broken_mark"],
                  sprite_key="red_warrior", mood="collecting forced shortcuts"),
@@ -557,6 +566,11 @@ def _build_areas() -> dict[str, Area]:
                  gate_approach, arena)
     for e in bone_market.entities:
         if e.id == "secret_merchant":
+            e.state = "hidden"
+            e.blocking = False
+    for e in gate_approach.entities:
+        if e.id in {"gate_tourist", "gate_librarian", "gate_water_spirit",
+                    "gate_queue_goblin", "debt_collector"}:
             e.state = "hidden"
             e.blocking = False
     # 1) fix anything an enlarged map / new pond displaced
@@ -730,10 +744,93 @@ def _weapon_to_dict(w: story.Weapon) -> dict:
     }
 
 
-def build_world() -> dict:
+_WORLD_VARIATIONS = (
+    {
+        "id": "sandwich_weather",
+        "label": "Sandwich Weather",
+        "marker_area": "overworld",
+        "marker_xy": (7, 7),
+        "marker": "Tourist Lunch Cache",
+        "hint": "A lunch bundle marks a kinder route toward the arena.",
+        "journal": "This loop smells faintly of packed lunches. Helping frightened travelers may matter.",
+    },
+    {
+        "id": "mirror_bloom",
+        "label": "Mirror Bloom",
+        "marker_area": "caverns",
+        "marker_xy": (7, 4),
+        "marker": "Bright Mirror Spore",
+        "hint": "A harmless spore catches the light like a clue.",
+        "journal": "This loop's fungus glints early. Mirror and eye routes may reveal more than damage.",
+    },
+    {
+        "id": "coin_draft",
+        "label": "Coin Draft",
+        "marker_area": "bone_market",
+        "marker_xy": (8, 8),
+        "marker": "Warm Coin Draft",
+        "hint": "The air jingles toward a secret toll route.",
+        "journal": "This loop carries market noise on the road. Coin and bell mastery may open stranger endings.",
+    },
+)
+
+
+def _apply_world_variation(payload: dict, seed: int | None) -> None:
+    """Attach deterministic, noncritical replay variation to a world payload.
+
+    Main progression stays authored and validated. The seed only changes
+    visible hints/markers and metadata so repeated runs feel distinct without
+    invalidating tests, locks, or balance.
+    """
+    if seed is None:
+        payload["world_seed"] = None
+        payload["variation"] = {"id": "default", "label": "Default Loop"}
+        return
+
+    rng = random.Random(seed)
+    var = dict(_WORLD_VARIATIONS[rng.randrange(len(_WORLD_VARIATIONS))])
+    area = payload["areas"].get(var["marker_area"])
+    if area:
+        x, y = var["marker_xy"]
+        area["entities"].append({
+            "id": f"seed_marker_{var['id']}",
+            "type": "map_marker",
+            "name": var["marker"],
+            "x": x,
+            "y": y,
+            "sprite": "!",
+            "state": "idle",
+            "blocking": False,
+            "hp": 0,
+            "max_hp": 0,
+            "weakness": [],
+            "resistance": [],
+            "mood": "seeded loop clue",
+            "tags": ["seeded", "hint"],
+            "requires": [],
+            "loot": [],
+            "dialogue": var["journal"],
+            "target_area": "",
+            "target_x": 0,
+            "target_y": 0,
+            "hint": var["hint"],
+            "sprite_key": "glowing_wisp",
+        })
+    payload["world_seed"] = seed
+    payload["variation"] = {
+        "id": var["id"],
+        "label": var["label"],
+        "journal": var["journal"],
+    }
+    payload["player"]["world_seed"] = seed
+    payload["player"]["world_variation"] = var["id"]
+    payload["player"]["journal"].append(var["journal"])
+
+
+def build_world(seed: int | None = None) -> dict:
     """Full serializable world for the client."""
     start = story.GOBLIN_CLASSES[story.DEFAULT_CLASS]
-    return {
+    payload = {
         "start_area": START_AREA,
         "areas": {aid: _area_to_dict(a) for aid, a in AREAS.items()},
         "player": {
@@ -754,6 +851,8 @@ def build_world() -> dict:
                    "meanings": list(g.meanings)} for k, g in GLYPHS.items()],
         "walkable": "".join(sorted(WALKABLE)),
     }
+    _apply_world_variation(payload, seed)
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -850,10 +949,10 @@ _STORY_FLAG: dict[str, tuple[str, ...]] = {
     "clean_shrine": ("clean_water_restored", "sewer_shortcut_open"),
     "sewer_valve": ("sewer_valves_aligned", "sewer_shortcut_open"),
     "nursery": ("fungus_colony_spared",),
-    "pylon_eye": ("mirror_truth_seen",),
-    "pylon_mirror": ("calendar_repair_possible",),
-    "pylon_leaf": ("calendar_repair_possible",),
-    "pylon_spiral": ("calendar_repair_possible",),
+    "pylon_eye": ("mirror_truth_seen", "pylon_eye_charged"),
+    "pylon_mirror": ("calendar_repair_possible", "pylon_mirror_charged"),
+    "pylon_leaf": ("calendar_repair_possible", "pylon_leaf_charged"),
+    "pylon_spiral": ("calendar_repair_possible", "pylon_spiral_charged"),
 }
 
 _MERCHANT_STOCK = {
@@ -964,6 +1063,12 @@ def resolve_world_cast(
             phase_info = story.boss_phase_for(cur_hp, max_hp)
             weakness = tuple(phase_info["weakness"])
             resistance = tuple(phase_info["resistance"])
+            if "pylon_eye_charged" in flags:
+                weakness = tuple(dict.fromkeys(weakness + ("eye", "mirror")))
+            if "pylon_mirror_charged" in flags and phase_info["phase"] >= 2:
+                resistance = tuple(r for r in resistance if r not in {"jagged_line", "flame"})
+            if "pylon_leaf_charged" in flags and phase_info["phase"] >= 3:
+                resistance = tuple(r for r in resistance if r != "flame")
             recent = tuple(player.get("recent_runes") or ())
             if recent and any(r in recent for r in runes):
                 repeated = tuple(dict.fromkeys(recent + tuple(runes)))
@@ -989,6 +1094,8 @@ def resolve_world_cast(
 
         # Weapon + class affinity bonus damage (visible in HUD metadata).
         bonus = _combat_bonus(runes, player)
+        if ttype == "boss" and "pylon_spiral_charged" in flags and "spiral" in runes:
+            bonus += 2
         king_bonus, king_statuses = _class_king_bonus(runes, player, target)
         bonus += king_bonus
         delta = spell.enemy_hp_delta
@@ -1000,6 +1107,16 @@ def resolve_world_cast(
         for st in king_statuses:
             if st not in spell.status_effects:
                 spell.status_effects.append(st)
+        if ttype == "boss":
+            pylon_status = {
+                "pylon_eye_charged": "pylon_eye_revealed",
+                "pylon_mirror_charged": "pylon_mirror_softened",
+                "pylon_leaf_charged": "pylon_leaf_greened",
+                "pylon_spiral_charged": "pylon_spiral_unwound",
+            }
+            for flag, status in pylon_status.items():
+                if flag in flags and status not in spell.status_effects:
+                    spell.status_effects.append(status)
         new_hp = max(0, cur_hp + delta)
         actions.append({"type": "set_entity_hp", "target_id": tid, "hp": new_hp})
         # rune mastery grows with offensive use of each rune
@@ -1176,6 +1293,14 @@ def resolve_world_cast(
                 actions += _flag_actions(["secret_merchant_met", "tollmaster_route_open"])
             if story.WEAPONS[wid].story_flag:
                 actions += _flag_actions([story.WEAPONS[wid].story_flag])
+            if tid == "market_merchant" and intent == "fear":
+                deal = ("The Bone Market approves the cursed deal: power now, "
+                        "interest later.")
+                actions.append({"type": "add_courage", "amount": 3})
+                actions.append({"type": "add_gold", "amount": 2})
+                actions.append({"type": "add_journal_entry", "text": deal})
+                actions.append({"type": "add_discovery", "text": deal})
+                actions += _flag_actions(["calendar_devour_pressure"])
 
         if gift:
             _, msg, kind, amt = gift
@@ -1234,10 +1359,21 @@ def resolve_world_cast(
             actions.append({"type": "add_discovery", "text": text})
             actions.append({"type": "add_journal_entry", "text": text})
             actions += _flag_actions(_STORY_FLAG.get(tid, ()))
+            def grant_story_weapon(wid: str) -> None:
+                if wid not in (player.get("weapon_inventory") or []):
+                    actions.append({"type": "add_weapon", "weapon": wid})
+                    actions.append({"type": "add_inventory", "item": story.WEAPONS[wid].label})
+                if story.WEAPONS[wid].story_flag:
+                    actions.extend(_flag_actions([story.WEAPONS[wid].story_flag]))
+
             if tid == "nursery":
                 actions.append({"type": "add_inventory", "item": "Mirror Cap"})
+                grant_story_weapon("mirror_shield")
             if tid == "bell_shrine":
                 actions.append({"type": "add_inventory", "item": "Tollmaster Token"})
+                grant_story_weapon("bell_staff")
+            if tid == "clean_shrine":
+                grant_story_weapon("river_thread")
             if tid == "dry_shelves":
                 actions.append({"type": "unlock_shortcut", "target_id": "emotional_door",
                                 "message": "Burned shelves opened a library shortcut, but worsened the ending pressure."})

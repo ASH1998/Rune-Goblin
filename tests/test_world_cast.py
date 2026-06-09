@@ -34,6 +34,42 @@ def test_build_world_has_progression_and_content():
         assert key in p
 
 
+def test_seeded_world_variations_are_deterministic_and_noncritical():
+    default = build_world()
+    seeded_a = build_world(seed=123)
+    seeded_b = build_world(seed=123)
+    seeded_c = build_world(seed=456)
+
+    assert default["world_seed"] is None
+    assert seeded_a["world_seed"] == 123
+    assert seeded_a["variation"] == seeded_b["variation"]
+    assert seeded_a["player"]["journal"] == seeded_b["player"]["journal"]
+    assert seeded_a["variation"]["id"] != seeded_c["variation"]["id"]
+
+    markers = [
+        e
+        for area in seeded_a["areas"].values()
+        for e in area["entities"]
+        if e["type"] == "map_marker" and "seeded" in e["tags"]
+    ]
+    assert len(markers) == 1
+    assert markers[0]["blocking"] is False
+
+
+def test_gate_approach_has_hidden_consequence_allies():
+    gate = build_world()["areas"]["gate_approach"]
+    by_id = {e["id"]: e for e in gate["entities"]}
+
+    for eid in ("gate_tourist", "gate_librarian", "gate_water_spirit",
+                "gate_queue_goblin", "debt_collector"):
+        assert by_id[eid]["state"] == "hidden"
+        assert by_id[eid]["blocking"] is False
+
+    assert by_id["gate_librarian"]["name"] == "Mold Librarian"
+    assert by_id["gate_water_spirit"]["name"] == "Water Spirit"
+    assert by_id["gate_queue_goblin"]["name"] == "Queue Goblin"
+
+
 def test_world_quality_rules_have_evidence():
     w = build_world()
     for aid, area in w["areas"].items():
@@ -142,6 +178,21 @@ def test_merchant_sells_weapon_for_coin():
     assert "weapon_bought" in flags
 
 
+def test_bone_market_cursed_deal_grants_power_and_tracks_cost():
+    tgt = {"id": "market_merchant", "type": "npc", "name": "Bone Market Merchant",
+           "dialogue": "deal"}
+    res = resolve_world_cast(["broken_mark"], _player(), tgt, seed=21)
+    actions = res["world_actions"]
+    flags = [a["flag"] for a in actions if a["type"] == "set_story_flag"]
+
+    assert any(a["type"] == "add_weapon" and a["weapon"] == "bone_blade" for a in actions)
+    assert any(a["type"] == "add_courage" and a["amount"] == 3 for a in actions)
+    assert any(a["type"] == "add_gold" and a["amount"] == 2 for a in actions)
+    assert "debt_deepened" in flags
+    assert "calendar_devour_pressure" in flags
+    assert "add_journal_entry" in _types(res)
+
+
 def test_npc_kindness_sets_trust_flag_and_journal():
     tgt = {"id": "tourist", "type": "npc", "name": "Lost Tourist", "dialogue": "help"}
     res = resolve_world_cast(["wave"], _player(), tgt, seed=7)
@@ -187,6 +238,33 @@ def test_boss_phase_banner_and_repaired_ending():
     assert win and win[0]["ending"] == "repaired"
 
 
+def test_pylons_charge_flags_and_alter_boss_combat():
+    pylon = {"id": "pylon_spiral", "type": "story_object", "name": "Spiral Pylon",
+             "requires": ["spiral"], "dialogue": "charged"}
+    charged = resolve_world_cast(["spiral"], _player(), pylon, seed=22)
+    assert any(a.get("flag") == "pylon_spiral_charged" for a in charged["world_actions"])
+
+    boss = {"id": "calendar_beast", "type": "boss", "name": "Calendar Beast",
+            "hp": 20, "max_hp": 24, "weakness": ["spiral", "eye"], "resistance": []}
+    plain = resolve_world_cast(["spiral"], _player(), boss, seed=23)
+    with_pylon = resolve_world_cast(
+        ["spiral"], _player(story_flags=["pylon_spiral_charged"]), boss, seed=23)
+
+    assert with_pylon["spell"]["enemy_hp_delta"] < plain["spell"]["enemy_hp_delta"]
+    assert "pylon_spiral_unwound" in with_pylon["spell"]["status_effects"]
+
+
+def test_eye_pylon_reveals_boss_weakness():
+    boss = {"id": "calendar_beast", "type": "boss", "name": "Calendar Beast",
+            "hp": 12, "max_hp": 24, "weakness": ["mirror", "wave"], "resistance": []}
+    plain = resolve_world_cast(["eye"], _player(), boss, seed=24)
+    revealed = resolve_world_cast(
+        ["eye"], _player(story_flags=["pylon_eye_charged"]), boss, seed=24)
+
+    assert revealed["spell"]["enemy_hp_delta"] < plain["spell"]["enemy_hp_delta"]
+    assert "pylon_eye_revealed" in revealed["spell"]["status_effects"]
+
+
 def test_boss_repeated_runes_adapt_and_spawn_phase_adds():
     boss = {"id": "calendar_beast", "type": "boss", "name": "Calendar Beast",
             "hp": 17, "max_hp": 24, "weakness": ["spiral", "eye"], "resistance": []}
@@ -207,6 +285,7 @@ def test_story_branches_for_spores_shelves_and_tollmaster_token():
     spared = resolve_world_cast(["mirror"], _player(), nursery, seed=13)
     burned = resolve_world_cast(["flame"], _player(), nursery, seed=13)
     assert any(a.get("item") == "Mirror Cap" for a in spared["world_actions"])
+    assert any(a.get("weapon") == "mirror_shield" for a in spared["world_actions"])
     assert any(a.get("flag") == "fungus_colony_burned" for a in burned["world_actions"])
 
     shelves = {"id": "dry_shelves", "type": "story_object", "name": "Dry Archive Shelves",
@@ -219,6 +298,7 @@ def test_story_branches_for_spores_shelves_and_tollmaster_token():
               "requires": ["bell", "coin"], "dialogue": "token"}
     token_res = resolve_world_cast(["bell", "coin"], _player(), shrine, seed=15)
     assert any(a.get("item") == "Tollmaster Token" for a in token_res["world_actions"])
+    assert any(a.get("weapon") == "bell_staff" for a in token_res["world_actions"])
 
 
 def test_secret_merchant_hidden_and_duplicate_trade_upgrades_weapon():
@@ -239,6 +319,7 @@ def test_clean_water_sets_sewer_shortcut_flag():
     res = resolve_world_cast(["wave", "leaf"], _player(), shrine, seed=18)
     flags = [a["flag"] for a in res["world_actions"] if a["type"] == "set_story_flag"]
     assert "clean_water_restored" in flags and "sewer_shortcut_open" in flags
+    assert any(a.get("weapon") == "river_thread" for a in res["world_actions"])
 
     valve = {"id": "sewer_valve", "type": "story_object", "name": "Rusted Valve",
              "requires": ["thread", "key"], "dialogue": "aligned"}
