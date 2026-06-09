@@ -64,6 +64,40 @@ def test_ending_tollmaster_secret():
     assert e.key == "tollmaster"
 
 
+def test_ending_choice_lines_name_player_choices():
+    lines = story.ending_choice_lines(
+        ["calendar_truth_read", "tourist_helped", "clean_water_restored", "player_evolved"],
+        final_runes=["leaf", "spiral"],
+        weapon="river_thread",
+        goblin_class="hunter",
+        mastery={"leaf": 5},
+        evolved=True,
+    )
+
+    joined = " ".join(lines)
+    assert "Goblin Hunter" in joined
+    assert "Goblin King" in joined
+    assert "calendar truth" in joined
+    assert "Lost Tourist" in joined
+    assert "Clean water" in joined
+    assert len(lines) <= 5
+
+
+def test_boss_flag_reactions_cover_multiple_story_flags():
+    flags = [
+        "tourist_helped", "fungus_colony_spared", "librarian_trust",
+        "clean_water_restored", "queue_goblin_paid", "calendar_truth_read",
+    ]
+    lines = story.boss_flag_reactions(flags, limit=6)
+
+    assert len(lines) >= 4
+    joined = " ".join(lines)
+    assert "sandwiches" in joined
+    assert "fungus" in joined
+    assert "librarian" in joined
+    assert "Clean water" in joined
+
+
 def test_boss_phase_thresholds():
     assert story.boss_phase_for(24, 24)["phase"] == 1
     assert story.boss_phase_for(12, 24)["phase"] == 2

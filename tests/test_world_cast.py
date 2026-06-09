@@ -30,8 +30,10 @@ def test_build_world_has_progression_and_content():
     assert {c["id"] for c in w["classes"]} == {"warrior", "rogue", "poison", "hunter", "barbarian"}
     assert {x["id"] for x in w["weapons"]}.issuperset({"clerk_wand", "bone_blade"})
     p = w["player"]
-    for key in ("level", "xp", "goblin_class", "weapon", "story_flags", "gold", "journal"):
+    for key in ("level", "xp", "goblin_class", "weapon", "story_flags", "gold", "journal",
+                "recent_story_events"):
         assert key in p
+    assert p["recent_story_events"] == []
 
 
 def test_seeded_world_variations_are_deterministic_and_noncritical():
@@ -73,13 +75,32 @@ def test_gate_approach_has_hidden_consequence_allies():
 def test_world_quality_rules_have_evidence():
     w = build_world()
     for aid, area in w["areas"].items():
-      types = {e["type"] for e in area["entities"]}
-      assert "story_object" in types
-      assert "npc" in types or aid == "overworld"
-      assert "shrine" in types
-      assert any(e["state"] == "locked" or e["requires"] for e in area["entities"])
-      if aid != w["start_area"]:
-          assert any(e["type"] == "portal" and e["target_area"] != aid for e in area["entities"])
+        entities = area["entities"]
+        types = {e["type"] for e in entities}
+        walkable = sum(ch in ".," for row in area["rows"] for ch in row)
+        assert "story_object" in types
+        assert "npc" in types
+        assert "shrine" in types
+        assert walkable > area["width"] * area["height"] * 0.45
+        assert any(e["state"] == "locked" or e["requires"] for e in entities)
+        assert any(
+            (e["state"] == "locked" or e["requires"])
+            and (e["loot"] or e["type"] in {"story_object", "locked_door", "portal", "chest"})
+            for e in entities
+        )
+        assert any(e["dialogue"] and e["type"] in {"npc", "story_object"} for e in entities)
+        assert any(
+            e["type"] in {"chest", "locked_door"}
+            or (e["type"] == "portal" and (e["state"] == "locked" or e["requires"]))
+            or e["id"] in {
+                "toll_board", "bell_shrine", "nursery", "cave_echo", "wet_catalog",
+                "dry_shelves", "debt_altar", "clean_shrine", "sewer_valve",
+                "gate_banner", "pylon_eye", "pylon_mirror", "pylon_leaf", "pylon_spiral",
+            }
+            for e in entities
+        )
+        if aid != w["start_area"]:
+            assert any(e["type"] == "portal" and e["target_area"] != aid for e in entities)
 
 
 def test_required_item_paths_are_present():
@@ -121,6 +142,34 @@ def test_weapon_and_affinity_bonus():
     plain = resolve_world_cast(["bone"], _player(goblin_class="warrior", weapon="clerk_wand"), tgt, seed=2)
     geared = resolve_world_cast(["bone"], _player(goblin_class="barbarian", weapon="bone_blade"), tgt, seed=2)
     assert geared["spell"]["enemy_hp_delta"] < plain["spell"]["enemy_hp_delta"]
+    meta = geared["metadata"]["combat"]
+    assert meta["weapon"]["id"] == "bone_blade"
+    assert meta["weapon"]["bonus_damage"] == 2
+    assert meta["goblin_class"]["id"] == "barbarian"
+    assert meta["goblin_class"]["bonus_damage"] == 1
+    assert meta["total_bonus"] == 3
+
+
+def test_combat_metadata_tracks_mastery_pylon_and_king_bonus():
+    boss = {"id": "calendar_beast", "type": "boss", "name": "Calendar Beast",
+            "hp": 20, "max_hp": 24, "weakness": ["spiral"], "resistance": []}
+    player = _player(
+        goblin_class="hunter",
+        weapon="river_thread",
+        rune_mastery={"spiral": 5},
+        story_flags=["pylon_spiral_charged"],
+        evolved=True,
+    )
+    res = resolve_world_cast(["spiral", "thread"], player, boss, seed=25)
+    meta = res["metadata"]["combat"]
+
+    assert meta["weapon"]["bonus_damage"] == 0
+    assert meta["goblin_class"]["bonus_damage"] == 1
+    assert meta["rune_mastery"]["bonus_damage"] == 1
+    assert meta["boss"]["pylon_bonus"] == 2
+    assert meta["boss"]["king_bonus"] == 2
+    assert "weakness_revealed" in meta["boss"]["king_statuses"]
+    assert meta["total_bonus"] == 6
 
 
 def test_enemy_defeat_grants_xp():
@@ -226,8 +275,11 @@ def test_boss_phase_banner_and_repaired_ending():
     # heavy hit that crosses a phase boundary (24 -> below 16)
     boss = {"id": "calendar_beast", "type": "boss", "name": "Calendar Beast",
             "hp": 17, "max_hp": 24, "weakness": ["spiral", "eye"], "resistance": []}
-    res = resolve_world_cast(["spiral", "eye"], _player(), boss, seed=9)
-    assert "start_boss_phase" in _types(res)
+    phase_flags = ["tourist_helped", "fungus_colony_spared", "librarian_trust", "clean_water_restored"]
+    res = resolve_world_cast(["spiral", "eye"], _player(story_flags=phase_flags), boss, seed=9)
+    phase = [a for a in res["world_actions"] if a["type"] == "start_boss_phase"]
+    assert phase
+    assert len(phase[0]["boss_reactions"]) >= 2
 
     # killing blow with repaired conditions
     boss2 = {"id": "calendar_beast", "type": "boss", "name": "Calendar Beast",
@@ -236,6 +288,10 @@ def test_boss_phase_banner_and_repaired_ending():
     res2 = resolve_world_cast(["leaf", "spiral"], _player(story_flags=flags), boss2, seed=10)
     win = [a for a in res2["world_actions"] if a["type"] == "win_game"]
     assert win and win[0]["ending"] == "repaired"
+    assert "choices" in win[0]
+    assert win[0]["boss_reactions"]
+    assert any("Lost Tourist" in line for line in win[0]["choices"])
+    assert any("calendar truth" in line for line in win[0]["choices"])
 
 
 def test_pylons_charge_flags_and_alter_boss_combat():

@@ -252,6 +252,23 @@ DEVOUR_FLAGS = ("library_shelves_burned", "debt_deepened", "debt_accepted",
 HELPER_FLAGS = ("tourist_helped", "fungus_colony_spared", "librarian_trust",
                 "clean_water_restored", "queue_goblin_paid")
 
+# Final boss callbacks keyed to durable choices. These satisfy the story-plan
+# requirement that the Beast's dialogue changes based on at least four flags.
+BOSS_FLAG_REACTIONS: dict[str, str] = {
+    "tourist_helped": "You brought a witness with sandwiches. Even hunger finds that irritating.",
+    "tourist_scared": "The frightened one still runs in circles. I can eat circles.",
+    "fungus_colony_spared": "The fungus showed you my fear. Rude, reflective little colony.",
+    "fungus_colony_burned": "Smoke is a kind of future too: short, hot, and gone.",
+    "librarian_trust": "The wet librarian filed an objection. I intend to eat the folder.",
+    "library_shelves_burned": "Burned shelves make excellent kindling for devoured mornings.",
+    "clean_water_restored": "Clean water enters my room and remembers a sky I never swallowed.",
+    "queue_goblin_paid": "You paid the toll. That makes this officially inconvenient.",
+    "queue_goblin_forced": "You forced the road open. Now the road has teeth.",
+    "debt_repaid": "You closed a debt before I could hatch it. Uncharitable clerk.",
+    "debt_deepened": "Borrowed power tastes best when the bill arrives late.",
+    "calendar_truth_read": "You read the truth. Most meals do not read the menu back.",
+}
+
 
 def is_allowed_flag(flag: str) -> bool:
     return flag in ALLOWED_FLAGS
@@ -265,6 +282,18 @@ def filter_flags(flags) -> list[str]:
         if f in ALLOWED_FLAGS and f not in seen:
             seen.add(f)
             out.append(f)
+    return out
+
+
+def boss_flag_reactions(flags, *, limit: int = 2) -> list[str]:
+    """Return short Beast lines for known flags, preserving flag order."""
+    out: list[str] = []
+    for flag in filter_flags(flags):
+        line = BOSS_FLAG_REACTIONS.get(flag)
+        if line and line not in out:
+            out.append(line)
+        if len(out) >= limit:
+            break
     return out
 
 
@@ -335,6 +364,71 @@ def compute_ending(flags, final_runes=(), weapon: str | None = None,
         return ENDINGS["devoured"]
 
     return ENDINGS["broken"]
+
+
+def ending_choice_lines(flags, final_runes=(), weapon: str | None = None,
+                        goblin_class: str | None = None, mastery=None,
+                        evolved: bool = False) -> list[str]:
+    """Short deterministic ending receipts naming concrete player choices.
+
+    story_plan.md requires every ending to acknowledge specific choices the
+    player made. These lines are deliberately factual and sourced only from
+    durable state the deterministic rules own.
+    """
+    flagset = set(flags or ())
+    final = set(final_runes or ())
+    mastery = mastery or {}
+    lines: list[str] = []
+
+    cls = class_or_default(goblin_class)
+    hero = f"You ended the loop as the {cls.label}"
+    if evolved or "player_evolved" in flagset:
+        hero += ", crowned into Goblin King"
+    lines.append(hero + ".")
+
+    if "calendar_truth_read" in flagset:
+        lines.append("You read the wet calendar truth before the final choice.")
+    if "tourist_helped" in flagset:
+        lines.append("The Lost Tourist remembered your kindness at the gate.")
+    elif "tourist_scared" in flagset:
+        lines.append("The Lost Tourist remembered being frightened by your magic.")
+    if "fungus_colony_spared" in flagset:
+        lines.append("The fungus colony survived to point at the Beast's fear.")
+    elif "fungus_colony_burned" in flagset:
+        lines.append("The burned fungus made the future smell like smoke.")
+    if "librarian_trust" in flagset:
+        lines.append("The Mold Librarian trusted you because you listened.")
+    elif "librarian_angry" in flagset or "library_shelves_burned" in flagset:
+        lines.append("The library kept the scorch marks in its testimony.")
+    if "clean_water_restored" in flagset or "water_spirit_helped" in flagset:
+        lines.append("Clean water reached the arena as an ally.")
+    if "queue_goblin_paid" in flagset:
+        lines.append("The Queue Goblin respected that you paid or rang the toll properly.")
+    elif "queue_goblin_forced" in flagset:
+        lines.append("The Queue Goblin filed you under walking incident report.")
+    if "debt_repaid" in flagset:
+        lines.append("You repaid a debt before it could become another monster.")
+    elif "debt_deepened" in flagset or "debt_accepted" in flagset:
+        lines.append("You carried borrowed power into the ending, interest included.")
+    if weapon and weapon in WEAPONS and weapon != STARTING_WEAPON:
+        lines.append(f"Your {WEAPONS[weapon].label} shaped the final spell.")
+
+    mastered = [r for r, count in mastery.items() if count >= RUNE_MASTERY_THRESHOLD]
+    if mastered:
+        label = mastered[0].replace("_", " ")
+        lines.append(f"Your mastered {label} rune held steady when tomorrow buckled.")
+    elif final:
+        label = ", ".join(sorted(r.replace("_", " ") for r in final))
+        lines.append(f"Your final rune weave was {label}.")
+
+    # Keep the end screen readable; the full journal still carries deeper detail.
+    out: list[str] = []
+    for line in lines:
+        if line not in out:
+            out.append(line)
+        if len(out) >= 5:
+            break
+    return out
 
 
 # ---------------------------------------------------------------------------

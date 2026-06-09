@@ -664,10 +664,11 @@ def validate_world() -> list[str]:
         # reachability: blocking entities are obstacles
         blocked = {(e.x, e.y) for e in a.entities if e.blocking}
         reach = _reachable(norm, a.spawn, blocked)
-        has_return = a.id == START_AREA
         quality = {
             "story": False, "npc": False, "shrine": False, "locked": False,
-            "return": a.id == START_AREA,
+            "return": a.id == START_AREA, "journal": False, "consequence": False,
+            "optional_loop": len(reach) > wdt * h * 0.45,
+            "locked_reward": False,
         }
         for e in a.entities:
             if (e.x, e.y) in problems:
@@ -684,8 +685,17 @@ def validate_world() -> list[str]:
                 quality["npc"] = True
             if e.type == "shrine":
                 quality["shrine"] = True
+            if e.dialogue and e.type in {"npc", "story_object"}:
+                quality["journal"] = True
+            if (e.id in globals().get("_STORY_FLAG", {})
+                    or any(k[0] == e.id for k in globals().get("_NPC_FLAG", {}))
+                    or e.type in {"chest", "locked_door"}
+                    or (e.type == "portal" and (e.state == "locked" or e.requires))):
+                quality["consequence"] = True
             if e.state == "locked" or e.requires:
                 quality["locked"] = True
+                if e.loot or e.type in {"story_object", "locked_door", "portal", "chest"}:
+                    quality["locked_reward"] = True
             if not e.blocking:  # stepped onto (portal/powerup): tile itself must be reachable
                 if (e.x, e.y) not in reach:
                     problems.append(f"{a.id}/{e.id}: unreachable tile ({e.x},{e.y})")
@@ -706,7 +716,6 @@ def validate_world() -> list[str]:
                             f"{a.id}/{e.id}: portal lands on non-walkable "
                             f"({e.target_x},{e.target_y}) in {e.target_area}")
                     if e.target_area != a.id:
-                        has_return = True
                         quality["return"] = True
         if a.id == "arena" and len(reach) < 80:
             problems.append(f"{a.id}: boss arena has only {len(reach)} reachable tiles")
@@ -843,7 +852,7 @@ def build_world(seed: int | None = None) -> dict:
             "four_rune_unlocked": False,
             "inventory": ["wet candle"], "score": 0, "statuses": [],
             "quest_log": ["Find the Calendar Shard in the Mirror Fungus Caverns."],
-            "discoveries": [], "trust": {},
+            "discoveries": [], "recent_story_events": [], "trust": {},
         },
         "classes": [_class_to_dict(c) for c in story.GOBLIN_CLASSES.values()],
         "weapons": [_weapon_to_dict(w) for w in story.WEAPONS.values()],
@@ -860,18 +869,46 @@ def build_world(seed: int | None = None) -> dict:
 # ---------------------------------------------------------------------------
 def _combat_bonus(runes: list[str], player: dict) -> int:
     """Deterministic extra damage from equipped weapon + class affinity + rune mastery."""
+    return _combat_metadata(runes, player)["total_bonus"]
+
+
+def _combat_metadata(runes: list[str], player: dict) -> dict:
+    """Structured breakdown for plan-required cast response metadata."""
     weapon = story.weapon_or_default(player.get("weapon"))
     gclass = story.class_or_default(player.get("goblin_class"))
     mastery = player.get("rune_mastery") or {}
-    bonus = 0
+    weapon_bonus = 0
     if weapon.school and any(r in weapon.school for r in runes):
-        bonus += weapon.bonus_damage
-    if gclass.affinity and any(r in gclass.affinity for r in runes):
-        bonus += 1
-    # rune mastery: a rune you've used a lot lands harder (story.RUNE_MASTERY_THRESHOLD)
-    if any(mastery.get(r, 0) >= story.RUNE_MASTERY_THRESHOLD for r in runes):
-        bonus += 1
-    return bonus
+        weapon_bonus = weapon.bonus_damage
+    class_bonus = 1 if gclass.affinity and any(r in gclass.affinity for r in runes) else 0
+    mastered = [r for r in runes if mastery.get(r, 0) >= story.RUNE_MASTERY_THRESHOLD]
+    mastery_bonus = 1 if mastered else 0
+    total = weapon_bonus + class_bonus + mastery_bonus
+    return {
+        "weapon": {
+            "id": weapon.id,
+            "label": weapon.label,
+            "matched": bool(weapon_bonus),
+            "bonus_damage": weapon_bonus,
+            "identity": weapon.identity,
+        },
+        "goblin_class": {
+            "id": gclass.id,
+            "label": gclass.label,
+            "matched": bool(class_bonus),
+            "bonus_damage": class_bonus,
+        },
+        "rune_mastery": {
+            "matched": mastered,
+            "bonus_damage": mastery_bonus,
+        },
+        "boss": {
+            "pylon_bonus": 0,
+            "king_bonus": 0,
+            "king_statuses": [],
+        },
+        "total_bonus": total,
+    }
 
 
 def _class_king_bonus(runes: list[str], player: dict, target: dict) -> tuple[int, list[str]]:
@@ -1093,11 +1130,16 @@ def resolve_world_cast(
                 spell.status_effects.append("boss_adapted")
 
         # Weapon + class affinity bonus damage (visible in HUD metadata).
-        bonus = _combat_bonus(runes, player)
+        metadata = {"combat": _combat_metadata(runes, player)}
+        bonus = metadata["combat"]["total_bonus"]
         if ttype == "boss" and "pylon_spiral_charged" in flags and "spiral" in runes:
             bonus += 2
+            metadata["combat"]["boss"]["pylon_bonus"] += 2
         king_bonus, king_statuses = _class_king_bonus(runes, player, target)
         bonus += king_bonus
+        metadata["combat"]["boss"]["king_bonus"] = king_bonus
+        metadata["combat"]["boss"]["king_statuses"] = king_statuses
+        metadata["combat"]["total_bonus"] = bonus
         delta = spell.enemy_hp_delta
         if bonus and delta < 0:
             delta = max(-cur_hp, delta - bonus)
@@ -1126,8 +1168,10 @@ def resolve_world_cast(
         if ttype == "boss" and new_hp > 0:
             new_phase = story.boss_phase_for(new_hp, max_hp)
             if phase_info and new_phase["phase"] != phase_info["phase"]:
+                boss_reactions = story.boss_flag_reactions(flags)
                 actions.append({"type": "start_boss_phase", "phase": new_phase["phase"],
-                                "banner": new_phase["banner"], "line": new_phase["line"]})
+                                "banner": new_phase["banner"], "line": new_phase["line"],
+                                "boss_reactions": boss_reactions})
                 if new_phase["phase"] >= 2:
                     actions += _flag_actions(["calendar_beast_phase_2"])
                     actions.append({"type": "spawn_entity", "entity": _spawn_entity(
@@ -1169,17 +1213,25 @@ def resolve_world_cast(
                 ending = story.compute_ending(
                     flags, final_runes=runes, weapon=player.get("weapon"),
                     mastery=player.get("rune_mastery"))
+                choices = story.ending_choice_lines(
+                    flags, final_runes=runes, weapon=player.get("weapon"),
+                    goblin_class=player.get("goblin_class"),
+                    mastery=player.get("rune_mastery"),
+                    evolved=bool(player.get("evolved")),
+                )
                 _ending_flag = {"repaired": "calendar_repaired",
                                 "devoured": "calendar_devoured",
                                 "tollmaster": "tollmaster_ending"}.get(
                     ending.key, "calendar_broken")
                 actions += _flag_actions([_ending_flag])
                 actions.append({"type": "win_game", "ending": ending.key,
-                                "title": ending.title, "text": ending.text})
+                                "title": ending.title, "text": ending.text,
+                                "choices": choices,
+                                "boss_reactions": story.boss_flag_reactions(flags, limit=3)})
         else:
             actions += _xp_actions(player, 1)  # chip damage XP
         return {"spell": spell.model_dump(), "world_actions": actions,
-                "target_id": tid, "runes": runes}
+                "target_id": tid, "runes": runes, "metadata": metadata}
 
     # --- chest -------------------------------------------------------------
     if ttype == "chest":

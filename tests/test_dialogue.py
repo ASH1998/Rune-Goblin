@@ -39,6 +39,28 @@ def test_extract_json_repairs_wrapped_text():
     assert parsed.get("npc_line") == "hi"
 
 
+def test_user_payload_carries_recent_story_events():
+    payload = dialogue._user_payload(
+        "Wet Library",
+        "talk",
+        {"id": "librarian", "name": "Mold Librarian"},
+        {
+            "goblin_class": "hunter",
+            "recent_story_events": [
+                {"kind": "flag", "text": "tourist_helped"},
+                {"kind": "journal", "text": "The wet catalog was read."},
+                {"kind": "shortcut", "text": "The sewer shortcut opened."},
+            ],
+        },
+        {"runes": ["eye"]},
+        ["tourist_helped"],
+    )
+
+    assert "recent_story_events" in payload
+    assert "The wet catalog was read." in payload
+    assert "The sewer shortcut opened." in payload
+
+
 def test_generate_dialogue_fallback_without_model(monkeypatch):
     # force the model off so we exercise the deterministic path
     monkeypatch.setenv("RG_USE_DIALOGUE_MODEL", "0")
