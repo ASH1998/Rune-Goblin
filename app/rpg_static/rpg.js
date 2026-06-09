@@ -29,6 +29,7 @@
   let journalOpen = false;
   let dialogueOpen = false;
   let lastEnding = null;        // {ending,title,text} from win_game action
+  let lastCastMetadata = null;  // structured /rg/cast metadata for HUD/debug
   let CLASSES = [], WEAPONS = {};
   const CLASS_SPRITE = {        // in-game sprite per class (Goblin Pack #1 hero sheets)
     warrior: "hero_warrior", rogue: "hero_rogue", poison: "hero_poison",
@@ -321,11 +322,25 @@
     P.gold = P.gold || 0;
     P.story_flags = P.story_flags || [];
     P.journal = P.journal || [];
+    P.recent_story_events = P.recent_story_events || [];
     P.evolved = P.evolved || false;
     P.four_rune_unlocked = P.four_rune_unlocked || false;
   }
   function hasFlag(f) { return (P.story_flags || []).includes(f); }
-  function addFlag(f) { if (f && !hasFlag(f)) P.story_flags.push(f); }
+  function rememberStoryEvent(kind, text) {
+    if (!P || !text) return;
+    P.recent_story_events = P.recent_story_events || [];
+    const event = { kind, text: String(text).slice(0, 180) };
+    P.recent_story_events = P.recent_story_events
+      .filter((e) => !(e.kind === event.kind && e.text === event.text))
+      .concat([event]).slice(-3);
+  }
+  function addFlag(f) {
+    if (f && !hasFlag(f)) {
+      P.story_flags.push(f);
+      rememberStoryEvent("flag", f);
+    }
+  }
   function addInventory(item) { if (item && !P.inventory.includes(item)) P.inventory.push(item); }
   function weaponLabel(id) { return (WEAPONS[id] && WEAPONS[id].label) || id; }
   function addUnique(arr, text) { if (text && !arr.includes(text)) arr.push(text); }
@@ -522,6 +537,18 @@
              dialogue: t.dialogue };
   }
 
+  function metadataLine(meta) {
+    const c = meta && meta.combat;
+    if (!c || !c.total_bonus) return "";
+    const bits = [];
+    if (c.weapon && c.weapon.bonus_damage) bits.push(c.weapon.label + " +" + c.weapon.bonus_damage);
+    if (c.goblin_class && c.goblin_class.bonus_damage) bits.push(c.goblin_class.label + " +" + c.goblin_class.bonus_damage);
+    if (c.rune_mastery && c.rune_mastery.bonus_damage) bits.push("mastery +" + c.rune_mastery.bonus_damage);
+    if (c.boss && c.boss.pylon_bonus) bits.push("pylon +" + c.boss.pylon_bonus);
+    if (c.boss && c.boss.king_bonus) bits.push("king +" + c.boss.king_bonus);
+    return bits.length ? " <span style='color:#ffd24a'>[" + bits.join(" · ") + "]</span>" : "";
+  }
+
   async function castRunes() {
     if (busy || over || drawing) return;
     if (!selected.length) { toast("Pick at least one rune (click or press 1–9)."); return; }
@@ -561,6 +588,7 @@
   function applyCast(res, target, extra) {
     const s = res.spell || {};
     const runes = res.runes || selected;
+    lastCastMetadata = res.metadata || null;
     // player HP change from the spell itself
     if (s.player_hp_delta) P.hp = clamp(P.hp + s.player_hp_delta, 0, P.max_hp);
 
@@ -586,9 +614,15 @@
             if (e) e.state = P.trust[a.target_id] > 0 ? "friendly" : (P.trust[a.target_id] < 0 ? "wary" : e.state);
           }
           break;
-        case "add_discovery": addUnique(P.discoveries, a.text); break;
+        case "add_discovery":
+          addUnique(P.discoveries, a.text);
+          rememberStoryEvent("discovery", a.text);
+          break;
         case "add_quest": addUnique(P.quest_log, a.text); break;
-        case "add_journal_entry": addUnique(P.journal, a.text); addUnique(P.discoveries, a.text); break;
+        case "add_journal_entry":
+          addUnique(P.journal, a.text); addUnique(P.discoveries, a.text);
+          rememberStoryEvent("journal", a.text);
+          break;
         case "set_story_flag":
           addFlag(a.flag);
           if (a.flag && (a.flag.startsWith("calendar_") || a.flag === "tollmaster_ending")) {
@@ -624,21 +658,25 @@
         case "upgrade_weapon":
           if (a.weapon && !P.weapon_inventory.includes(a.weapon)) P.weapon_inventory.push(a.weapon);
           if (a.weapon) P.weapon = a.weapon;
-          if (a.message) addUnique(P.journal, a.message);
+          if (a.message) { addUnique(P.journal, a.message); rememberStoryEvent("journal", a.message); }
           break;
         case "spawn_entity":
           if (a.entity && !byId(a.entity.id)) A.entities.push(a.entity);
           break;
         case "unlock_shortcut":
           if (a.target_id && e) { e.state = "open"; e.blocking = false; }
-          if (a.message) addUnique(P.discoveries, a.message);
+          if (a.message) { addUnique(P.discoveries, a.message); rememberStoryEvent("shortcut", a.message); }
           break;
         case "start_boss_phase":
           showBanner(a.banner || ("PHASE " + a.phase));
-          setTimeout(() => toast("<b>Calendar Beast</b>: " + (a.line || "")), 700);
+          setTimeout(() => {
+            const reactions = (a.boss_reactions || []).map((line) => "<br><span style='color:#ffce6b'>" + line + "</span>").join("");
+            toast("<b>Calendar Beast</b>: " + (a.line || "") + reactions);
+          }, 700);
           if (a.phase >= 3) setTimeout(() => { if (!over && canEvolveNow()) maybeEvolve(); }, 1400);
           break;
-        case "win_game": lastEnding = { ending: a.ending, title: a.title, text: a.text }; win(); break;
+        case "win_game": lastEnding = { ending: a.ending, title: a.title, text: a.text,
+          choices: a.choices || [], boss_reactions: a.boss_reactions || [] }; win(); break;
         default: break;
       }
     });
@@ -650,6 +688,7 @@
     if (!over) {
       let line = "<b>" + (s.spell_name || "Spell") + "</b> — " + (s.effect || "");
       if (s.side_effect) line += " <span style='color:#ffce6b'>⚠ " + s.side_effect + "</span>";
+      line += metadataLine(lastCastMetadata);
       if (extra) line += extra;
       if (target) {
         const weak = runes.some((r) => (target.weakness || []).includes(r));
@@ -705,6 +744,7 @@
     const line = "Level 4 mastery: " + runeLabel(key) + " is now steady enough to hit harder.";
     addUnique(P.journal, line);
     addUnique(P.discoveries, line);
+    rememberStoryEvent("journal", line);
     closeDialogue();
     showBanner("✦ RUNE MASTERY<br><span style='font-size:11px'>" + runeLabel(key) + "</span>");
     toast("✦ You chose <b>" + runeLabel(key) + "</b> mastery.");
@@ -763,7 +803,10 @@
 
   function applyDialoguePayload(npc, d) {
     if (!d) return;
-    if (d.journal_entry) { addUnique(P.journal, d.journal_entry); addUnique(P.discoveries, d.journal_entry); }
+    if (d.journal_entry) {
+      addUnique(P.journal, d.journal_entry); addUnique(P.discoveries, d.journal_entry);
+      rememberStoryEvent("journal", d.journal_entry);
+    }
     if (d.suggested_story_flag) addFlag(d.suggested_story_flag);
     let text = d.npc_line || (npc.dialogue || "…");
     if (d.story_toast) text += "<br><span style='color:#9c8bc4'>" + d.story_toast + "</span>";
@@ -780,7 +823,8 @@
         target: { id: npc.id, name: npc.name, type: npc.type, state: npc.state },
         player: { goblin_class: P.goblin_class, level: P.level, hp: P.hp,
           courage: P.courage, weapon: P.weapon, inventory: P.inventory.slice(),
-          story_flags: P.story_flags.slice(), npc_trust: P.trust[npc.id] || 0 },
+          story_flags: P.story_flags.slice(), npc_trust: P.trust[npc.id] || 0,
+          recent_story_events: (P.recent_story_events || []).slice(-3) },
         action: { mode: runes && runes.length ? "cast" : "talk", runes: runes || [] },
       });
       applyDialoguePayload(npc, d);
@@ -836,7 +880,13 @@
     const e = lastEnding || {};
     const title = e.title || "🏆 THE BEAST FALLS";
     const text = e.text || "You broke the Calendar.";
-    endScreen("win", title, text + "<br><br>Hero: <b>" + ((CLASSES.find((c) => c.id === P.goblin_class) || {}).label || "Goblin")
+    const choices = (e.choices || []).length
+      ? "<br><br><ul class='rg-ending-choices'>" + e.choices.map((line) => "<li>" + line + "</li>").join("") + "</ul>"
+      : "";
+    const bossLines = (e.boss_reactions || []).length
+      ? "<br><br><div class='rg-ending-boss'>" + e.boss_reactions.map((line) => "<p>Calendar Beast: " + line + "</p>").join("") + "</div>"
+      : "";
+    endScreen("win", title, text + bossLines + choices + "<br><br>Hero: <b>" + ((CLASSES.find((c) => c.id === P.goblin_class) || {}).label || "Goblin")
       + (P.evolved ? " 👑" : "") + "</b> · Level " + P.level + " · Final score: " + P.score);
   }
   function lose() { endScreen("lose", "💀 YOU COLLAPSED", "The dungeon keeps your score: " + P.score); }
@@ -1369,12 +1419,14 @@
     const li = (arr) => arr.length ? "<ul>" + arr.map((x) => "<li>" + x + "</li>").join("") + "</ul>" : "<ul><li class='flag'>— nothing yet —</li></ul>";
     const flags = (P.story_flags || []).map((f) => "<li class='flag'>" + f.replace(/_/g, " ") + "</li>");
     const mastered = Object.keys(P.rune_mastery || {}).filter((r) => P.rune_mastery[r] >= 5);
+    const recentEvents = (P.recent_story_events || []).map((e) => e.text || e);
     body.innerHTML =
       "<div class='rg-jsec'><h4>Hero</h4><ul><li>" + (cls.label || "Goblin") + (P.evolved ? " 👑 (King)" : "") +
         " · Lv " + P.level + " · XP " + P.xp + "/" + P.xp_to_next + "</li></ul></div>" +
       "<div class='rg-jsec'><h4>Weapons (click to equip)</h4><div class='rg-wpns'>" + weaponsHtml() + "</div></div>" +
       "<div class='rg-jsec'><h4>Objective</h4><ul><li>" + questText() + "</li></ul></div>" +
       "<div class='rg-jsec'><h4>Quest log</h4>" + li(P.quest_log || []) + "</div>" +
+      "<div class='rg-jsec'><h4>Recent events</h4>" + li(recentEvents) + "</div>" +
       "<div class='rg-jsec'><h4>Discoveries</h4>" + li((P.journal || []).concat((P.discoveries || []).filter((d) => !(P.journal || []).includes(d)))) + "</div>" +
       "<div class='rg-jsec'><h4>Inventory</h4>" + li(P.inventory || []) + "</div>" +
       (mastered.length ? "<div class='rg-jsec'><h4>Rune mastery</h4><ul>" + mastered.map((r) => "<li class='flag'>" + r.replace(/_/g, " ") + " ✦</li>").join("") + "</ul></div>" : "") +
@@ -1525,6 +1577,8 @@
         selected: selected.slice(), target: (facedTarget() || {}).id || null,
         mastery_choice_open: masteryChoiceOpen,
         mastered: Object.keys(P.rune_mastery || {}).filter((r) => P.rune_mastery[r] >= 5),
+        recent_story_events: (P.recent_story_events || []).slice(-3),
+        last_cast_metadata: lastCastMetadata,
         selecting, over, toast: toastMsg, smoke: debugSmoke(),
       } : { selecting, ready: false, smoke: debugSmoke() };
       el.textContent = JSON.stringify(state);
@@ -1533,6 +1587,8 @@
     window.__rg = {
       state: () => ({ area: P.area, x: P.x, y: P.y, facing, hp: P.hp, courage: P.courage,
         score: P.score, inv: P.inventory.slice(), discoveries: P.discoveries.slice(),
+        recent_story_events: (P.recent_story_events || []).slice(-3),
+        last_cast_metadata: lastCastMetadata,
         trust: Object.assign({}, P.trust), over, toast: toastMsg,
         target: (facedTarget() || {}).id || null,
         cam: { OX, OY, TILE, cw: canvas.width, ch: canvas.height, cols: COLS, rows: ROWS,
@@ -1553,6 +1609,7 @@
       selecting: () => selecting,
       prog: () => ({ level: P.level, xp: P.xp, xp_to_next: P.xp_to_next, weapon: P.weapon,
         gold: P.gold, evolved: P.evolved, flags: (P.story_flags || []).slice(),
+        recent_story_events: (P.recent_story_events || []).slice(-3),
         class: P.goblin_class, four: P.four_rune_unlocked }),
       talk: (id) => { const e = byId(id); if (e) openDialogue(e, []); },
       journal: () => P.journal.slice(),

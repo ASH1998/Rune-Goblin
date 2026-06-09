@@ -76,6 +76,16 @@ html, body {
 .rg-end.open { display:flex; }
 .rg-end h2 { font-family:"Press Start 2P",monospace; font-size:22px; margin:0; }
 .rg-end.win h2 { color:var(--green); } .rg-end.lose h2 { color:var(--hp); }
+.rg-ending-choices {
+  margin:0 auto; padding-left:18px; max-width:min(680px, 82vw);
+  text-align:left; line-height:1.55; color:var(--ink); font-size:13px;
+}
+.rg-ending-choices li { margin-bottom:4px; }
+.rg-ending-boss {
+  max-width:min(720px, 84vw); color:var(--gold); font-size:13px;
+  line-height:1.5; text-align:left;
+}
+.rg-ending-boss p { margin:0 0 5px; }
 
 /* ===== Character select (title screen) ===== */
 .rg-select {
