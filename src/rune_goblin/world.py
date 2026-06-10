@@ -16,7 +16,7 @@ from __future__ import annotations
 import random
 from dataclasses import asdict, dataclass, field
 
-from . import story
+from . import quests, story
 from .engine import GameState, resolve_spell
 from .runelang import ENEMIES, GLYPHS, find_combo, rune_matches
 from .schema import SpellResult
@@ -56,6 +56,7 @@ class Entity:
     target_y: int = 0
     hint: str = ""  # short interaction hint shown to the player
     sprite_key: str = ""  # explicit client sprite (creature/deco), else type-mapped
+    quest: str = ""  # quest id this NPC gives (tags quest-giver NPCs for the client)
 
 
 @dataclass
@@ -90,9 +91,10 @@ def _enemy(eid: str, name: str, x: int, y: int, mood: str = "") -> Entity:
     )
 
 
-def _npc(eid, name, x, y, *, sprite_key, dialogue, hint) -> Entity:
+def _npc(eid, name, x, y, *, sprite_key, dialogue, hint, quest="") -> Entity:
+    tags = ["friendly"] + (["quest_giver"] if quest else [])
     return Entity(id=eid, type="npc", name=name, x=x, y=y, sprite_key=sprite_key,
-                  blocking=True, tags=["friendly"], dialogue=dialogue, hint=hint)
+                  blocking=True, tags=tags, dialogue=dialogue, hint=hint, quest=quest)
 
 
 def _deco(eid, x, y, sprite_key, blocking=False) -> Entity:
@@ -262,11 +264,17 @@ def _build_areas() -> dict[str, Area]:
                  dialogue="The goblin hates bells and coins. Just saying.",
                  hint="a helpful hint about the gate goblin"),
             _npc("road_druid", "Road Druid", 41, 27, sprite_key="expert_druid",
-                 dialogue="Two doors west and east. The Library hides a Calendar Key.",
-                 hint="cast leaf and I may share growth"),
+                 dialogue="Two doors west and east. The Library hides a Calendar Key. "
+                          "Bring me a live fungus spore and I'll thread you something that mends.",
+                 hint="talk (T) for a quest — a living sample", quest="spore_sample"),
             _npc("watch_archer", "Blue Watch Archer", 11, 24, sprite_key="blue_archer",
-                 dialogue="Weaknesses matter. Face a creature, read its weak runes, then exploit them.",
-                 hint="cast eye to ask for combat advice"),
+                 dialogue="Weaknesses matter. Face a creature, read its weak runes, then exploit them. "
+                          "Clear some road vermin for me and I'll spare you potions.",
+                 hint="talk (T) for a patrol quest", quest="road_patrol"),
+            _npc("quartermaster", "Quartermaster Bramble", 35, 24, sprite_key="npc_pawn",
+                 dialogue="Bring me monster trophies and I'll trade you proper equipment "
+                          "and potions. A clerk needs more than a training wand.",
+                 hint="talk (T) to turn trophies into gear", quest="quartermaster_kit"),
             _story("toll_board", "Toll Notice Board", 13, 6, sprite_key="goblin_house",
                    requires=["eye"], dialogue="The toll road ledger names three debts: fungus mirrors, wet books, and the Calendar Beast.",
                    hint="cast eye to read the road story"),
@@ -848,14 +856,17 @@ def build_world(seed: int | None = None) -> dict:
             "level": 1, "xp": 0, "xp_to_next": story.xp_to_next(1),
             "goblin_class": start.id, "evolved": False, "evolved_form": "",
             "weapon": story.STARTING_WEAPON, "weapon_inventory": [story.STARTING_WEAPON],
-            "gold": 0, "rune_mastery": {}, "story_flags": [], "ending_flags": [], "journal": [],
+            "gold": 3, "rune_mastery": {}, "story_flags": [], "ending_flags": [], "journal": [],
             "four_rune_unlocked": False,
             "inventory": ["wet candle"], "score": 0, "statuses": [],
+            "items": {}, "quests": {},
             "quest_log": ["Find the Calendar Shard in the Mirror Fungus Caverns."],
             "discoveries": [], "recent_story_events": [], "trust": {},
         },
         "classes": [_class_to_dict(c) for c in story.GOBLIN_CLASSES.values()],
         "weapons": [_weapon_to_dict(w) for w in story.WEAPONS.values()],
+        "items": quests.items_payload(),
+        "quests": quests.quests_payload(),
         "runes": [{"key": k, "symbol": g.symbol, "label": g.label,
                    "meanings": list(g.meanings)} for k, g in GLYPHS.items()],
         "walkable": "".join(sorted(WALKABLE)),
@@ -1086,6 +1097,54 @@ def resolve_world_cast(
     ttype = (target or {}).get("type")
     tid = (target or {}).get("id")
 
+    # --- toll gate: the Queue Goblin takes a coin, a bell, or your blood ----
+    # Paying is a deterministic transaction, not combat: a coin (if you have
+    # one) buys peaceful passage; a bell annoys him aside for free; with no
+    # coin the toll comes out of your hide and you shove past anyway.
+    if ttype == "enemy" and tid == "toll_goblin" and (
+            "coin" in runes or "bell" in runes):
+        gold = int(player.get("gold", 0) or 0)
+        journal = story.NPC_VOICES["toll_goblin"].journal
+        actions.append({"type": "bump_mastery", "runes": runes})
+        # Clear the gate in every branch so the player is never soft-locked.
+        # Use defeat_entity (not set_entity_state) so the client marks the goblin
+        # done and does NOT retaliate — paying the toll is a transaction, not a
+        # fight. The spell's effect text carries the peaceful "gate opens" line.
+        actions.append({"type": "defeat_entity", "target_id": tid})
+
+        if "bell" in runes:
+            actions += _flag_actions(["queue_goblin_paid", "tollmaster_route_open"])
+            actions.append({"type": "add_journal_entry", "text": journal})
+            actions += _xp_actions(player, story.XP_UNLOCK)
+            spell = SpellResult(
+                spell_name="Bell of Passage", spell_type="utility",
+                flavor=_flavor_world(runes, target, combo),
+                effect="You ring the bell. The Queue Goblin winces and waves you through.",
+                status_effects=["toll_rung"], chaos=2)
+        elif gold >= 1:
+            actions.append({"type": "add_gold", "amount": -1})
+            actions += _flag_actions(["queue_goblin_paid", "toll_paid"])
+            actions.append({"type": "add_journal_entry", "text": journal})
+            actions += _xp_actions(player, story.XP_UNLOCK)
+            spell = SpellResult(
+                spell_name="Toll Paid", spell_type="utility",
+                flavor=_flavor_world(runes, target, combo),
+                effect="You drop a coin in his cup. The gate opens. (-1 coin)",
+                status_effects=["toll_paid"], chaos=1)
+        else:
+            actions += _flag_actions(["queue_goblin_forced", "toll_forced"])
+            actions.append({"type": "add_journal_entry",
+                            "text": "No coin for the toll — the Queue Goblin took it out of your hide."})
+            spell = SpellResult(
+                spell_name="Toll of Blood", spell_type="utility",
+                flavor=_flavor_world(runes, target, combo),
+                effect="You have no coin. The goblin takes the toll out of your hide "
+                       "(-2 HP) and you shove past.",
+                player_hp_delta=-2, status_effects=["toll_forced"], chaos=2)
+        return {"spell": spell.model_dump(), "world_actions": actions,
+                "target_id": tid, "runes": runes,
+                "metadata": {"combat": _combat_metadata(runes, player)}}
+
     # --- combat: enemy / boss ---------------------------------------------
     if ttype in {"enemy", "boss"}:
         cur_hp = target.get("hp", 5)
@@ -1207,6 +1266,12 @@ def resolve_world_cast(
             actions.append({"type": "defeat_entity", "target_id": tid})
             actions += _xp_actions(player, story.XP_DEFEAT_BOSS_PHASE if ttype == "boss"
                                    else story.XP_DEFEAT_ENEMY)
+            # Enemies drop a coin or two so the player can afford tolls, plus
+            # trophies/materials that feed the quest economy.
+            if ttype == "enemy":
+                actions.append({"type": "add_gold", "amount": rng.randint(1, 2)})
+                for drop in quests.monster_drops(tid, target.get("name", "")):
+                    actions.append({"type": "add_item", "item": drop, "qty": 1})
             if tid == "mycologist" or "mycologist" in str(tid):
                 actions += _flag_actions(["mycologist_defeated"])
             if ttype == "boss":
@@ -1253,6 +1318,8 @@ def resolve_world_cast(
                 actions += _flag_actions(["calendar_key_found"])
             if any("Shard" in str(i) for i in loot):
                 actions += _flag_actions(["calendar_shard_1_taken"])
+            # Chests also spill a few coins for tolls and trades.
+            actions.append({"type": "add_gold", "amount": rng.randint(2, 3)})
             actions += _xp_actions(player, story.XP_UNLOCK)
             effect = f"The lock surrenders. You find: {', '.join(loot) or 'dust'}."
             name = "Cursed Refund Bell" if "bell" in runes else "Tumbler's Lament"
