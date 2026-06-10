@@ -248,10 +248,13 @@ def test_chest_calendar_key_sets_flag():
 def test_merchant_sells_weapon_for_coin():
     tgt = {"id": "market_merchant", "type": "npc", "name": "Bone Market Merchant",
            "loot": ["bone_blade"], "dialogue": "buy"}
-    res = resolve_world_cast(["coin"], _player(), tgt, seed=6)
+    # weapons cost gold now: a funded player buys, and gold is charged
+    res = resolve_world_cast(["coin"], _player(gold=5), tgt, seed=6)
     assert "add_weapon" in _types(res)
     flags = [a["flag"] for a in res["world_actions"] if a["type"] == "set_story_flag"]
     assert "weapon_bought" in flags
+    assert any(a["type"] == "add_gold" and a["amount"] < 0
+               for a in res["world_actions"])
 
 
 def test_bone_market_cursed_deal_grants_power_and_tracks_cost():

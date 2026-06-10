@@ -197,3 +197,21 @@ html, body {
   color:#0c1a12; background:var(--green); border-radius:6px; padding:2px 7px;
   font-size:10px; text-transform:uppercase; letter-spacing:.04em;
 }
+
+/* ===== Bone Market shop (in-dialogue) ===== */
+.rg-shop { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:8px; margin-top:8px; }
+.rg-shop-buy {
+  display:flex; flex-direction:column; align-items:stretch; gap:4px; text-align:left;
+  background:#1b112d; color:var(--ink); border:1px solid var(--border);
+  border-radius:8px; padding:8px 10px; cursor:pointer; font-size:12px;
+}
+.rg-shop-buy:hover { border-color:var(--gold); }
+.rg-shop-buy.off { opacity:0.5; cursor:default; }
+.rg-shop-buy small { color:#9c8bc4; font-size:10px; line-height:1.35; }
+.rg-shop-row { display:flex; justify-content:space-between; align-items:center; gap:8px; }
+.rg-shop-price { color:var(--gold); font-weight:bold; white-space:nowrap; }
+.rg-shop-price.cursed { color:#ff5d73; }
+.rg-shop-line { margin-bottom:6px; }
+.rg-shop-gold { font-size:11px; color:#9c8bc4; margin-bottom:2px; }
+.rg-shop-haggle { color:var(--gold); font-style:italic; opacity:0.85; }
+.rg-shop-model { margin-top:6px; color:var(--gold); font-size:10px; }
