@@ -27,10 +27,12 @@
   let selecting = false;        // title-screen character select active
   let chosenClass = null;       // selected goblin class id
   let journalOpen = false;
+  let invOpen = false;
+  let objHit = null;            // canvas-space click box for the HUD objective icons
   let dialogueOpen = false;
   let lastEnding = null;        // {ending,title,text} from win_game action
   let lastCastMetadata = null;  // structured /rg/cast metadata for HUD/debug
-  let CLASSES = [], WEAPONS = {};
+  let CLASSES = [], WEAPONS = {}, ITEMS = {}, QUESTS_META = {};
   const CLASS_SPRITE = {        // in-game sprite per class (Goblin Pack #1 hero sheets)
     warrior: "hero_warrior", rogue: "hero_rogue", poison: "hero_poison",
     hunter: "hero_hunter", barbarian: "hero_barbarian",
@@ -325,6 +327,8 @@
     P.recent_story_events = P.recent_story_events || [];
     P.evolved = P.evolved || false;
     P.four_rune_unlocked = P.four_rune_unlocked || false;
+    P.items = P.items || {};      // counted bag: { item_id: qty }
+    P.quests = P.quests || {};    // { quest_id: "active" | "done" }
   }
   function hasFlag(f) { return (P.story_flags || []).includes(f); }
   function rememberStoryEvent(kind, text) {
@@ -342,6 +346,29 @@
     }
   }
   function addInventory(item) { if (item && !P.inventory.includes(item)) P.inventory.push(item); }
+  // ---- counted item bag (potions / trophies / materials) ----
+  function itemCount(id) { return (P.items && P.items[id]) || 0; }
+  function itemLabel(id) { return (ITEMS[id] && ITEMS[id].label) || id.replace(/_/g, " "); }
+  function addItem(id, qty) {
+    if (!id) return;
+    P.items = P.items || {};
+    P.items[id] = Math.max(0, (P.items[id] || 0) + (qty == null ? 1 : qty));
+    if (P.items[id] <= 0) delete P.items[id];
+  }
+  function removeItem(id, qty) { addItem(id, -(qty == null ? 1 : qty)); }
+  function useItem(id) {
+    const meta = ITEMS[id];
+    if (!meta || meta.kind !== "potion" || itemCount(id) <= 0) return;
+    // Don't waste a potion that would do nothing (already topped up).
+    const wouldHelp = (meta.heal && P.hp < P.max_hp) || (meta.courage && P.courage < P.max_courage);
+    if (!wouldHelp) { toast("Already full — save the <b>" + meta.label + "</b> for later."); return; }
+    let msg = "";
+    if (meta.heal) { const before = P.hp; P.hp = clamp(P.hp + meta.heal, 0, P.max_hp); msg = "+" + (P.hp - before) + " HP"; }
+    if (meta.courage) { const before = P.courage; P.courage = clamp(P.courage + meta.courage, 0, P.max_courage); msg += (msg ? ", " : "") + "+" + (P.courage - before) + " courage"; }
+    removeItem(id, 1);
+    toast("🧪 Used <b>" + meta.label + "</b> (" + (msg || "no effect") + ").");
+    refreshPanels();
+  }
   function weaponLabel(id) { return (WEAPONS[id] && WEAPONS[id].label) || id; }
   function addUnique(arr, text) { if (text && !arr.includes(text)) arr.push(text); }
   function questText() {
@@ -354,6 +381,21 @@
     const gate = (areas.library || { entities: [] }).entities.find((e) => e.id === "portal_arena");
     if (gate && gate.state === "locked") return "Open the Calendar Gate with the Calendar Key";
     return "Cross the Gate Approach to the Calendar Beast";
+  }
+  // Main-quest milestones as compact icons for the HUD (instead of a long line).
+  function objectiveSteps() {
+    const inv = new Set(P.inventory || []);
+    const boss = (areas.arena || { entities: [] }).entities.find((e) => e.id === "calendar_beast");
+    const gate = (areas.library || { entities: [] }).entities.find((e) => e.id === "portal_arena");
+    const steps = [
+      { icon: "💠", label: "SHARD", done: inv.has("Calendar Shard") },
+      { icon: "🔑", label: "KEY", done: inv.has("Calendar Key") },
+      { icon: "🚪", label: "GATE", done: !!(gate && gate.state !== "locked") },
+      { icon: "👹", label: "BEAST", done: !!(boss && boss.state === "defeated") },
+    ];
+    const cur = steps.findIndex((s) => !s.done);
+    steps.forEach((s, i) => { s.current = i === cur; });
+    return steps;
   }
   function maxRunes() { return P.four_rune_unlocked ? 4 : 3; }
 
@@ -527,7 +569,8 @@
              level: P.level, xp: P.xp, goblin_class: P.goblin_class, weapon: P.weapon,
              weapon_inventory: (P.weapon_inventory || []).slice(),
              story_flags: (P.story_flags || []).slice(), rune_mastery: P.rune_mastery || {},
-             gold: P.gold, recent_runes: recentRunes.slice(), evolved: P.evolved };
+             gold: P.gold, recent_runes: recentRunes.slice(), evolved: P.evolved,
+             items: Object.assign({}, P.items || {}), quests: Object.assign({}, P.quests || {}) };
   }
   function targetCtx(t) {
     if (!t) return null;
@@ -604,6 +647,16 @@
         case "set_entity_blocking": if (e) e.blocking = a.blocking; break;
         case "add_inventory": addInventory(a.item); break;
         case "remove_inventory": { const i = P.inventory.indexOf(a.item); if (i >= 0) P.inventory.splice(i, 1); } break;
+        case "add_item":
+          addItem(a.item, a.qty == null ? 1 : a.qty);
+          if (a.qty !== 0 && (a.qty == null || a.qty > 0)) toast("🎒 +" + (a.qty || 1) + " <b>" + itemLabel(a.item) + "</b>.");
+          break;
+        case "remove_item": removeItem(a.item, a.qty == null ? 1 : a.qty); break;
+        case "set_quest":
+          P.quests = P.quests || {};
+          P.quests[a.quest] = a.state || "active";
+          if (a.log) addUnique(P.quest_log, a.log);
+          break;
         case "add_gold": P.gold = Math.max(0, (P.gold || 0) + (a.amount || 0)); break;
         case "add_xp": applyProgressGain(a.amount || 0); break;
         case "heal_player": P.hp = clamp(P.hp + a.amount, 0, P.max_hp); break;
@@ -807,10 +860,14 @@
       addUnique(P.journal, d.journal_entry); addUnique(P.discoveries, d.journal_entry);
       rememberStoryEvent("journal", d.journal_entry);
     }
-    if (d.suggested_story_flag) addFlag(d.suggested_story_flag);
+    // Dialogue is flavor-only: story flags are owned by the cast engine
+    // (/rg/cast world actions), never by the chat model. See dialogue.sanitize.
     let text = d.npc_line || (npc.dialogue || "…");
     if (d.story_toast) text += "<br><span style='color:#9c8bc4'>" + d.story_toast + "</span>";
-    const src = d.source === "model" ? " <span style='color:#6df5a0;font-size:10px'>· MiniCPM-V-4.6 base model</span>" : "";
+    // Attribute live model-written lines (yellow); blank for deterministic fallback.
+    const src = d.source === "model"
+      ? "<br><span style='color:#ffd24a;font-size:10px'>✶ generated by " + (d.model || "the story model") + "</span>"
+      : "";
     showDialogue(npc, text + src, false);
   }
 
@@ -832,10 +889,61 @@
       showDialogue(npc, npc.dialogue || npc.hint || "They nod, distracted.", false);
     }
   }
+  // Apply the limited action set a quest interaction can return (deterministic).
+  function applyQuestActions(actions) {
+    let leveled = false;
+    (actions || []).forEach((a) => {
+      switch (a.type) {
+        case "set_quest":
+          P.quests = P.quests || {}; P.quests[a.quest] = a.state || "active";
+          if (a.log) addUnique(P.quest_log, a.log);
+          break;
+        case "add_item": addItem(a.item, a.qty == null ? 1 : a.qty); break;
+        case "remove_item": removeItem(a.item, a.qty == null ? 1 : a.qty); break;
+        case "add_weapon":
+          if (!P.weapon_inventory.includes(a.weapon)) P.weapon_inventory.push(a.weapon);
+          P.weapon = a.weapon;
+          if (WEAPONS[a.weapon] && WEAPONS[a.weapon].story_flag) addFlag(WEAPONS[a.weapon].story_flag);
+          break;
+        case "add_inventory": addInventory(a.item); break;
+        case "add_gold": P.gold = Math.max(0, (P.gold || 0) + (a.amount || 0)); break;
+        case "add_xp": applyProgressGain(a.amount || 0); leveled = true; break;
+        case "heal_player": P.hp = clamp(P.hp + (a.amount || 0), 0, P.max_hp); break;
+        case "add_courage": P.courage = clamp(P.courage + (a.amount || 0), 0, P.max_courage); break;
+        case "set_story_flag": addFlag(a.flag); break;
+        case "add_journal_entry":
+          addUnique(P.journal, a.text); addUnique(P.discoveries, a.text);
+          rememberStoryEvent("journal", a.text);
+          break;
+        default: break;
+      }
+    });
+    return leveled;
+  }
+
+  async function questTalk(npc) {
+    if (over || !npc) return;
+    showDialogue(npc, "<i>…</i>", true);
+    try {
+      const d = await api("/rg/quest", { npc_id: npc.id, player: playerCtx() });
+      applyQuestActions(d.world_actions);
+      // Reward turn-ins get a celebratory tag; offers/progress just show the line.
+      let tag = "";
+      if (d.quest_state === "turned_in" || d.quest_state === "exchange")
+        tag = "<br><span style='color:#6df5a0;font-size:11px'>✓ " + (d.reward ? "received " + d.reward : "complete") + "</span>";
+      else if (d.quest_state === "offered")
+        tag = "<br><span style='color:#ffd24a;font-size:11px'>✦ quest accepted — check your Journal (J)</span>";
+      showDialogue({ id: npc.id, name: npc.name || d.name }, (d.line || npc.dialogue || "…") + tag, false);
+    } catch (e) {
+      showDialogue(npc, npc.dialogue || npc.hint || "They nod, distracted.", false);
+    }
+  }
+
   function talk() {
     const t = facedTarget();
-    if (t && t.type === "npc") openDialogue(t, []);
-    else toast("Face an NPC, then press T to talk.");
+    if (!t || t.type !== "npc") { toast("Face an NPC, then press T to talk."); return; }
+    if (t.quest) questTalk(t);     // quest-giver -> deterministic quest flow
+    else openDialogue(t, []);      // everyone else -> live story dialogue
   }
 
   // ---- banner (boss phase / evolution) ----
@@ -1201,17 +1309,47 @@
     ctx.fillStyle = "#6df5a0"; ctx.fillRect(xb, cy - 5, xpw * frac, 10);
     ctx.strokeStyle = "#34254d"; ctx.strokeRect(xb, cy - 5, xpw, 10);
     hx += xpw + 16;
-    ctx.fillStyle = "#9c8bc4"; ctx.fillText("BAG " + P.inventory.length, hx, cy); hx += 95;
+    const bagCount = Object.values(P.items || {}).reduce((a, b) => a + b, 0);
+    ctx.fillStyle = "#9c8bc4"; ctx.fillText("BAG " + bagCount, hx, cy); hx += 95;
     ctx.fillStyle = "#ffd24a"; ctx.fillText("G " + (P.gold || 0), hx, cy);
     ctx.textAlign = "right"; ctx.fillStyle = "#b07cff";
     ctx.fillText(A.name.toUpperCase(), canvas.width - 14, cy);
-    // bottom row: weapon + objective + latest discovery
+    // bottom row: weapon (left) + objective icon track (right)
     ctx.textAlign = "left"; ctx.font = '10px "Press Start 2P", monospace';
     ctx.fillStyle = "#ffce6b";
     ctx.fillText("🗡 " + weaponLabel(P.weapon).toUpperCase(), 12, HUD_TOP - 14);
-    ctx.textAlign = "right"; ctx.fillStyle = "#e7d9ff";
-    ctx.fillText("OBJ " + questText().toUpperCase(), canvas.width - 14, HUD_TOP - 14);
+    drawObjectiveIcons(HUD_TOP - 14);
     ctx.textAlign = "left";
+  }
+
+  // Compact objective track: faded = done, gold+underline = current, dim = future.
+  // Click-zone (canvas coords) recorded in objHit so the canvas handler can open
+  // the Journal when the painted icons are clicked.
+  function drawObjectiveIcons(y) {
+    const steps = objectiveSteps();
+    const STEP = 30, R = canvas.width - 14;
+    objHit = { x0: R - steps.length * STEP - 78, y0: y - 14, x1: R + 2, y1: y + 14 };
+    const cur = steps.find((s) => s.current);
+    // tiny current-step label so the icons stay understandable
+    ctx.textAlign = "right"; ctx.font = '9px "Press Start 2P", monospace';
+    ctx.fillStyle = "#ffd24a";
+    const labelX = R - steps.length * STEP - 8;
+    ctx.fillText(cur ? cur.label : "DONE", labelX, y);
+    // icons, left-to-right ending at the right margin
+    ctx.textAlign = "center"; ctx.font = '16px sans-serif';
+    const startX = R - steps.length * STEP + STEP / 2;
+    steps.forEach((s, i) => {
+      const x = startX + i * STEP;
+      ctx.globalAlpha = s.current ? 1 : (s.done ? 0.4 : 0.55);
+      ctx.fillText(s.icon, x, y);
+      if (s.current) {
+        ctx.fillStyle = "#ffd24a"; ctx.fillRect(x - 9, y + 9, 18, 2);
+      } else if (s.done) {
+        ctx.fillStyle = "#6df5a0"; ctx.font = '8px "Press Start 2P", monospace';
+        ctx.fillText("✓", x + 9, y - 8); ctx.font = '16px sans-serif';
+      }
+    });
+    ctx.globalAlpha = 1;
   }
 
   function render() {
@@ -1309,7 +1447,9 @@
     if (drawing) { if (k === "escape") closeDraw(); return; }
     if (dialogueOpen) { if (k === "escape" || k === " " || k === "enter") { closeDialogue(); ev.preventDefault(); } return; }
     if (k === "j") { toggleJournal(); ev.preventDefault(); return; }
+    if (k === "i") { toggleInventory(); ev.preventDefault(); return; }
     if (journalOpen && k === "escape") { toggleJournal(); return; }
+    if (invOpen && k === "escape") { toggleInventory(); return; }
     if (over) return;
     if (k === "t") { talk(); ev.preventDefault(); return; }
     if (["arrowup", "w"].includes(k)) { tryMove("up"); ev.preventDefault(); }
@@ -1359,6 +1499,8 @@
     runesMeta = W.runes;
     CLASSES = W.classes || [];
     WEAPONS = {}; (W.weapons || []).forEach((w) => { WEAPONS[w.id] = w; });
+    ITEMS = {}; (W.items || []).forEach((i) => { ITEMS[i.id] = i; });
+    QUESTS_META = {}; (W.quests || []).forEach((q) => { QUESTS_META[q.id] = q; });
     areas = JSON.parse(JSON.stringify(W.areas));
     P = JSON.parse(JSON.stringify(W.player));
     ensurePlayerMeta();
@@ -1366,6 +1508,7 @@
     over = false; lastEnding = null;
     $("rg-end").className = "rg-end";
     closeDialogue(); $("rg-journal").className = "rg-journal"; journalOpen = false;
+    $("rg-inventory").className = "rg-journal rg-inventory"; invOpen = false;
     showSelect();
   }
 
@@ -1397,7 +1540,7 @@
     if (!(P.weapon_inventory || []).includes(id)) return;
     P.weapon = id;
     toast("🗡️ Equipped <b>" + weaponLabel(id) + "</b>. " + ((WEAPONS[id] || {}).identity || ""));
-    renderJournal();
+    refreshPanels();
   }
   function weaponsHtml() {
     const inv = P.weapon_inventory || [P.weapon];
@@ -1412,6 +1555,36 @@
     }).join("");
   }
 
+  // ---- item bag + quests (inventory system) ----
+  function bagHtml() {
+    const ids = Object.keys(P.items || {}).filter((id) => itemCount(id) > 0);
+    if (!ids.length) return "<ul><li class='flag'>— bag empty — defeat monsters for loot —</li></ul>";
+    // potions first so the usable ones are easy to reach
+    ids.sort((a, b) => ((ITEMS[b] && ITEMS[b].kind === "potion") - (ITEMS[a] && ITEMS[a].kind === "potion")));
+    return "<div class='rg-bag'>" + ids.map((id) => {
+      const m = ITEMS[id] || { icon: "📦", label: id, kind: "material", desc: "" };
+      const usable = m.kind === "potion";
+      return "<div class='rg-item" + (usable ? " usable" : "") + "'" + (usable ? " data-use='" + id + "'" : "") +
+        " title='" + (m.desc || "") + "'>" +
+        "<span class='rg-item-ic'>" + (m.icon || "📦") + "</span>" +
+        "<span class='rg-item-lb'>" + m.label + "</span>" +
+        "<span class='rg-item-qty'>×" + itemCount(id) + "</span>" +
+        (usable ? "<span class='rg-item-use'>Use</span>" : "") + "</div>";
+    }).join("") + "</div>";
+  }
+  function questsHtml() {
+    const ids = Object.keys(P.quests || {});
+    if (!ids.length) return "<ul><li class='flag'>— no quests yet — talk (T) to the Watch, Druid or Quartermaster —</li></ul>";
+    return "<ul>" + ids.map((id) => {
+      const q = QUESTS_META[id] || { title: id };
+      const st = P.quests[id];
+      if (st === "done") return "<li>✓ <b>" + q.title + "</b> <span class='flag'>complete</span></li>";
+      const have = itemCount(q.objective_item), need = q.count || 0;
+      return "<li>• <b>" + q.title + "</b> — " + have + "/" + need + " " + (q.objective_label || "") +
+        (have >= need ? " <span style='color:#6df5a0'>(turn in!)</span>" : "") + "</li>";
+    }).join("") + "</ul>";
+  }
+
   // ---- journal panel ----
   function renderJournal() {
     const body = $("rg-journal-body"); if (!body) return;
@@ -1423,21 +1596,40 @@
     body.innerHTML =
       "<div class='rg-jsec'><h4>Hero</h4><ul><li>" + (cls.label || "Goblin") + (P.evolved ? " 👑 (King)" : "") +
         " · Lv " + P.level + " · XP " + P.xp + "/" + P.xp_to_next + "</li></ul></div>" +
-      "<div class='rg-jsec'><h4>Weapons (click to equip)</h4><div class='rg-wpns'>" + weaponsHtml() + "</div></div>" +
       "<div class='rg-jsec'><h4>Objective</h4><ul><li>" + questText() + "</li></ul></div>" +
-      "<div class='rg-jsec'><h4>Quest log</h4>" + li(P.quest_log || []) + "</div>" +
+      "<div class='rg-jsec'><h4>Quests (talk to turn in)</h4>" + questsHtml() + "</div>" +
       "<div class='rg-jsec'><h4>Recent events</h4>" + li(recentEvents) + "</div>" +
       "<div class='rg-jsec'><h4>Discoveries</h4>" + li((P.journal || []).concat((P.discoveries || []).filter((d) => !(P.journal || []).includes(d)))) + "</div>" +
-      "<div class='rg-jsec'><h4>Inventory</h4>" + li(P.inventory || []) + "</div>" +
       (mastered.length ? "<div class='rg-jsec'><h4>Rune mastery</h4><ul>" + mastered.map((r) => "<li class='flag'>" + r.replace(/_/g, " ") + " ✦</li>").join("") + "</ul></div>" : "") +
       "<div class='rg-jsec'><h4>Story memory</h4><ul>" + (flags.length ? flags.join("") : "<li class='flag'>— the world has not remembered anything yet —</li>") + "</ul></div>";
-    body.querySelectorAll(".rg-wpn").forEach((b) => { b.onclick = () => equipWeapon(b.dataset.w); });
   }
   function toggleJournal() {
     journalOpen = !journalOpen;
-    if (journalOpen) renderJournal();
+    if (journalOpen) { renderJournal(); if (invOpen) toggleInventory(); }
     $("rg-journal").className = "rg-journal" + (journalOpen ? " open" : "");
   }
+
+  // ---- inventory panel (separate from the journal) ----
+  function renderInventory() {
+    const body = $("rg-inventory-body"); if (!body) return;
+    const li = (arr) => arr.length ? "<ul>" + arr.map((x) => "<li>" + x + "</li>").join("") + "</ul>" : "<ul><li class='flag'>— nothing yet —</li></ul>";
+    body.innerHTML =
+      "<div class='rg-jsec'><h4>Equipped weapon</h4><div class='rg-wpns'>" +
+        "<button class='rg-wpn equipped'><img src='/rg/static/icons/" + (WEAPON_ICON[P.weapon] || "wpn_magic") +
+        ".png' alt=''> <b>" + weaponLabel(P.weapon) + "</b></button></div></div>" +
+      "<div class='rg-jsec'><h4>Weapons (click to equip)</h4><div class='rg-wpns'>" + weaponsHtml() + "</div></div>" +
+      "<div class='rg-jsec'><h4>Bag (click a potion to use)</h4>" + bagHtml() + "</div>" +
+      "<div class='rg-jsec'><h4>Key items</h4>" + li(P.inventory || []) + "</div>" +
+      "<div class='rg-jsec'><h4>Coins</h4><ul><li>🪙 " + (P.gold || 0) + " coins</li></ul></div>";
+    body.querySelectorAll(".rg-wpn[data-w]").forEach((b) => { b.onclick = () => equipWeapon(b.dataset.w); });
+    body.querySelectorAll(".rg-item[data-use]").forEach((b) => { b.onclick = () => useItem(b.dataset.use); });
+  }
+  function toggleInventory() {
+    invOpen = !invOpen;
+    if (invOpen) { renderInventory(); if (journalOpen) toggleJournal(); }
+    $("rg-inventory").className = "rg-journal rg-inventory" + (invOpen ? " open" : "");
+  }
+  function refreshPanels() { if (invOpen) renderInventory(); if (journalOpen) renderJournal(); }
 
   // Keep the canvas's internal resolution equal to its displayed CSS size.
   // Called every frame so it self-corrects even if Gradio lays out the iframe
@@ -1464,6 +1656,8 @@
     $("rg-talk").onclick = () => { gesture(); talk(); canvas.focus(); };
     $("rg-journal-open").onclick = () => { gesture(); toggleJournal(); canvas.focus(); };
     const jc = $("rg-journal-close"); if (jc) jc.onclick = () => { toggleJournal(); canvas.focus(); };
+    const io = $("rg-inventory-open"); if (io) io.onclick = () => { gesture(); toggleInventory(); canvas.focus(); };
+    const ic = $("rg-inventory-close"); if (ic) ic.onclick = () => { toggleInventory(); canvas.focus(); };
     const ss = $("rg-select-start"); if (ss) ss.onclick = () => { gesture(); startGame(chosenClass); canvas.focus(); };
     const dlg = $("rg-dialogue"); if (dlg) dlg.onclick = () => { closeDialogue(); canvas.focus(); };
     $("rg-clear").onclick = () => { selected = []; renderPalette(); canvas.focus(); };
@@ -1480,7 +1674,26 @@
       canvas.focus();
     };
     window.addEventListener("keydown", (e) => { gesture(); onKey(e); });
-    canvas.addEventListener("click", () => { gesture(); canvas.focus(); });
+    canvas.addEventListener("click", (ev) => {
+      gesture(); canvas.focus();
+      // Clicking the HUD objective icons opens the Journal (full objective + quests).
+      if (objHit) {
+        const r = canvas.getBoundingClientRect();
+        const cx = (ev.clientX - r.left) * canvas.width / r.width;
+        const cy = (ev.clientY - r.top) * canvas.height / r.height;
+        if (cx >= objHit.x0 && cx <= objHit.x1 && cy >= objHit.y0 && cy <= objHit.y1) {
+          if (!journalOpen) toggleJournal();
+        }
+      }
+    });
+    canvas.addEventListener("mousemove", (ev) => {
+      if (!objHit) return;
+      const r = canvas.getBoundingClientRect();
+      const cx = (ev.clientX - r.left) * canvas.width / r.width;
+      const cy = (ev.clientY - r.top) * canvas.height / r.height;
+      const over = cx >= objHit.x0 && cx <= objHit.x1 && cy >= objHit.y0 && cy <= objHit.y1;
+      canvas.style.cursor = over ? "pointer" : "default";
+    });
     canvas.setAttribute("tabindex", "0");
     canvas.focus();
     function debugEntity(id, areaId) {
@@ -1603,6 +1816,9 @@
       open: debugOpen,
       travel: (id) => { const e = debugEntity(id); if (e && e.type === "portal" && e.state !== "locked") { travel(e); return true; } return false; },
       inventory: (...items) => debugInventory(items),
+      give: (id, qty) => { addItem(id, qty == null ? 1 : qty); return Object.assign({}, P.items); },
+      items: () => Object.assign({}, P.items || {}),
+      quests: () => Object.assign({}, P.quests || {}),
       flags: (...flags) => debugFlags(flags),
       smoke: debugSmoke,
       start: (cls) => startGame(cls || "warrior"),
@@ -1611,7 +1827,7 @@
         gold: P.gold, evolved: P.evolved, flags: (P.story_flags || []).slice(),
         recent_story_events: (P.recent_story_events || []).slice(-3),
         class: P.goblin_class, four: P.four_rune_unlocked }),
-      talk: (id) => { const e = byId(id); if (e) openDialogue(e, []); },
+      talk: (id) => { const e = byId(id); if (e) { e.quest ? questTalk(e) : openDialogue(e, []); } },
       journal: () => P.journal.slice(),
       pick: (...ks) => { selected = ks.slice(0, 4); renderPalette(); },
       pause: () => { paused = true; },
