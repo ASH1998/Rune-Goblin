@@ -43,9 +43,14 @@ jobs:
           sudo apt-get install -y git-lfs
           git lfs install
 
+      - name: Clean checkout before LFS migration
+        run: |
+          git reset --hard HEAD
+          git clean -fd
+
       - name: Migrate binaries to LFS pointers for Space push
         run: |
-          git lfs migrate import --everything --include="*.wav,*.png,*.jpg,*.jpeg,*.mp3,*.ogg,*.gif"
+          git lfs migrate import --yes --everything --include="*.wav,*.png,*.jpg,*.jpeg,*.mp3,*.ogg,*.gif"
 
       - name: Sync Space runtime config
         env:
