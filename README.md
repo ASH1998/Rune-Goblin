@@ -1,3 +1,20 @@
+---
+title: Rune Goblin
+emoji: 🪄
+colorFrom: purple
+colorTo: gray
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
+<!--
+  The YAML block above is the Hugging Face Space card config, read by HF when
+  this repo is pushed to the Space. It is harmless on GitHub. Deploy is driven
+  by the root Dockerfile, which launches the Gradio RPG app in `app/rpg_app.py`;
+  see `.github/workflows/deploy-hf-space.yml`.
+-->
+
 # 🪄 Rune Goblin
 
 > Draw bad spells, suffer beautifully.
