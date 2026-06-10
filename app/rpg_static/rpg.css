@@ -51,6 +51,8 @@ html, body {
 .rg-btn:active { transform:translatey(1px); }
 .rg-btn.primary { background:var(--accent); color:#160d24; font-weight:bold; }
 .rg-btn.ghost { background:transparent; }
+.rg-admin-goto { background:#173b2a; color:var(--green); border-color:#2f6f4d; max-width:200px; }
+.rg-admin-goto:hover { background:#1d4d37; }
 .rg-sel { color:var(--accent); font-size:13px; min-width:110px; }
 .rg-target { color:var(--green); font-size:12px; }
 .rg-toast { min-height:18px; color:var(--ink); font-size:13px; text-align:center; }

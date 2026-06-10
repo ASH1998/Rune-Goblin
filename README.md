@@ -136,9 +136,10 @@ fine-tuning reference and model-serving notes.
 A free-roaming campaign RPG. You start on a **character-select title screen** and
 pick one of five goblin heroes (Warrior / Rogue / Poison Rogue / Hunter /
 Barbarian, art from `assets/Goblin Pack #1`), each with its own HP, courage and
-rune affinities. Then explore **seven connected areas** — Toll Road hub, Mirror
-Fungus Caverns, Wet Library, Bone Market, Clock Sewer, Gate Approach and the
-Calendar Beast Arena — fighting enemies, gaining **XP and levels**, buying
+rune affinities. Then explore **nine connected areas** — Toll Road hub, Mirror
+Fungus Caverns, Wet Library, Bone Market, Clock Sewer, Gate Approach, the
+Calendar Beast Arena, plus the **Frostbite Pass** and **Ember Foundry** (a
+linked ice/forge loop off the hub) — fighting enemies, gaining **XP and levels**, buying
 **weapons** that modify your spells, helping or scaring NPCs, and leaving durable
 **story flags** that steer one of four endings (Broken / Repaired / Devoured /
 secret Tollmaster). The final boss has three phases and your hero can **evolve
@@ -158,6 +159,21 @@ RG_USE_DIALOGUE_MODEL=1 \
 RG_DIALOGUE_MODEL=models/MiniCPM-V-4.6-gguf/MiniCPM-V-4_6-Q4_K_M.gguf \
 uv run --extra gguf python app/rpg_app.py
 # → http://localhost:7862   (set RG_USE_MODEL=0 to play purely on the rule engine)
+```
+
+**Admin mode.** A fully-unlocked world: every area-to-area portal and locked
+door is walkable, locked chests open with any cast, and the hero holds the key
+story items (Calendar Key, Debt Receipt, Thawed Ember…). When it's on, a
+`🔓 ADMIN` badge shows in the HUD and a green **⇪ Warp to map…** dropdown appears
+in the action bar to teleport directly to any of the nine areas. Two ways to
+enable it:
+
+- **Backend:** set `RG_ADMIN=1` on the server — the world ships pre-unlocked.
+- **In-game:** press **Shift + L + A** (held together) to toggle admin on/off at
+  any time, even from a normal run. Toggling off restores every lock.
+
+```bash
+RG_USE_MODEL=0 RG_ADMIN=1 uv run python app/rpg_app.py   # all maps unlocked from boot
 ```
 
 **NPC dialogue model.** `RG_USE_DIALOGUE_MODEL=1` enables live, model-written NPC

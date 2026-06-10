@@ -45,7 +45,7 @@ PLAY_PAGE = """<!doctype html>
   <title>Rune Goblin RPG</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/rg/static/rpg.css?v=39">
+  <link rel="stylesheet" href="/rg/static/rpg.css?v=40">
 </head>
 <body>
   <div id="rg-root">
@@ -112,13 +112,14 @@ PLAY_PAGE = """<!doctype html>
         <button class="rg-btn ghost" id="rg-reset">New Game</button>
         <button class="rg-btn ghost" id="rg-mute" title="music">🔊</button>
         <button class="rg-btn ghost" id="rg-full" title="fullscreen">⛶</button>
+        <select class="rg-btn rg-admin-goto" id="rg-admin-goto" title="admin: warp to map" style="display:none"></select>
         <span class="rg-target" id="rg-target"></span>
       </div>
       <div class="rg-toast" id="rg-toast">Use WASD / arrows to roam. Face something and cast a spell.</div>
       <div class="rg-hint">WASD / Arrows move · 1–9 pick runes · Space cast · E draw · C clear · step into portals to travel</div>
     </div>
   </div>
-  <script src="/rg/static/rpg.js?v=39"></script>
+  <script src="/rg/static/rpg.js?v=40"></script>
 </body>
 </html>
 """

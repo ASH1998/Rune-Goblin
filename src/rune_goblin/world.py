@@ -13,6 +13,7 @@ here, so Python stays the spell engine and the balance authority.
 
 from __future__ import annotations
 
+import os
 import random
 from dataclasses import asdict, dataclass, field
 
@@ -297,6 +298,12 @@ def _build_areas() -> dict[str, Area]:
                    state="locked", blocking=True, target_area="bone_market", target_x=2, target_y=2,
                    requires=["Debt Receipt"], tags=["shop", "shortcut"],
                    hint="sealed — needs Debt Receipt, coin+bell, or a forced cursed entrance"),
+            Entity("portal_frost", "portal", "Frostbite Trail", 5, 27, sprite="🌀",
+                   blocking=False, target_area="frost_pass", target_x=3, target_y=3,
+                   hint="step in → Frostbite Pass"),
+            Entity("portal_foundry_o", "portal", "Foundry Road", 43, 27, sprite="🕳️",
+                   blocking=False, target_area="ember_foundry", target_x=3, target_y=3,
+                   hint="step in → The Ember Foundry"),
             _story("bell_shrine", "Hidden Bell Shrine", 2, 2, sprite_key="shrine_tower",
                    requires=["bell", "coin"], dialogue="A buried shrine hums. The Tollmaster's route remembers those who pay and ring.",
                    hint="cast bell+coin to wake the secret shrine"),
@@ -570,8 +577,100 @@ def _build_areas() -> dict[str, Area]:
         ],
     )
 
+    frost_pass = Area(
+        id="frost_pass", name="Frostbite Pass", biome="ice", mood="bitterly patient",
+        rows=_field(40, 28, [(10, 6, 5, 3, "~"), (24, 14, 6, 4, "~"),
+                             (16, 20, 4, 3, "~")]),
+        spawn=(3, 3),
+        entities=[
+            _mob("frost_wisp", "Frost Wisp", 12, 5, hp=6, weakness=["flame", "bell"],
+                 resistance=["wave"], sprite_key="glowing_wisp", mood="shivering the air"),
+            _mob("glacier_golem", "Glacier Golem", 28, 9, hp=9,
+                 weakness=["flame", "jagged_line"], resistance=["wave", "thread"],
+                 sprite_key="ice_golem", mood="grinding slow and cold"),
+            _mob("hailmonger", "Hailmonger", 33, 22, hp=10, weakness=["flame", "eye"],
+                 resistance=["wave"], sprite_key="deft_sorceress", mood="counting snowflakes"),
+            _npc("frost_hermit", "Frozen Hermit", 4, 14, sprite_key="grizzled_treant",
+                 dialogue="Flame thaws what cold has locked. The deep cache hides a Thawed "
+                          "Ember the Foundry's vault craves.",
+                 hint="a cold hint about flame"),
+            _npc("snow_pixie", "Snow Pixie", 18, 3, sprite_key="fluttering_pixie",
+                 dialogue="The golem hates fire. So do I, but only for fashion reasons.",
+                 hint="a chilly hint about the golem"),
+            _story("ice_ledger", "Frozen Ledger", 8, 9, sprite_key="goblin_house",
+                   requires=["eye"], dialogue="The frost ledger lists a debt owed in warmth — "
+                   "collectable only at the Ember Foundry.",
+                   hint="cast eye to read the frozen ledger"),
+            Entity("frost_chest", "chest", "Rime-Locked Cache", 35, 5, sprite="🗃️",
+                   state="locked", blocking=True, tags=["ice"],
+                   requires=["flame", "key"], loot=["Thawed Ember", "minor powerup"],
+                   hint="locked — thaw it with flame + key"),
+            Entity("frost_shrine", "shrine", "Hearthless Shrine", 14, 23, sprite="⛩️",
+                   blocking=True, tags=["holy"], state="dormant",
+                   hint="cast flame/closed_circle to warm yourself and heal"),
+            Entity("portal_home_f", "portal", "Pass Exit", 2, 25, sprite="🚪",
+                   blocking=False, target_area="overworld", target_x=8, target_y=27,
+                   hint="step out → Toll Road"),
+            Entity("portal_foundry_f", "portal", "Steam Vent", 37, 25, sprite="🌀",
+                   blocking=False, target_area="ember_foundry", target_x=3, target_y=3,
+                   hint="step in → The Ember Foundry"),
+            _deco("f_rock1", 10, 4, "rock"), _deco("f_rock2", 22, 12, "rock2"),
+            _deco("f_bush1", 6, 7, "bush", blocking=False),
+            _deco("f_bush2", 26, 6, "bush", blocking=False),
+        ],
+    )
+
+    ember_foundry = Area(
+        id="ember_foundry", name="The Ember Foundry", biome="forge",
+        mood="overheated and proud",
+        rows=_field(38, 28, [(14, 10, 5, 3, "~"), (26, 18, 4, 3, "~")]),
+        spawn=(3, 3),
+        entities=[
+            _mob("forge_imp", "Forge Imp", 12, 6, hp=6, weakness=["wave", "closed_circle"],
+                 resistance=["flame"], sprite_key="fire_elemental", mood="spitting sparks"),
+            _mob("slag_golem", "Slag Golem", 9, 18, hp=9, weakness=["wave", "jagged_line"],
+                 resistance=["flame", "thread"], sprite_key="earth_elemental",
+                 mood="molten and slow"),
+            _mob("cinder_smith", "Cinder Smith", 30, 22, hp=11, weakness=["wave", "eye"],
+                 resistance=["flame"], sprite_key="adept_necromancer",
+                 mood="hammering debts flat"),
+            _npc("forge_master", "Foundry Master", 4, 13, sprite_key="npc_pawn",
+                 dialogue="Bring warmth from the Frost Pass and I forge real steel. Wave cools "
+                          "my temper if you must talk.",
+                 hint="forge lore — wave to calm the heat"),
+            _npc("anvil_wisp", "Anvil Wisp", 20, 3, sprite_key="glowing_wisp",
+                 dialogue="The vault door wants a Thawed Ember. The smith resists fire — soak "
+                          "him with water.",
+                 hint="a glowing hint about the vault door"),
+            _story("forge_ledger", "Slag Ledger", 8, 9, sprite_key="goblin_house",
+                   requires=["eye"], dialogue="The foundry ledger: every blade here was a debt "
+                   "reforged into an edge.",
+                   hint="cast eye to read the slag ledger"),
+            Entity("ember_door", "locked_door", "Ember Vault Door", 24, 12, sprite="🚪",
+                   state="locked", blocking=True, tags=["door", "forge"],
+                   requires=["Thawed Ember"],
+                   hint="locked — open it with a Thawed Ember from the Frost Pass"),
+            Entity("ember_chest", "chest", "Brand Rack", 33, 6, sprite="🗃️",
+                   state="locked", blocking=True, tags=["forge"], requires=["flame"],
+                   loot=["forge-hot trophy", "minor powerup"],
+                   hint="locked — light it with flame"),
+            Entity("foundry_shrine", "shrine", "Quenching Shrine", 16, 22, sprite="⛩️",
+                   blocking=True, tags=["holy"], state="dormant",
+                   hint="cast wave/closed_circle to quench and heal"),
+            Entity("portal_home_e", "portal", "Foundry Exit", 2, 25, sprite="🚪",
+                   blocking=False, target_area="overworld", target_x=40, target_y=27,
+                   hint="step out → Toll Road"),
+            Entity("portal_frost_e", "portal", "Cooling Vent", 35, 3, sprite="🕳️",
+                   blocking=False, target_area="frost_pass", target_x=37, target_y=24,
+                   hint="step in → Frostbite Pass"),
+            _deco("e_castle", 4, 4, "black_castle", blocking=True),
+            _deco("e_rock1", 10, 16, "rock"), _deco("e_rock2", 28, 8, "rock2"),
+            _deco("e_bush1", 18, 6, "bush", blocking=False),
+        ],
+    )
+
     all_areas = (overworld, caverns, library, bone_market, clock_sewer,
-                 gate_approach, arena)
+                 gate_approach, arena, frost_pass, ember_foundry)
     for e in bone_market.entities:
         if e.id == "secret_merchant":
             e.state = "hidden"
@@ -593,9 +692,11 @@ def _build_areas() -> dict[str, Area]:
     _scatter_buildings(bone_market, ["black_castle", "red_barracks", "goblin_house_destroyed"], 3, 104)
     _scatter_buildings(clock_sewer, ["wood_tower_destroyed", "knight_tower_blue"], 3, 105)
     _scatter_buildings(gate_approach, ["castle_red", "knight_tower_yellow"], 2, 106)
+    _scatter_buildings(frost_pass, ["knight_tower_blue", "wood_tower_destroyed"], 3, 107)
+    _scatter_buildings(ember_foundry, ["red_barracks", "goblin_tower_red"], 3, 108)
     # 3) animated water rocks beside ponds, then ground clutter to fill
     for a, n, s in ((overworld, 6, 201), (caverns, 8, 202), (library, 5, 203),
-                    (clock_sewer, 10, 204)):
+                    (clock_sewer, 10, 204), (frost_pass, 7, 205), (ember_foundry, 4, 206)):
         _scatter_water_rocks(a, n, s)
     _scatter_deco(overworld, 70, 11)
     _scatter_deco(caverns, 60, 22)
@@ -604,11 +705,23 @@ def _build_areas() -> dict[str, Area]:
     _scatter_deco(clock_sewer, 46, 66)
     _scatter_deco(gate_approach, 26, 77)
     _scatter_deco(arena, 14, 44)
+    _scatter_deco(frost_pass, 50, 88)
+    _scatter_deco(ember_foundry, 44, 99)
     return {a.id: a for a in all_areas}
 
 
 AREAS: dict[str, Area] = _build_areas()
 START_AREA = "overworld"
+
+# Admin mode is a *backend-only* switch: set the RG_ADMIN env var on the server
+# and every gated portal / door / chest in the served world is pre-unlocked, so
+# all maps are reachable from the start. There is no client-side toggle and no
+# query parameter — the only way to enable it is on the machine running the app.
+ADMIN_MODE = os.environ.get("RG_ADMIN", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+# Key story items granted to the player in admin mode so inventory-gated content
+# (vault doors, sealed portals) also opens without questing for them.
+_ADMIN_GRANT_ITEMS = ("Calendar Key", "Calendar Shard", "Debt Receipt", "Thawed Ember")
 
 
 def _normalize_rows(rows: list[str]) -> list[str]:
@@ -844,8 +957,42 @@ def _apply_world_variation(payload: dict, seed: int | None) -> None:
     payload["player"]["journal"].append(var["journal"])
 
 
-def build_world(seed: int | None = None) -> dict:
-    """Full serializable world for the client."""
+def _admin_unlock(payload: dict) -> None:
+    """Unlock every gated portal / door / chest in a world payload.
+
+    Backend-only god-mode (see :data:`ADMIN_MODE`): area-to-area portals and
+    locked doors become walkable, chests open with any cast, and the player
+    starts holding the key story items so nothing soft-locks exploration.
+    """
+    for area in payload["areas"].values():
+        for e in area["entities"]:
+            gated = e.get("state") == "locked" or e.get("requires")
+            if not gated:
+                continue
+            etype = e.get("type")
+            if etype in {"portal", "locked_door"}:
+                # state != "locked" lets the client travel / pass freely
+                e["state"] = "open"
+                e["blocking"] = False
+                e["requires"] = []
+                e["hint"] = "🔓 admin — unlocked"
+            elif etype == "chest":
+                # clearing requires lets any cast pop it; still a reward to grab
+                e["requires"] = []
+                e["hint"] = "🔓 admin — open with any cast"
+    inv = payload["player"].setdefault("inventory", [])
+    for item in _ADMIN_GRANT_ITEMS:
+        if item not in inv:
+            inv.append(item)
+    payload["admin"] = True
+
+
+def build_world(seed: int | None = None, admin: bool | None = None) -> dict:
+    """Full serializable world for the client.
+
+    ``admin`` defaults to the server-side :data:`ADMIN_MODE` env switch; pass it
+    explicitly only in tests. When on, every map is pre-unlocked.
+    """
     start = story.GOBLIN_CLASSES[story.DEFAULT_CLASS]
     payload = {
         "start_area": START_AREA,
@@ -872,6 +1019,10 @@ def build_world(seed: int | None = None) -> dict:
         "walkable": "".join(sorted(WALKABLE)),
     }
     _apply_world_variation(payload, seed)
+    if admin is None:
+        admin = ADMIN_MODE
+    if admin:
+        _admin_unlock(payload)
     return payload
 
 

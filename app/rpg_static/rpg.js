@@ -12,6 +12,11 @@
   let bootArea = "";            // optional smoke area from /play?area=...
   let bootMasteryChoice = false; // optional smoke hook from /play?mastery=1
   let areas = {};               // mutable per-area state (entities/rows)
+  let adminMode = false;        // client-side god-mode (Shift+L+A) — all maps unlocked
+  let adminLockSnapshot = null; // saved lock states so the toggle is reversible
+  let lastAdminToggle = 0;      // debounce for the Shift+L+A chord
+  const keysDown = new Set();   // currently-held keys, for multi-key combos
+  const ADMIN_ITEMS = ["Calendar Key", "Calendar Shard", "Debt Receipt", "Thawed Ember"];
   let runesMeta = [];           // [{key,symbol,label,meanings}]
   let P = null;                 // player {area,x,y,hp,max_hp,courage,...}
   let A = null;                 // current area
@@ -526,6 +531,58 @@
     regionCue();
     if (P.area === "gate_approach") addFlag("arena_approach_reached");
     toast("You enter <b>" + A.name + "</b>. " + moodLine());
+  }
+
+  // ---- admin mode (client toggle: Shift+L+A) ----
+  function applyAdminUnlock() {
+    adminLockSnapshot = [];
+    Object.values(areas).forEach((ar) => {
+      (ar.entities || []).forEach((e) => {
+        const gated = e.state === "locked" || (e.requires && e.requires.length);
+        if (!gated) return;
+        if (e.type === "portal" || e.type === "locked_door") {
+          adminLockSnapshot.push({ e, state: e.state, blocking: e.blocking, requires: (e.requires || []).slice() });
+          e.state = "open"; e.blocking = false; e.requires = [];
+        } else if (e.type === "chest") {
+          adminLockSnapshot.push({ e, state: e.state, blocking: e.blocking, requires: (e.requires || []).slice() });
+          e.requires = [];
+        }
+      });
+    });
+    if (P) ADMIN_ITEMS.forEach((it) => addInventory(it));
+  }
+  function restoreAdminLocks() {
+    if (!adminLockSnapshot) return;
+    adminLockSnapshot.forEach((s) => { s.e.state = s.state; s.e.blocking = s.blocking; s.e.requires = s.requires; });
+    adminLockSnapshot = null;
+  }
+  function buildAdminGoto() {
+    const sel = $("rg-admin-goto"); if (!sel) return;
+    const ids = areas ? Object.keys(areas) : [];
+    sel.innerHTML = "<option value=''>⇪ Warp to map…</option>" +
+      ids.map((id) => "<option value='" + id + "'>" + (areas[id].name || id) + "</option>").join("");
+    sel.value = "";
+  }
+  function showAdminGoto(on) { const sel = $("rg-admin-goto"); if (sel) sel.style.display = on ? "" : "none"; }
+  function warpToArea(id) {
+    if (!P || !areas[id]) return;
+    P.area = id; A = areas[id];
+    applyConditionalSpawns(id);
+    layout();
+    const sp = A.spawn; P.x = sp[0]; P.y = sp[1];
+    facing = "down"; selected = []; renderPalette();
+    enemyCooldown = {}; updateTarget(); regionCue();
+    toast("🔓 Warped to <b>" + A.name + "</b>. " + moodLine());
+  }
+  function setAdmin(on) {
+    if (on === adminMode) return;
+    adminMode = on;
+    if (W) W.admin = on;            // drives the HUD badge
+    if (on) { applyAdminUnlock(); buildAdminGoto(); }
+    else { restoreAdminLocks(); }
+    showAdminGoto(on);
+    toast(on ? "🔓 <b>ADMIN MODE ON</b> — every map unlocked. Use the green dropdown to warp."
+             : "Admin mode off — locks restored.");
   }
 
   function collect(e) {
@@ -1312,8 +1369,14 @@
     const bagCount = Object.values(P.items || {}).reduce((a, b) => a + b, 0);
     ctx.fillStyle = "#9c8bc4"; ctx.fillText("BAG " + bagCount, hx, cy); hx += 95;
     ctx.fillStyle = "#ffd24a"; ctx.fillText("G " + (P.gold || 0), hx, cy);
-    ctx.textAlign = "right"; ctx.fillStyle = "#b07cff";
-    ctx.fillText(A.name.toUpperCase(), canvas.width - 14, cy);
+    ctx.textAlign = "right";
+    const areaLabel = A.name.toUpperCase();
+    ctx.fillStyle = "#b07cff";
+    ctx.fillText(areaLabel, canvas.width - 14, cy);
+    if (W && W.admin) {
+      ctx.fillStyle = "#6df5a0";
+      ctx.fillText("🔓 ADMIN", canvas.width - 14 - ctx.measureText(areaLabel).width - 18, cy);
+    }
     // bottom row: weapon (left) + objective icon track (right)
     ctx.textAlign = "left"; ctx.font = '10px "Press Start 2P", monospace';
     ctx.fillStyle = "#ffce6b";
@@ -1443,6 +1506,11 @@
   // ---- input ----
   function onKey(ev) {
     const k = ev.key.toLowerCase();
+    // Shift+L+A (held together) toggles admin mode from anywhere, even normal play.
+    if (ev.shiftKey && keysDown.has("l") && keysDown.has("a") && !ev.repeat) {
+      if (now() - lastAdminToggle > 350) { lastAdminToggle = now(); setAdmin(!adminMode); }
+      ev.preventDefault(); return;
+    }
     if (selecting) { return; }
     if (drawing) { if (k === "escape") closeDraw(); return; }
     if (dialogueOpen) { if (k === "escape" || k === " " || k === "enter") { closeDialogue(); ev.preventDefault(); } return; }
@@ -1525,6 +1593,11 @@
     const sp = A.spawn; P.x = sp[0]; P.y = sp[1];
     facing = "down"; selected = []; vfx = []; busy = false; turnNo = 0; enemyCooldown = {};
     layout(); buildPalette(); renderPalette(); updateTarget(); regionCue();
+    // Reconcile admin mode against the freshly-cloned (re-locked) world: honor the
+    // backend RG_ADMIN flag, and keep client admin on across a New Game.
+    const wantAdmin = adminMode || !!(W && W.admin);
+    adminMode = false; adminLockSnapshot = null;
+    if (wantAdmin) setAdmin(true); else showAdminGoto(false);
     const label = c ? c.label : "goblin";
     const seedLine = W.world_seed === null || W.world_seed === undefined ? "" :
       " Loop seed <b>" + W.world_seed + "</b>: " + ((W.variation || {}).label || "seeded loop") + ".";
@@ -1673,7 +1746,11 @@
       else if (el.requestFullscreen) el.requestFullscreen().catch(() => {});
       canvas.focus();
     };
-    window.addEventListener("keydown", (e) => { gesture(); onKey(e); });
+    window.addEventListener("keydown", (e) => { keysDown.add(e.key.toLowerCase()); gesture(); onKey(e); });
+    window.addEventListener("keyup", (e) => { keysDown.delete(e.key.toLowerCase()); });
+    window.addEventListener("blur", () => keysDown.clear());
+    const goto = $("rg-admin-goto");
+    if (goto) goto.onchange = () => { const id = goto.value; goto.value = ""; if (id) warpToArea(id); canvas.focus(); };
     canvas.addEventListener("click", (ev) => {
       gesture(); canvas.focus();
       // Clicking the HUD objective icons opens the Journal (full objective + quests).

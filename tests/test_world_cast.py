@@ -26,7 +26,8 @@ def test_world_validates_clean():
 
 def test_build_world_has_progression_and_content():
     w = build_world()
-    assert len(w["areas"]) == 7
+    assert len(w["areas"]) == 9
+    assert {"frost_pass", "ember_foundry"}.issubset(w["areas"])
     assert {c["id"] for c in w["classes"]} == {"warrior", "rogue", "poison", "hunter", "barbarian"}
     assert {x["id"] for x in w["weapons"]}.issuperset({"clerk_wand", "bone_blade"})
     p = w["player"]
@@ -34,6 +35,32 @@ def test_build_world_has_progression_and_content():
                 "recent_story_events"):
         assert key in p
     assert p["recent_story_events"] == []
+
+
+def test_admin_mode_unlocks_every_map():
+    normal = build_world()
+    admin = build_world(admin=True)
+
+    # default build is never admin and keeps gates locked
+    assert "admin" not in normal
+    assert any(
+        e.get("state") == "locked"
+        for area in normal["areas"].values()
+        for e in area["entities"]
+        if e["type"] in {"portal", "locked_door"}
+    )
+
+    # admin build flags itself and leaves no locked portals/doors anywhere
+    assert admin["admin"] is True
+    for area in admin["areas"].values():
+        for e in area["entities"]:
+            if e["type"] in {"portal", "locked_door"}:
+                assert e["state"] != "locked"
+                assert e["blocking"] is False
+                assert e["requires"] == []
+    # key story items are granted so inventory-gated content also opens
+    for item in ("Calendar Key", "Debt Receipt", "Thawed Ember"):
+        assert item in admin["player"]["inventory"]
 
 
 def test_seeded_world_variations_are_deterministic_and_noncritical():
