@@ -126,13 +126,21 @@ PLAY_PAGE = """<!doctype html>
 # The Gradio shell frames the standalone game page full-bleed.
 SHELL_HTML = """
 <style>
-  html, body { margin: 0; padding: 0; overflow: hidden; }
-  .gradio-container { max-width: none !important; padding: 0 !important; margin: 0 !important; }
-  .gradio-container > .main, .gradio-container .wrap, .gradio-container .contain { padding: 0 !important; }
+  html, body { margin: 0; padding: 0; overflow: hidden !important; height: 100%; }
+  .gradio-container { max-width: none !important; padding: 0 !important; margin: 0 !important; overflow: hidden !important; }
+  .gradio-container > .main, .gradio-container .wrap, .gradio-container .contain {
+    padding: 0 !important;
+    margin: 0 !important;
+    overflow: hidden !important;
+    min-height: 100vh !important;
+  }
   footer { display: none !important; }
-  #rg-frame { width: 100%; height: 100vh; border: 0; display: block; }
+  #rg-shell { position: fixed; inset: 0; overflow: hidden; background: #000; }
+  #rg-frame { position: absolute; inset: 0; width: 100vw; height: 100dvh; border: 0; display: block; }
 </style>
-<iframe id="rg-frame" src="/play" title="Rune Goblin RPG" allow="fullscreen"></iframe>
+<div id="rg-shell">
+  <iframe id="rg-frame" src="/play" title="Rune Goblin RPG" allow="fullscreen"></iframe>
+</div>
 """
 
 fastapi_app = FastAPI(title="Rune Goblin RPG")
