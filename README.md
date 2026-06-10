@@ -1,25 +1,10 @@
----
-title: Rune Goblin
-emoji: 🪄
-colorFrom: purple
-colorTo: gray
-sdk: docker
-app_port: 7860
-pinned: false
----
 
-<!--
-  The YAML block above is the Hugging Face Space card config, read by HF when
-  this repo is pushed to the Space. It is harmless on GitHub. Deploy is driven
-  by the root Dockerfile, which launches the Gradio RPG app in `app/rpg_app.py`;
-  see `.github/workflows/deploy-hf-space.yml`.
--->
 
 # 🪄 Rune Goblin
 
 > Draw bad spells, suffer beautifully.
 
-[![Deploy to Hugging Face Space](https://github.com/ASH1998/Rune-Goblin/actions/workflows/deploy-hf-space.yml/badge.svg)](https://github.com/ASH1998/Rune-Goblin/actions/workflows/deploy-hf-space.yml)
+[![Deploy to Hugging Face Space](https://github.com/ASH1998/Rune-Goblin/actions/workflows/deploy-hf-space.yml/badge.svg?branch=master)](https://github.com/ASH1998/Rune-Goblin/actions/workflows/deploy-hf-space.yml)
 
 A tiny dungeon crawler where players draw spells in an invented symbolic
 language (**RuneLang**) and a fine-tuned [`openbmb/MiniCPM5-1B-SFT`](https://huggingface.co/openbmb/MiniCPM5-1B-SFT)
