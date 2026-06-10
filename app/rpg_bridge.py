@@ -45,6 +45,11 @@ class DialogueRequest(BaseModel):
     action: dict = Field(default_factory=dict)
 
 
+class QuestRequest(BaseModel):
+    npc_id: str = ""
+    player: dict = Field(default_factory=dict)
+
+
 def _decode_image(data_url: str):
     from PIL import Image
 
@@ -70,6 +75,13 @@ def register_routes(app: FastAPI) -> None:
             area=req.area, scene=req.scene, target=req.target,
             player=req.player, action=req.action,
         )
+
+    @app.post("/rg/quest")
+    def quest(req: QuestRequest) -> dict:
+        """Deterministic quest interaction (offer / progress / turn-in / exchange)."""
+        from rune_goblin.quests import resolve_quest_talk
+
+        return resolve_quest_talk(req.player, req.npc_id)
 
     @app.get("/rg/world")
     def world(seed: int | None = None) -> dict:
