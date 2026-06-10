@@ -37,6 +37,16 @@ jobs:
           git xet install
           git xet --version
 
+      - name: Install Git LFS
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git-lfs
+          git lfs install
+
+      - name: Migrate binaries to LFS pointers for Space push
+        run: |
+          git lfs migrate import --everything --include="*.wav,*.png,*.jpg,*.jpeg,*.mp3,*.ogg,*.gif"
+
       - name: Sync Space runtime config
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
