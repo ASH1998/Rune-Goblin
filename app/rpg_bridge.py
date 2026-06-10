@@ -13,7 +13,6 @@ POST /rg/cast   -> resolve a rune or drawing cast against the faced target
 from __future__ import annotations
 
 import base64
-import binascii
 import os
 from io import BytesIO
 
@@ -147,12 +146,23 @@ def register_routes(app: FastAPI) -> None:
                 model_spell = result.spell
                 if visual.detected_runes:
                     runes = [r for r in visual.detected_runes if r][:4]
-            except (binascii.Error, ValueError, OSError) as exc:
+            except Exception as exc:  # noqa: BLE001 — any model failure must
+                # fall back to the deterministic engine; the game never stalls
+                # on a bad decode, a llama.cpp crash, or malformed model JSON.
                 visual = None
                 model_spell = None
                 print(f"[rpg_bridge] drawing decode/read failed: {exc}")
+                try:
+                    from rune_goblin.vision_inference import reset_vision_model
+                    reset_vision_model()  # rebuild fresh on the next drawing
+                except Exception:  # noqa: BLE001
+                    pass
 
-        out = resolve_world_cast(runes, req.player, req.target, seed=req.seed)
+        # A successfully-read drawing counts as a hand-drawn cast: it gets the
+        # drawn damage flourish and can land the boss's killing blow.
+        drawn = req.mode == "drawing" and visual is not None
+        out = resolve_world_cast(runes, req.player, req.target, seed=req.seed,
+                                 drawn=drawn)
 
         # For drawings, borrow the model's personality (name + flavor) over the
         # deterministic outcome, and surface what it read.

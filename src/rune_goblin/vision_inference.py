@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import os
+import threading
 from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
@@ -20,6 +21,8 @@ from .engine import GameState, clamp_spell
 from .schema import FALLBACK_VISION_SPELL, VisionSpellResult, try_parse_vision_spell
 
 _LAST_ERROR = ""
+# llama.cpp inference is not safe to overlap; serialize all generate calls.
+_GEN_LOCK = threading.Lock()
 DEFAULT_GGUF_MODEL = Path("models/goblinV1-gguf/gguf/rune-goblin-v46-Q4_K_M.gguf")
 DEFAULT_GGUF_MMPROJ = Path("models/goblinV1-gguf/gguf/rune-goblin-v46-mmproj-f16.gguf")
 
@@ -143,6 +146,9 @@ class GGUFVisionSpellModel:
             chat_handler=self.chat_handler,
             n_ctx=int(os.environ.get("RG_GGUF_CTX", "4096")),
             n_gpu_layers=int(os.environ.get("RG_GGUF_GPU_LAYERS", "-1")),
+            # Sandboxed/restricted launchers can break llama.cpp's thread
+            # autodetection; pin the worker count explicitly when set.
+            n_threads=int(os.environ.get("RG_GGUF_THREADS", "0")) or None,
             verbose=os.environ.get("RG_GGUF_VERBOSE", "0") == "1",
         )
 
@@ -157,22 +163,32 @@ class GGUFVisionSpellModel:
         return f"data:image/png;base64,{encoded}"
 
     def _generate(self, image: Any, user_text: str) -> str:
-        response = self.model.create_chat_completion(
-            messages=[
-                {"role": "system", "content": VISION_SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "image_url", "image_url": {"url": self._image_data_uri(image)}},
-                        {"type": "text", "text": user_text.replace("<image>", "").strip()},
-                    ],
-                },
-            ],
-            response_format={"type": "json_object"},
-            max_tokens=self.max_new_tokens,
-            temperature=float(os.environ.get("RG_GGUF_TEMPERATURE", "0.2")),
-        )
+        with _GEN_LOCK:
+            response = self.model.create_chat_completion(
+                messages=[
+                    {"role": "system", "content": VISION_SYSTEM_PROMPT},
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "image_url", "image_url": {"url": self._image_data_uri(image)}},
+                            {"type": "text", "text": user_text.replace("<image>", "").strip()},
+                        ],
+                    },
+                ],
+                response_format={"type": "json_object"},
+                max_tokens=self.max_new_tokens,
+                temperature=float(os.environ.get("RG_GGUF_TEMPERATURE", "0.2")),
+            )
         return response["choices"][0]["message"]["content"]
+
+    def _reset_context(self) -> None:
+        """Best-effort recovery after a llama_decode failure left the KV
+        cache in a bad state — wipe it so the next generate starts clean."""
+        with _GEN_LOCK:
+            try:
+                self.model.reset()
+            except Exception:  # noqa: BLE001 — recovery must never raise
+                pass
 
     def cast(
         self,
@@ -183,18 +199,36 @@ class GGUFVisionSpellModel:
         global _LAST_ERROR
         prompt = format_vision_user_message(state, room_name)
         raw = ""
+        last_exc: Exception | None = None
         for _ in range(2):
-            raw = self._generate(image, prompt)
+            try:
+                raw = self._generate(image, prompt)
+            except Exception as exc:  # noqa: BLE001 — llama.cpp can fail
+                # mid-decode (e.g. llama_decode -1); reset and retry once.
+                last_exc = exc
+                self._reset_context()
+                continue
             result = try_parse_vision_spell(raw)
             if result is not None:
                 _LAST_ERROR = ""
                 result.spell = clamp_spell(result.spell, state)
                 return result
+        if last_exc is not None and not raw:
+            raise last_exc
         _LAST_ERROR = f"gguf model returned invalid JSON: {raw[:500]}"
         fallback = FALLBACK_VISION_SPELL.model_copy(deep=True)
         fallback.visual_reading.notes = [_LAST_ERROR]
         fallback.spell = clamp_spell(fallback.spell, state)
         return fallback
+
+
+def reset_vision_model() -> None:
+    """Drop the cached model so the next cast rebuilds it from scratch.
+
+    Called after an unrecoverable inference failure: a fresh llama context is
+    cheaper than a stuck one (the rebuild costs a few seconds on first cast).
+    """
+    get_vision_model.cache_clear()
 
 
 def default_vision_model_id() -> str:
