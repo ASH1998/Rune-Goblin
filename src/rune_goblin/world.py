@@ -114,10 +114,27 @@ def _story(eid, name, x, y, *, sprite_key, requires, dialogue, hint) -> Entity:
 _DECO_POOL = ["bush", "rock", "rock2", "d01", "d02", "d03", "d04", "d05", "d06",
               "d07", "d08", "d09", "d10", "d11", "d12", "d13", "d14", "d15"]
 
+# Per-biome clutter, so each region's floor reads differently at a glance:
+# mushrooms in the caverns, ice crystals in the pass, moss in the sewer,
+# bones and produce in the market, battlefield skulls before the gate.
+_DECO_POOLS = {
+    "toll_road": ["bush", "rock", "rock2", "tree", "d10", "d11", "d12", "d13",
+                  "d17", "d01", "happy_sheep"],
+    "cavern": ["d01", "d02", "d03", "d04", "d05", "rock", "rock2", "d09"],
+    "library": ["d07", "d08", "d10", "d11", "bush", "rock2", "d05"],
+    "market": ["skull", "d14", "d15", "d12", "d13", "d18", "rock"],
+    "sewer": ["d07", "d08", "d09", "d05", "rock2", "d15"],
+    "gate": ["skull", "d14", "d15", "d16", "rock", "rock2"],
+    "ice": ["tree_snow", "d04", "d05", "d06", "rock", "rock2"],
+    "forge": ["tree_dead", "d18", "rock2", "d14", "rock"],
+    "arena": ["skull", "d14", "d15", "rock", "rock2", "d16"],
+}
+
 
 def _scatter_deco(area: Area, n: int, seed: int) -> None:
-    """Sprinkle non-blocking decorations on free floor tiles to fill the map."""
+    """Sprinkle non-blocking, biome-themed decorations on free floor tiles."""
     rng = random.Random(seed)
+    pool = _DECO_POOLS.get(area.biome, _DECO_POOL)
     rows = area.rows
     h, w = len(rows), len(rows[0])
     occupied = {(e.x, e.y) for e in area.entities}
@@ -131,7 +148,7 @@ def _scatter_deco(area: Area, n: int, seed: int) -> None:
         if abs(x - sx0) <= 1 and abs(y - sy0) <= 1:
             continue
         occupied.add((x, y))
-        area.entities.append(_deco(f"{area.id}_sc{idx}", x, y, rng.choice(_DECO_POOL)))
+        area.entities.append(_deco(f"{area.id}_sc{idx}", x, y, rng.choice(pool)))
         idx += 1
         placed += 1
 
@@ -383,6 +400,10 @@ def _build_areas() -> dict[str, Area]:
             _npc("librarian", "Mold Librarian", 3, 4, sprite_key="expert_druid",
                  dialogue="The Ink-Locked Chest hides the Calendar Key. Reveal it with eye+mirror.",
                  hint="cast eye/mirror to learn the chest's secret"),
+            _npc("archivist_monk", "Archivist Monk", 36, 25, sprite_key="npc_monk",
+                 dialogue="I re-shelve what the flood unbinds. The basement stairs lead to the "
+                          "Clock Sewer — take a kindness down there and it returns upstream.",
+                 hint="a damp monk with sewer wisdom"),
             _npc("lost_wisp", "Index Wisp", 24, 3, sprite_key="glowing_wisp",
                  dialogue="The east gate is sealed. Only the Calendar Key opens it.",
                  hint="a glowing hint about the gate"),
@@ -454,7 +475,7 @@ def _build_areas() -> dict[str, Area]:
                    blocking=True, tags=["holy"], state="dormant",
                    hint="cast leaf/closed_circle for one final blessing"),
             _deco("a_castle1", 2, 2, "castle_destroyed", blocking=True),
-            _deco("a_castle2", 23, 2, "black_castle", blocking=True),
+            _deco("a_castle2", 23, 2, "castle_purple", blocking=True),
             _deco("a_rock3", 3, 12, "rock2"), _deco("a_rock4", 24, 18, "rock"),
         ],
     )
@@ -485,6 +506,14 @@ def _build_areas() -> dict[str, Area]:
             _mob("market_brute", "Market Enforcer", 33, 24, hp=7,
                  weakness=["coin", "key"], resistance=["bone"],
                  sprite_key="adept_necromancer", mood="enforcing the spread"),
+            _mob("barrel_mimic", "Barrel Mimic", 14, 10, hp=8,
+                 weakness=["eye", "flame"], resistance=["bone", "coin"],
+                 sprite_key="barrel_goblin", mood="pretending to be inventory"),
+            # market stalls: meat, gold and lumber stock beside the merchant
+            _deco("b_stall_meat", 17, 5, "res_meat"),
+            _deco("b_stall_gold", 21, 5, "res_gold"),
+            _deco("b_stall_wood", 19, 4, "res_wood"),
+            _deco("b_skull1", 23, 9, "skull"), _deco("b_skull2", 7, 14, "skull"),
             _npc("secret_merchant", "Hooded Merchant", 4, 25, sprite_key="deft_sorceress",
                  dialogue="Psst. Coin and bell mastery? The Tollmaster's road is hiring.",
                  hint="cast coin+bell to meet the secret merchant"),
@@ -597,6 +626,11 @@ def _build_areas() -> dict[str, Area]:
             _npc("snow_pixie", "Snow Pixie", 18, 3, sprite_key="fluttering_pixie",
                  dialogue="The golem hates fire. So do I, but only for fashion reasons.",
                  hint="a chilly hint about the golem"),
+            _npc("cold_pyromancer", "Shivering Pyromancer", 26, 18,
+                 sprite_key="novice_pyromancer",
+                 dialogue="I came here to practice flame where nothing burns. I regret "
+                          "everything. The cache up north only thaws for flame and key.",
+                 hint="a freezing fire mage with cache advice"),
             _story("ice_ledger", "Frozen Ledger", 8, 9, sprite_key="goblin_house",
                    requires=["eye"], dialogue="The frost ledger lists a debt owed in warmth — "
                    "collectable only at the Ember Foundry.",
@@ -634,6 +668,16 @@ def _build_areas() -> dict[str, Area]:
             _mob("cinder_smith", "Cinder Smith", 30, 22, hp=11, weakness=["wave", "eye"],
                  resistance=["flame"], sprite_key="adept_necromancer",
                  mood="hammering debts flat"),
+            _mob("pig_iron_golem", "Pig-Iron Golem", 20, 16, hp=10,
+                 weakness=["wave", "jagged_line"], resistance=["flame", "bone"],
+                 sprite_key="iron_golem", mood="cooling unevenly"),
+            _mob("blast_apprentice", "Blast Apprentice", 28, 8, hp=7,
+                 weakness=["wave", "thread"], resistance=["flame"],
+                 sprite_key="tnt_goblin", mood="juggling lit dynamite"),
+            # open forge fires and the ore stock that feeds them
+            _deco("e_fire1", 10, 11, "flame"), _deco("e_fire2", 22, 20, "flame"),
+            _deco("e_fire3", 30, 14, "flame"),
+            _deco("e_ore1", 6, 21, "res_gold"), _deco("e_ore2", 14, 7, "res_gold"),
             _npc("forge_master", "Foundry Master", 4, 13, sprite_key="npc_pawn",
                  dialogue="Bring warmth from the Frost Pass and I forge real steel. Wave cools "
                           "my temper if you must talk.",
@@ -685,15 +729,22 @@ def _build_areas() -> dict[str, Area]:
         _relocate_invalid(a)
     # 2) landmark buildings to give each region identity and break up open fields
     _scatter_buildings(overworld, ["castle_blue", "knight_house_blue", "goblin_house",
-                                   "wood_tower_building", "gold_mine"], 6, 101)
-    _scatter_buildings(caverns, ["wood_tower_destroyed", "knight_tower_blue"], 4, 102)
+                                   "house_red", "house_yellow", "wood_tower_building",
+                                   "gold_mine", "wood_tower_yellow"], 8, 101)
+    _scatter_buildings(caverns, ["wood_tower_destroyed", "knight_tower_blue",
+                                 "goldmine_inactive"], 4, 102)
     _scatter_buildings(library, ["castle_blue", "purple_tower", "knight_tower_yellow",
-                                 "yellow_monastery"], 6, 103)
-    _scatter_buildings(bone_market, ["black_castle", "red_barracks", "goblin_house_destroyed"], 3, 104)
-    _scatter_buildings(clock_sewer, ["wood_tower_destroyed", "knight_tower_blue"], 3, 105)
-    _scatter_buildings(gate_approach, ["castle_red", "knight_tower_yellow"], 2, 106)
-    _scatter_buildings(frost_pass, ["knight_tower_blue", "wood_tower_destroyed"], 3, 107)
-    _scatter_buildings(ember_foundry, ["red_barracks", "goblin_tower_red"], 3, 108)
+                                 "yellow_monastery", "house_purple", "house_yellow"], 7, 103)
+    _scatter_buildings(bone_market, ["black_castle", "red_barracks", "goblin_house_destroyed",
+                                     "house_destroyed", "goldmine_destroyed"], 5, 104)
+    _scatter_buildings(clock_sewer, ["wood_tower_destroyed", "knight_tower_blue",
+                                     "tower_destroyed"], 4, 105)
+    _scatter_buildings(gate_approach, ["castle_red", "knight_tower_yellow",
+                                       "tower_destroyed", "house_destroyed"], 4, 106)
+    _scatter_buildings(frost_pass, ["wood_tower_blue", "knight_tower_blue",
+                                    "house_destroyed", "wood_tower_destroyed"], 4, 107)
+    _scatter_buildings(ember_foundry, ["red_barracks", "goblin_tower_red", "tower_red",
+                                       "goldmine_destroyed"], 4, 108)
     # 3) animated water rocks beside ponds, then ground clutter to fill
     for a, n, s in ((overworld, 6, 201), (caverns, 8, 202), (library, 5, 203),
                     (clock_sewer, 10, 204), (frost_pass, 7, 205), (ember_foundry, 4, 206)):

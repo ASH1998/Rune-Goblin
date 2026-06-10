@@ -286,7 +286,10 @@ effects, weapon trails, colors, sizes and enemy reactions.
 
 All art/audio packs are free / CC0. The raw packs live in the git-ignored
 `assets/`; a curated subset is baked into `app/rpg_static/{sprites,vfx,icons,sfx}/`
-with a generated `manifest.json` (regenerate by re-running the bake step).
+with a generated `manifest.json`. `scripts/bake_extra_sprites.py` re-bakes the
+extra Tiny Swords assets (terrain tiles, colored buildings, resource piles,
+skulls, animated flames/TNT goblins) and the snow/stone/dead-tree recolors that
+give each biome its own ground and props.
 
 - **Terrain & buildings**: [Tiny Swords](https://pixelfrog-assets.itch.io/tiny-swords) by **Pixel Frog** (CC0).
 - **Creatures (enemies/NPCs)**: Basic magical animations pack — elementals,

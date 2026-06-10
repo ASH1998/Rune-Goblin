@@ -229,6 +229,42 @@
    "fw": 80,
    "fh": 64,
    "frames": 18
+  },
+  "flame": {
+   "file": "sprites/flame.png",
+   "fw": 128,
+   "fh": 128,
+   "frames": 7
+  },
+  "tnt_goblin": {
+   "file": "sprites/tnt_goblin.png",
+   "fw": 192,
+   "fh": 192,
+   "frames": 7
+  },
+  "barrel_goblin": {
+   "file": "sprites/barrel_goblin.png",
+   "fw": 192,
+   "fh": 192,
+   "frames": 4
+  },
+  "wood_tower_blue": {
+   "file": "sprites/wood_tower_blue.png",
+   "fw": 128,
+   "fh": 192,
+   "frames": 8
+  },
+  "wood_tower_purple": {
+   "file": "sprites/wood_tower_purple.png",
+   "fw": 128,
+   "fh": 192,
+   "frames": 8
+  },
+  "wood_tower_yellow": {
+   "file": "sprites/wood_tower_yellow.png",
+   "fw": 128,
+   "fh": 192,
+   "frames": 8
   }
  },
  "heroes": [
@@ -321,9 +357,9 @@
   },
   "bush": {
    "file": "sprites/deco_bush.png",
-   "fw": 1024,
+   "fw": 128,
    "fh": 128,
-   "frames": 1
+   "frames": 8
   },
   "rock": {
    "file": "sprites/deco_rock.png",
@@ -522,6 +558,88 @@
    "fw": 192,
    "fh": 128,
    "frames": 1
+  },
+  "house_red": {
+   "file": "sprites/house_red.png",
+   "fw": 128,
+   "fh": 192
+  },
+  "house_purple": {
+   "file": "sprites/house_purple.png",
+   "fw": 128,
+   "fh": 192
+  },
+  "house_yellow": {
+   "file": "sprites/house_yellow.png",
+   "fw": 128,
+   "fh": 192
+  },
+  "house_destroyed": {
+   "file": "sprites/house_destroyed.png",
+   "fw": 128,
+   "fh": 192
+  },
+  "castle_yellow": {
+   "file": "sprites/castle_yellow.png",
+   "fw": 320,
+   "fh": 256
+  },
+  "castle_purple": {
+   "file": "sprites/castle_purple.png",
+   "fw": 320,
+   "fh": 256
+  },
+  "tower_red": {
+   "file": "sprites/tower_red.png",
+   "fw": 128,
+   "fh": 256
+  },
+  "tower_destroyed": {
+   "file": "sprites/tower_destroyed.png",
+   "fw": 128,
+   "fh": 256
+  },
+  "goldmine_destroyed": {
+   "file": "sprites/goldmine_destroyed.png",
+   "fw": 192,
+   "fh": 128
+  },
+  "goldmine_inactive": {
+   "file": "sprites/goldmine_inactive.png",
+   "fw": 192,
+   "fh": 128
+  },
+  "res_gold": {
+   "file": "sprites/res_gold.png",
+   "fw": 128,
+   "fh": 128
+  },
+  "res_wood": {
+   "file": "sprites/res_wood.png",
+   "fw": 128,
+   "fh": 128
+  },
+  "res_meat": {
+   "file": "sprites/res_meat.png",
+   "fw": 128,
+   "fh": 128
+  },
+  "tree_snow": {
+   "file": "sprites/deco_tree_snow.png",
+   "fw": 256,
+   "fh": 256,
+   "frames": 6
+  },
+  "tree_dead": {
+   "file": "sprites/deco_tree_dead.png",
+   "fw": 256,
+   "fh": 256,
+   "frames": 6
+  },
+  "skull": {
+   "file": "sprites/skull.png",
+   "fw": 128,
+   "fh": 128
   }
  },
  "icons": {

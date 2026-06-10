@@ -55,13 +55,31 @@
   const DIRV = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
   const WALK = new Set([".", ","]);
 
+  // Per-biome look: wall palette + ground tile sprite + optional tint wash.
+  // ground: which baked tile to draw on walkable floor (grass | sand | snow | stone)
+  // tint:   translucent wash over the ground so reused tiles still read as new places
   const BIOME = {
-    toll_road: { floor: "#2e2415", alt: "#352a18", wall: "#6b5430", edge: "#46371d" },
-    cavern:    { floor: "#13232a", alt: "#163038", wall: "#2c4e58", edge: "#1d3b42" },
-    library:   { floor: "#1a2230", alt: "#202a3c", wall: "#34465e", edge: "#222f44" },
-    arena:     { floor: "#2a1230", alt: "#331640", wall: "#5a2a66", edge: "#3d1c47" },
+    toll_road: { floor: "#2e2415", alt: "#352a18", wall: "#6b5430", edge: "#46371d",
+                 ground: "grass", tint: null },
+    cavern:    { floor: "#13232a", alt: "#163038", wall: "#2c4e58", edge: "#1d3b42",
+                 ground: "stone", tint: "rgba(18,76,96,0.30)" },
+    library:   { floor: "#1a2230", alt: "#202a3c", wall: "#34465e", edge: "#222f44",
+                 ground: "stone", tint: "rgba(36,52,84,0.34)" },
+    arena:     { floor: "#2a1230", alt: "#331640", wall: "#5a2a66", edge: "#3d1c47",
+                 ground: "sand", tint: "rgba(90,28,92,0.30)" },
+    market:    { floor: "#2e1f12", alt: "#372615", wall: "#6b4a26", edge: "#46311a",
+                 ground: "sand", tint: "rgba(116,64,18,0.16)" },
+    sewer:     { floor: "#13241c", alt: "#162b21", wall: "#2c5842", edge: "#1d4230",
+                 ground: "stone", tint: "rgba(24,88,52,0.30)" },
+    gate:      { floor: "#241a2c", alt: "#2b2036", wall: "#544a6b", edge: "#372f47",
+                 ground: "grass", tint: "rgba(58,34,84,0.28)" },
+    ice:       { floor: "#1c2733", alt: "#22303f", wall: "#4a6a8a", edge: "#324a61",
+                 ground: "snow", tint: null },
+    forge:     { floor: "#2e1410", alt: "#371a12", wall: "#6b3a26", edge: "#46271a",
+                 ground: "stone", tint: "rgba(150,52,10,0.26)" },
   };
-  const DEFAULT_BIOME = { floor: "#1a1426", alt: "#211a30", wall: "#4a3a6b", edge: "#2a1f3d" };
+  const DEFAULT_BIOME = { floor: "#1a1426", alt: "#211a30", wall: "#4a3a6b", edge: "#2a1f3d",
+                          ground: "grass", tint: "rgba(20,20,30,0.25)" };
   const HAZARD = "#1f5e7a";
 
   // rune -> VFX school (colour + glyph), small client mirror of vfx.py
@@ -78,6 +96,9 @@
   const SPR_BASE = "/rg/static/sprites/";
   const SPRITES = {
     grass: { src: "grass.png", tile: true },
+    sand: { src: "sand.png", tile: true },
+    snow: { src: "snow.png", tile: true },
+    stone: { src: "stone.png", tile: true },
     water: { src: "water.png", tile: true },
     player: { src: "player.png", fw: 192, fh: 192, frames: 8, anim: true, scale: 1.6 },
     npc_pawn: { src: "npc_pawn.png", fw: 192, fh: 192, frames: 8, anim: true, scale: 1.4 },
@@ -111,6 +132,9 @@
     // boxes near one tile wide so they read as units beside houses and towers.
     hero_warrior: 1.65, hero_rogue: 1.45, hero_poison: 1.45,
     hero_hunter: 1.4, hero_barbarian: 1.7, hero_king: 1.75, water_foam: 1.0, water_rocks: 1.0,
+    // new Tiny Swords additions
+    flame: 1.0, tnt_goblin: 1.4, barrel_goblin: 1.35,
+    wood_tower_blue: 1.6, wood_tower_purple: 1.6, wood_tower_yellow: 1.6,
   };
   const DECO_SCALE = {
     tree: 2.6, bush: 0.95, rock: 0.8, rock2: 0.8,
@@ -119,6 +143,12 @@
     castle_blue: 2.35, castle_red: 2.35, castle_destroyed: 2.35, black_castle: 2.35,
     knight_tower_yellow: 1.7, purple_tower: 1.7,
     red_barracks: 2.0, yellow_monastery: 1.85, gold_mine: 1.6,
+    // new Tiny Swords additions
+    tree_snow: 2.6, tree_dead: 2.6, skull: 0.85,
+    house_red: 1.65, house_purple: 1.65, house_yellow: 1.65, house_destroyed: 1.65,
+    castle_yellow: 2.35, castle_purple: 2.35, tower_red: 1.7, tower_destroyed: 1.7,
+    goldmine_destroyed: 1.6, goldmine_inactive: 1.6,
+    res_gold: 0.9, res_wood: 0.9, res_meat: 0.9,
   };
   function loadSprites() {
     Object.values(SPRITES).forEach((s) => { const img = new Image(); img.src = SPR_BASE + s.src; s.img = img; });
@@ -1113,6 +1143,10 @@
     if (A.biome === "cavern") return ["#255968", "#326f7e", "#78c7d8"];
     if (A.biome === "library") return ["#273d63", "#36527d", "#8db3dd"];
     if (A.biome === "arena") return ["#4e275f", "#653579", "#d49cff"];
+    if (A.biome === "sewer") return ["#2a4a34", "#3a6347", "#8fd8a0"];   // murk
+    if (A.biome === "ice") return ["#5b8fb8", "#7fb3d6", "#e8f6ff"];     // glacial melt
+    if (A.biome === "forge") return ["#8a2406", "#c2540e", "#ffd24a"];   // lava
+    if (A.biome === "market") return ["#3f7a68", "#5aa389", "#c9f0d8"];  // oasis
     return ["#3f8791", "#60aeb6", "#b4ecec"];
   }
   function drawWater(px, py, x, y) {
@@ -1138,7 +1172,8 @@
   }
   function drawTiles() {
     const b = BIOME[A.biome] || DEFAULT_BIOME;
-    const haveGrass = !!spr("grass");
+    const groundName = spr(b.ground) ? b.ground : "grass";
+    const haveGround = !!spr(groundName);
     const x0 = clamp(Math.floor((0 - OX) / TILE), 0, COLS - 1);
     const x1 = clamp(Math.ceil((canvas.width - OX) / TILE), 0, COLS - 1);
     const y0 = clamp(Math.floor((HUD_TOP - OY) / TILE), 0, ROWS - 1);
@@ -1150,14 +1185,9 @@
         const px = sx(x), py = sy(y);
         if (ch === "~") {
           drawWater(px, py, x, y);
-        } else if (haveGrass && walk) {
-          drawTileSprite("grass", px, py);
-          if (A.biome !== "toll_road") {
-            ctx.fillStyle = A.biome === "cavern" ? "rgba(18,76,96,0.38)" :
-              A.biome === "library" ? "rgba(36,52,84,0.42)" :
-              A.biome === "arena" ? "rgba(90,28,92,0.42)" : "rgba(20,20,30,0.25)";
-            ctx.fillRect(px, py, TILE, TILE);
-          }
+        } else if (haveGround && walk) {
+          drawTileSprite(groundName, px, py);
+          if (b.tint) { ctx.fillStyle = b.tint; ctx.fillRect(px, py, TILE, TILE); }
           if (walk && ((x * 7 + y * 11 + (now() / 900 | 0)) % 17 === 0)) {
             ctx.fillStyle = "rgba(255,255,255,0.08)";
             ctx.fillRect(px + TILE * 0.18, py + TILE * 0.72, TILE * 0.26, 2);
@@ -1415,6 +1445,73 @@
     ctx.globalAlpha = 1;
   }
 
+  // ---- circular minimap (translucent overlay, top-right; M toggles) ----
+  let minimapOn = true;
+  let miniCache = { areaId: null, canvas: null, scale: 1, r: 0 };
+  function miniRadius() { return clamp(Math.round(Math.min(canvas.width, canvas.height) * 0.13), 52, 88); }
+  function buildMiniTerrain(R) {
+    const rowsN = A.rows.length, colsN = A.rows[0].length;
+    const diag = Math.sqrt(colsN * colsN + rowsN * rowsN);
+    const scale = (R * 2 - 12) / diag;
+    const c = document.createElement("canvas");
+    c.width = Math.ceil(colsN * scale); c.height = Math.ceil(rowsN * scale);
+    const mc = c.getContext("2d");
+    const b = BIOME[A.biome] || DEFAULT_BIOME;
+    const waterMid = waterColor()[1];
+    for (let y = 0; y < rowsN; y++) {
+      for (let x = 0; x < colsN; x++) {
+        const ch = A.rows[y][x];
+        let col = null;
+        if (ch === "~") col = waterMid;
+        else if (WALK.has(ch)) col = b.alt;
+        else if (ch === "#") col = b.wall;
+        if (col) { mc.fillStyle = col; mc.fillRect(x * scale, y * scale, scale + 0.5, scale + 0.5); }
+      }
+    }
+    miniCache = { areaId: P.area, canvas: c, scale, r: R };
+  }
+  function drawMinimap() {
+    if (!minimapOn || !A) return;
+    const R = miniRadius();
+    if (miniCache.areaId !== P.area || miniCache.r !== R || !miniCache.canvas) buildMiniTerrain(R);
+    const cx = canvas.width - R - 14, cy = HUD_TOP + R + 12;
+    ctx.save();
+    ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.clip();
+    // translucent smoked-glass disc
+    ctx.globalAlpha = 0.62;
+    ctx.fillStyle = "#0c0816";
+    ctx.fillRect(cx - R, cy - R, R * 2, R * 2);
+    const mw = miniCache.canvas.width, mh = miniCache.canvas.height;
+    const ox = cx - mw / 2, oy = cy - mh / 2;
+    ctx.globalAlpha = 0.78;
+    ctx.drawImage(miniCache.canvas, ox, oy);
+    // live entity dots (skip clutter — only things worth walking toward)
+    const s = miniCache.scale;
+    const dot = (x, y, r, col) => { ctx.fillStyle = col; ctx.beginPath();
+      ctx.arc(ox + (x + 0.5) * s, oy + (y + 0.5) * s, r, 0, Math.PI * 2); ctx.fill(); };
+    ctx.globalAlpha = 0.95;
+    for (const e of liveEntities()) {
+      if (e.type === "boss") dot(e.x, e.y, 3.4, "#ff2d4d");
+      else if (e.type === "enemy") dot(e.x, e.y, 2.2, "#ff5d73");
+      else if (e.type === "npc") dot(e.x, e.y, 2.2, "#6df5a0");
+      else if (e.type === "portal") dot(e.x, e.y, 2.8, e.state === "locked" ? "#ff9d4a" : "#b07cff");
+      else if (e.type === "chest" && e.state !== "open") dot(e.x, e.y, 2.0, "#ffd24a");
+      else if (e.type === "shrine") dot(e.x, e.y, 2.0, "#7fd6ff");
+      else if (e.type === "powerup") dot(e.x, e.y, 2.0, "#ffffff");
+    }
+    // player: pulsing white dot
+    dot(P.x, P.y, 3.0 + Math.sin(now() / 280) * 0.7, "#ffffff");
+    ctx.restore();
+    // ring border + inner glow line
+    ctx.save();
+    ctx.globalAlpha = 0.85; ctx.strokeStyle = "#b07cff"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.stroke();
+    ctx.globalAlpha = 0.30; ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(cx, cy, R - 3, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  }
+
   function render() {
     if (paused) return;
     fitCanvas();
@@ -1439,6 +1536,7 @@
     if (!playerDrawn) drawPlayer();
     drawVfx();
     drawHud();
+    drawMinimap();
     requestAnimationFrame(render);
   }
 
@@ -1516,6 +1614,7 @@
     if (dialogueOpen) { if (k === "escape" || k === " " || k === "enter") { closeDialogue(); ev.preventDefault(); } return; }
     if (k === "j") { toggleJournal(); ev.preventDefault(); return; }
     if (k === "i") { toggleInventory(); ev.preventDefault(); return; }
+    if (k === "m") { minimapOn = !minimapOn; ev.preventDefault(); return; }
     if (journalOpen && k === "escape") { toggleJournal(); return; }
     if (invOpen && k === "escape") { toggleInventory(); return; }
     if (over) return;
