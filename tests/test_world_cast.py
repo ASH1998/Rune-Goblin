@@ -311,11 +311,12 @@ def test_boss_phase_banner_and_repaired_ending():
     assert phase
     assert len(phase[0]["boss_reactions"]) >= 2
 
-    # killing blow with repaired conditions
+    # killing blow with repaired conditions (must be hand-drawn to land)
     boss2 = {"id": "calendar_beast", "type": "boss", "name": "Calendar Beast",
              "hp": 1, "max_hp": 24, "weakness": ["leaf"], "resistance": []}
     flags = ["calendar_truth_read", "tourist_helped", "fungus_colony_spared"]
-    res2 = resolve_world_cast(["leaf", "spiral"], _player(story_flags=flags), boss2, seed=10)
+    res2 = resolve_world_cast(["leaf", "spiral"], _player(story_flags=flags), boss2,
+                              seed=10, drawn=True)
     win = [a for a in res2["world_actions"] if a["type"] == "win_game"]
     assert win and win[0]["ending"] == "repaired"
     assert "choices" in win[0]
@@ -499,3 +500,91 @@ def test_enemy_defeat_drops_quest_items():
     res = resolve_world_cast(["bone"], _player(), tgt, seed=3)
     drops = [a["item"] for a in res["world_actions"] if a["type"] == "add_item"]
     assert "monster_trophy" in drops
+
+
+def test_rune_mastery_steadies_chaos():
+    tgt = {"id": "toll_wisp", "type": "enemy", "name": "Toll Wisp", "hp": 5, "max_hp": 5,
+           "weakness": ["flame"], "resistance": []}
+    raw = resolve_world_cast(["flame", "bone"], _player(), tgt, seed=4)
+    steady = resolve_world_cast(
+        ["flame", "bone"], _player(rune_mastery={"flame": 5, "bone": 5}), tgt, seed=4)
+
+    assert steady["metadata"]["combat"]["rune_mastery"]["chaos_relief"] == 2
+    assert steady["spell"]["chaos"] < raw["spell"]["chaos"]
+    assert steady["spell"]["chaos"] >= 1
+
+
+def test_gate_tourist_shares_healing_lunch_once():
+    tourist = {"id": "gate_tourist", "type": "npc", "name": "Lost Tourist",
+               "dialogue": "sandwiches"}
+    helped = _player(hp=4, story_flags=["tourist_helped"])
+    res = resolve_world_cast(["wave"], helped, tourist, seed=20)
+
+    assert res["spell"]["spell_name"] == "Healing Lunch"
+    heals = [a for a in res["world_actions"] if a["type"] == "heal_player"]
+    assert heals and heals[0]["amount"] == helped["max_hp"]
+    flags = [a["flag"] for a in res["world_actions"] if a["type"] == "set_story_flag"]
+    assert "tourist_lunch_shared" in flags and "boss_ally_tourist" in flags
+
+    # second visit: the lunch is a memory, not a refill
+    again = resolve_world_cast(
+        ["wave"], _player(story_flags=["tourist_helped", "tourist_lunch_shared"]),
+        tourist, seed=20)
+    assert again["spell"]["spell_name"] != "Healing Lunch"
+
+    # never helped the tourist -> no lunch
+    cold = resolve_world_cast(["wave"], _player(), tourist, seed=20)
+    assert cold["spell"]["spell_name"] != "Healing Lunch"
+
+
+def test_hunter_king_marks_boss_weak_point():
+    boss = {"id": "calendar_beast", "type": "boss", "name": "Calendar Beast",
+            "hp": 20, "max_hp": 24, "weakness": ["spiral", "eye"], "resistance": []}
+    hunter = _player(goblin_class="hunter", evolved=True)
+    res = resolve_world_cast(["eye"], hunter, boss, seed=21)
+
+    reveals = [a for a in res["world_actions"] if a["type"] == "reveal_weakness"]
+    assert reveals and reveals[0]["target_id"] == "calendar_beast"
+    assert reveals[0]["weakness"]
+    assert "weakness_revealed" in res["spell"]["status_effects"]
+
+    # un-evolved hunter gets no reveal
+    plain = resolve_world_cast(["eye"], _player(goblin_class="hunter"), boss, seed=21)
+    assert not [a for a in plain["world_actions"] if a["type"] == "reveal_weakness"]
+
+
+def test_boss_phase_action_carries_new_weakness():
+    boss = {"id": "calendar_beast", "type": "boss", "name": "Calendar Beast",
+            "hp": 17, "max_hp": 24, "weakness": ["spiral", "eye"], "resistance": []}
+    res = resolve_world_cast(["spiral", "eye"], _player(), boss, seed=9)
+    phase = [a for a in res["world_actions"] if a["type"] == "start_boss_phase"]
+    assert phase
+    assert phase[0]["target_id"] == "calendar_beast"
+    assert phase[0]["weakness"] and phase[0]["resistance"] is not None
+
+
+def test_drawn_cast_gets_damage_flourish():
+    tgt = {"id": "toll_wisp", "type": "enemy", "name": "Toll Wisp", "hp": 9, "max_hp": 9,
+           "weakness": ["flame"], "resistance": []}
+    plain = resolve_world_cast(["flame"], _player(), tgt, seed=30)
+    inked = resolve_world_cast(["flame"], _player(), tgt, seed=30, drawn=True)
+
+    assert inked["metadata"]["combat"]["drawn"]["bonus_damage"] == 2
+    assert inked["spell"]["enemy_hp_delta"] == plain["spell"]["enemy_hp_delta"] - 2
+    assert "drawn_flourish" in inked["spell"]["status_effects"]
+    assert "drawn" not in plain["metadata"]["combat"]
+
+
+def test_boss_killing_blow_requires_drawn_spell():
+    boss = {"id": "calendar_beast", "type": "boss", "name": "Calendar Beast",
+            "hp": 1, "max_hp": 24, "weakness": ["leaf"], "resistance": []}
+    undrawn = resolve_world_cast(["leaf", "spiral"], _player(), boss, seed=31)
+    hp_actions = [a for a in undrawn["world_actions"] if a["type"] == "set_entity_hp"]
+    assert hp_actions and hp_actions[0]["hp"] == 1  # clings on at 1 HP
+    assert "boss_warded_undrawn" in undrawn["spell"]["status_effects"]
+    assert not [a for a in undrawn["world_actions"] if a["type"] == "win_game"]
+    assert any("hand-drawn" in a.get("text", "")
+               for a in undrawn["world_actions"] if a["type"] == "add_journal_entry")
+
+    inked = resolve_world_cast(["leaf", "spiral"], _player(), boss, seed=31, drawn=True)
+    assert [a for a in inked["world_actions"] if a["type"] == "win_game"]

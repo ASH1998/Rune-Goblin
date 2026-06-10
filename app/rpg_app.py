@@ -32,6 +32,7 @@ import uvicorn  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
 from fastapi.responses import HTMLResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
+
 from app.rpg_bridge import register_routes  # noqa: E402
 
 STATIC_DIR = APP_DIR / "rpg_static"

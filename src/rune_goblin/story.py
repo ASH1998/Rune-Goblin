@@ -250,6 +250,7 @@ ALLOWED_FLAGS: frozenset[str] = frozenset({
     "tollmaster_ending",
     "boss_ally_tourist", "boss_ally_librarian", "boss_ally_water",
     "arena_approach_reached", "debt_collector_spawned", "player_evolved",
+    "tourist_lunch_shared",
 })
 
 # Flags that, when present, increase the "devour" pressure (bad-ending weight).
@@ -311,6 +312,7 @@ FLAG_GLOSS: dict[str, str] = {
     "debt_collector_spawned": "The Debt Collector is hunting you for unpaid debts.",
     "arena_approach_reached": "You have reached the Calendar Gate.",
     "player_evolved": "You have evolved into the Goblin King.",
+    "tourist_lunch_shared": "The Lost Tourist shared their packed lunch with you before the arena.",
     "calendar_beast_phase_2": "The Calendar Beast is wounded and has changed stance.",
     "calendar_beast_phase_3": "The Calendar Beast is near its end; the final choice is open.",
 }

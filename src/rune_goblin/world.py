@@ -1116,6 +1116,7 @@ def _combat_metadata(runes: list[str], player: dict) -> dict:
         "rune_mastery": {
             "matched": mastered,
             "bonus_damage": mastery_bonus,
+            "chaos_relief": len(mastered),
         },
         "boss": {
             "pylon_bonus": 0,
@@ -1391,12 +1392,17 @@ def resolve_world_cast(
     player: dict,
     target: dict | None,
     seed: int | None = None,
+    *,
+    drawn: bool = False,
 ) -> dict:
     """Resolve a cast against a target entity (or empty air).
 
     Returns ``{spell, world_actions, target_id, runes}`` where ``spell`` is a
     validated :class:`SpellResult` dict and ``world_actions`` is a list of
     ``{type, ...}`` dicts the client applies to its world copy.
+
+    ``drawn`` marks a hand-drawn (vision-read) cast: it earns a flat damage
+    flourish, and it is the only way to land the killing blow on the boss.
     """
     rng = random.Random(seed)
     runes = [r for r in runes if r in GLYPHS]
@@ -1509,9 +1515,19 @@ def resolve_world_cast(
         # Weapon + class affinity bonus damage (visible in HUD metadata).
         metadata = {"combat": _combat_metadata(runes, player)}
         bonus = metadata["combat"]["total_bonus"]
+        # Mastered runes are steadier: each calms the cast's chaos a little.
+        relief = metadata["combat"]["rune_mastery"]["chaos_relief"]
+        if relief and spell.chaos > 1:
+            spell.chaos = max(1, spell.chaos - relief)
         if ttype == "boss" and "pylon_spiral_charged" in flags and "spiral" in runes:
             bonus += 2
             metadata["combat"]["boss"]["pylon_bonus"] += 2
+        # Hand-drawn casts hit harder: the goblin rewards real penmanship.
+        if drawn:
+            metadata["combat"]["drawn"] = {"bonus_damage": 2}
+            bonus += 2
+            if "drawn_flourish" not in spell.status_effects:
+                spell.status_effects.append("drawn_flourish")
         king_bonus, king_statuses = _class_king_bonus(runes, player, target)
         bonus += king_bonus
         metadata["combat"]["boss"]["king_bonus"] = king_bonus
@@ -1526,6 +1542,12 @@ def resolve_world_cast(
         for st in king_statuses:
             if st not in spell.status_effects:
                 spell.status_effects.append(st)
+        # Hunter King marks the true weak point: push the live boss
+        # weakness/resistance to the client so the facing label tells the truth.
+        if ttype == "boss" and "weakness_revealed" in king_statuses:
+            actions.append({"type": "reveal_weakness", "target_id": tid,
+                            "weakness": list(weakness),
+                            "resistance": list(resistance)})
         if ttype == "boss":
             pylon_status = {
                 "pylon_eye_charged": "pylon_eye_revealed",
@@ -1537,6 +1559,18 @@ def resolve_world_cast(
                 if flag in flags and status not in spell.status_effects:
                     spell.status_effects.append(status)
         new_hp = max(0, cur_hp + delta)
+        # The Calendar Beast can only be FINISHED by a hand-drawn spell:
+        # button-runes wound it, but the killing blow must be penned by hand.
+        if ttype == "boss" and new_hp <= 0 and not drawn:
+            new_hp = 1
+            spell.effect = (f"{spell.effect} The Beast clings on — its last "
+                            "hour ignores button-magic. Draw your spell (E) "
+                            "to finish it!")
+            if "boss_warded_undrawn" not in spell.status_effects:
+                spell.status_effects.append("boss_warded_undrawn")
+            actions.append({"type": "add_journal_entry",
+                            "text": "The Calendar Beast's final breath only fears "
+                                    "hand-drawn runes. Press E, draw, and finish it."})
         actions.append({"type": "set_entity_hp", "target_id": tid, "hp": new_hp})
         # rune mastery grows with offensive use of each rune
         actions.append({"type": "bump_mastery", "runes": runes})
@@ -1548,6 +1582,9 @@ def resolve_world_cast(
                 boss_reactions = story.boss_flag_reactions(flags)
                 actions.append({"type": "start_boss_phase", "phase": new_phase["phase"],
                                 "banner": new_phase["banner"], "line": new_phase["line"],
+                                "target_id": tid,
+                                "weakness": list(new_phase["weakness"]),
+                                "resistance": list(new_phase["resistance"]),
                                 "boss_reactions": boss_reactions})
                 if new_phase["phase"] >= 2:
                     actions += _flag_actions(["calendar_beast_phase_2"])
@@ -1557,6 +1594,9 @@ def resolve_world_cast(
                         sprite_key="red_warrior", mood="collecting repeated mistakes")})
                 if new_phase["phase"] >= 3:
                     actions += _flag_actions(["calendar_beast_phase_3"])
+                    actions.append({"type": "add_journal_entry",
+                                    "text": "Final phase: the Beast can only be "
+                                            "finished by a hand-drawn spell (press E)."})
                     actions.append({"type": "spawn_entity", "entity": _spawn_entity(
                         "phase3_fungus_echo", "enemy", "Fungus Echo", 17, 10,
                         hp=5, weakness=["mirror", "eye"], resistance=["flame"],
@@ -1703,6 +1743,27 @@ def resolve_world_cast(
 
     # --- npc ---------------------------------------------------------------
     if ttype == "npc":
+        # Later payoff (game_plan.md): the tourist you helped waits before the
+        # arena with a packed lunch — one full heal, once, then it is a memory.
+        story_flags = set(player.get("story_flags", []))
+        if (tid == "gate_tourist" and "tourist_helped" in story_flags
+                and "tourist_lunch_shared" not in story_flags):
+            heal = int(player.get("max_hp", 10))
+            text = ("The Lost Tourist unwraps the lunch they packed for you. "
+                    "You eat like tomorrow is back on the menu. (Full HP)")
+            actions += _flag_actions(["tourist_lunch_shared", "boss_ally_tourist"])
+            actions.append({"type": "heal_player", "amount": heal})
+            actions.append({"type": "add_journal_entry", "text": text})
+            actions.append({"type": "change_npc_trust", "target_id": tid, "delta": 1})
+            actions += _xp_actions(player, story.XP_HELP_NPC)
+            spell = SpellResult(
+                spell_name="Healing Lunch", spell_type="npc",
+                flavor=_flavor_world(runes, target, combo), effect=text,
+                player_hp_delta=heal, status_effects=["npc_charmed"], chaos=1,
+            )
+            return {"spell": spell.model_dump(), "world_actions": actions,
+                    "target_id": tid, "runes": runes}
+
         intent = story.npc_intent(runes)
         gift = next((_NPC_GIFTS[r] for r in runes if r in _NPC_GIFTS), None)
         insight = any(r in {"eye", "spiral", "mirror"} for r in runes)

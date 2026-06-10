@@ -651,7 +651,11 @@
     if (!el) return;
     if (t) {
       let extra = "";
-      if (t.type === "enemy" || t.type === "boss") extra = " · " + t.hp + "/" + t.max_hp + " HP · weak " + (t.weakness || []).join("/");
+      if (t.type === "enemy" || t.type === "boss") {
+        extra = " · " + t.hp + "/" + t.max_hp + " HP · weak " + (t.weakness || []).join("/");
+        const fxi = Object.keys(t.fx || {}).map((k) => FX_ICON[k]).filter(Boolean).join("");
+        if (fxi) extra += " " + fxi;
+      }
       else if (t.requires && t.requires.length && t.state === "locked") extra = " · needs " + t.requires.join("+");
       else if (t.requires && t.requires.length) extra = " · reads with " + t.requires.join("+");
       el.innerHTML = "🎯 " + t.name + extra;
@@ -711,6 +715,7 @@
     const image = sketch.toDataURL("image/png");
     busy = true; toast("🔮 The goblin squints at your drawing…");
     closeDraw();
+    showReadingPending();
     try {
       const res = await api("/rg/cast", {
         mode: "drawing", image: image, player: playerCtx(),
@@ -721,8 +726,9 @@
         const d = (res.visual_reading.detected_runes || []).join(", ") || "unreadable";
         extra = " <span style='color:#6df5a0'>(read: " + d + ")</span>";
       }
+      showReading(res);
       applyCast(res, target, extra);
-    } catch (e) { toast("Drawing cast failed: " + e); }
+    } catch (e) { hideReading(); toast("Drawing cast failed: " + e); }
     busy = false;
   }
 
@@ -785,7 +791,7 @@
           (a.runes || []).forEach((r) => {
             const before = P.rune_mastery[r] || 0;
             P.rune_mastery[r] = before + 1;
-            if (P.rune_mastery[r] === 5) toast("✦ You have <b>mastered</b> the " + r.replace(/_/g, " ") + " rune (+1 damage with it).");
+            if (P.rune_mastery[r] === 5) toast("✦ You have <b>mastered</b> the " + r.replace(/_/g, " ") + " rune (+1 damage, steadier casts).");
           });
           break;
         case "set_progress":
@@ -818,7 +824,19 @@
           if (a.target_id && e) { e.state = "open"; e.blocking = false; }
           if (a.message) { addUnique(P.discoveries, a.message); rememberStoryEvent("shortcut", a.message); }
           break;
+        case "reveal_weakness":
+          if (e) {
+            if (a.weakness) e.weakness = a.weakness;
+            if (a.resistance) e.resistance = a.resistance;
+            toast("🎯 <b>Weak point marked</b> — weak: " + (a.weakness || []).join("/") +
+              ((a.resistance || []).length ? " · resists: " + a.resistance.join("/") : ""));
+          }
+          break;
         case "start_boss_phase":
+          if (e) {
+            if (a.weakness) e.weakness = a.weakness;
+            if (a.resistance) e.resistance = a.resistance;
+          }
           showBanner(a.banner || ("PHASE " + a.phase));
           setTimeout(() => {
             const reactions = (a.boss_reactions || []).map((line) => "<br><span style='color:#ffce6b'>" + line + "</span>").join("");
@@ -834,7 +852,11 @@
     if (runes && runes.length) recentRunes = runes.slice();
     P.score += Math.max(0, -(s.enemy_hp_delta || 0)) * 10 + (s.chaos || 0);
 
-    spawnSpellVfx(s, target, runes);
+    // a cast is a "turn": old statuses tick first, then this cast's land
+    tickStatuses();
+    applyStatusEffects(s, target);
+
+    spawnSpellVfx(s, target, runes, res.mode === "drawing");
 
     if (!over) {
       let line = "<b>" + (s.spell_name || "Spell") + "</b> — " + (s.effect || "");
@@ -915,17 +937,72 @@
     });
   }
 
+  // ---- persistent status effects (client-owned ticking; 1 cast = 1 turn) ----
+  // Server statuses (from rune GLYPHS) map to durable effects with durations.
+  const STATUS_FX = {
+    enemy_burning: { key: "burn", turns: 2 },   // 1 dmg per turn
+    enemy_swarmed: { key: "burn", turns: 1 },
+    enemy_confused: { key: "stun", turns: 1 },  // skips retaliation
+    enemy_bound: { key: "stun", turns: 1 },
+    enemy_soothed: { key: "calm", turns: 1 },   // skips retaliation
+    enemy_feared: { key: "fear", turns: 2 },    // weaker retaliation
+    player_shielded: { key: "shield", turns: 2 },  // absorbs one hit
+    player_blessed: { key: "regen", turns: 2 },    // +1 HP per turn
+  };
+  const FX_ICON = { burn: "🔥", stun: "💫", calm: "🌊", fear: "😨", shield: "🛡", regen: "✨" };
+
+  function applyStatusEffects(s, target) {
+    (s.status_effects || []).forEach((st) => {
+      const m = STATUS_FX[st];
+      if (!m) return;
+      if (st.startsWith("enemy_") && target && (target.type === "enemy" || target.type === "boss") && target.hp > 0) {
+        target.fx = target.fx || {};
+        target.fx[m.key] = Math.max(target.fx[m.key] || 0, m.turns);
+      } else if (st.startsWith("player_")) {
+        P.fx = P.fx || {};
+        P.fx[m.key] = Math.max(P.fx[m.key] || 0, m.turns);
+      }
+    });
+  }
+
+  function tickStatuses() {
+    for (const e of liveEntities()) {
+      if (!e.fx) continue;
+      if ((e.type === "enemy" || e.type === "boss") && e.fx.burn > 0 && e.hp > 0) {
+        // the boss's killing blow is server-owned (and must be hand-drawn)
+        e.hp = Math.max(e.type === "boss" ? 1 : 0, e.hp - 1);
+        addNum("-1", "#ff9d4a", e.x + 0.5, e.y - 0.2, 0);
+        if (e.hp <= 0) {
+          e.state = "defeated"; e.blocking = false; P.score += 50;
+          toast("🔥 <b>" + e.name + "</b> succumbs to its wounds!");
+        }
+      }
+      for (const k of Object.keys(e.fx)) { e.fx[k] -= 1; if (e.fx[k] <= 0) delete e.fx[k]; }
+    }
+    if (P.fx) {
+      if (P.fx.regen > 0 && P.hp < P.max_hp) {
+        P.hp = clamp(P.hp + 1, 0, P.max_hp);
+        addNum("+1", "#6df5a0", P.x + 0.5, P.y - 0.2, 0);
+      }
+      for (const k of Object.keys(P.fx)) { P.fx[k] -= 1; if (P.fx[k] <= 0) delete P.fx[k]; }
+    }
+  }
+
   function retaliate(enemy, statuses) {
-    const skip = ["enemy_confused", "enemy_soothed", "enemy_bound"].some((x) => statuses.includes(x));
+    const fx = enemy.fx || {};
+    const skip = ["enemy_confused", "enemy_soothed", "enemy_bound"].some((x) => statuses.includes(x)) ||
+      fx.stun > 0 || fx.calm > 0;
     if (skip) { setTimeout(() => toast(enemy.name + " fumbles its turn."), 650); return; }
     let dmg = enemy.type === "boss" ? 3 : (P.area === "arena" ? 2 : 1);
-    if (statuses.includes("player_shielded")) {
+    if (fx.fear > 0) dmg = Math.max(1, dmg - 1);
+    if (statuses.includes("player_shielded") || (P.fx && P.fx.shield > 0)) {
+      if (P.fx && P.fx.shield > 0) { P.fx.shield -= 1; if (P.fx.shield <= 0) delete P.fx.shield; }
       setTimeout(() => toast("Your shield absorbs " + enemy.name + "'s blow."), 650); return;
     }
     setTimeout(() => {
       P.hp = clamp(P.hp - dmg, 0, P.max_hp);
       spawnHit();
-      toast(enemy.name + " strikes back for " + dmg + "!");
+      toast(enemy.name + " strikes back for " + dmg + (fx.fear > 0 ? " (cowed by fear)" : "") + "!");
       if (P.hp <= 0 && !over) lose();
     }, 650);
   }
@@ -1281,10 +1358,11 @@
 
   // The drawn magic: complexity (layers, size, shake, secondary bursts) scales
   // with the spell's tier — derived from rune count, chaos, damage and curse.
-  function spawnSpellVfx(s, target, runes) {
+  // Hand-drawn casts (flashy) get a full tier bump plus their own fanfare.
+  function spawnSpellVfx(s, target, runes, flashy) {
     runes = runes || [];
     const el = elementOf(runes), cfg = ELEM_VFX[el] || ELEM_VFX.light;
-    const t = spellTier(s, runes);
+    const t = spellTier(s, runes) + (flashy ? 1 : 0);
     const dmg = -(s.enemy_hp_delta || 0), heal = Math.max(0, s.player_hp_delta || 0);
     const pc = pcOf(), tc = target ? tcOf(target) : pc;
     const travel = target ? 300 : 0;
@@ -1301,6 +1379,12 @@
       addAnim("explosion_big", tc[0], tc[1] - 0.3, 1.6, 210 + travel);
       addAnim("tornado", tc[0], tc[1] - 0.3, 1.5, 90 + travel);
       shakeAmt = Math.max(shakeAmt, 0.7);
+    }
+    if (flashy) {
+      addAnim("star", pc[0], pc[1] - 0.5, 1.4, 60);
+      if (target) addAnim("star", tc[0], tc[1] - 0.5, 1.4, 200 + travel);
+      addNum("✍ DRAWN", "#ffd24a", pc[0], pc[1] - 1.0, 40);
+      shakeAmt = Math.max(shakeAmt, 0.45);
     }
     if (heal > 0) addAnim("holy", pc[0], pc[1] - 0.2, 1.1, 0);
     if ((s.status_effects || []).includes("player_shielded")) addAnim("barrier", pc[0], pc[1] - 0.2, 1.3, 0);
@@ -1434,6 +1518,12 @@
         ctx.font = "bold " + Math.floor(TILE * 0.24) + 'px "Press Start 2P", monospace';
         ctx.textAlign = "center"; ctx.textBaseline = "middle";
         ctx.fillText("!", cx, sy(e.y) - 13);
+      }
+      const fxIcons = Object.keys(e.fx || {}).map((k) => FX_ICON[k]).filter(Boolean).join("");
+      if (fxIcons) {
+        ctx.font = Math.floor(TILE * 0.32) + "px serif";
+        ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        ctx.fillText(fxIcons, cx, sy(e.y) - 22);
       }
     }
     if (e.type === "npc" && P.trust && P.trust[e.id]) {
@@ -1583,6 +1673,11 @@
     ctx.textAlign = "left"; ctx.font = '10px "Press Start 2P", monospace';
     ctx.fillStyle = "#ffce6b";
     ctx.fillText("🗡 " + weaponLabel(P.weapon).toUpperCase(), 12, HUD_TOP - 14);
+    const pfx = Object.keys(P.fx || {}).map((k) => FX_ICON[k] + P.fx[k]).join(" ");
+    if (pfx) {
+      ctx.fillStyle = "#6df5a0";
+      ctx.fillText(pfx, 12 + ctx.measureText("🗡 " + weaponLabel(P.weapon).toUpperCase()).width + 16, HUD_TOP - 14);
+    }
     drawObjectiveIcons(HUD_TOP - 14);
     ctx.textAlign = "left";
   }
@@ -1747,6 +1842,66 @@
     });
   }
 
+  // ---- spell reading card: what the vision model read from your drawing ----
+  let readingTimer = null;
+  function escapeHtml(t) {
+    return String(t || "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+  function readingCard() {
+    let card = $("rg-reading");
+    if (!card) {
+      card = document.createElement("div");
+      card.id = "rg-reading"; card.className = "rg-reading";
+      card.onclick = hideReading;
+      document.getElementById("rg-stage").appendChild(card);
+    }
+    return card;
+  }
+  // Opens instantly when the drawing is sent, and stays up while the vision
+  // model thinks — the result then replaces it in place.
+  function showReadingPending() {
+    const card = readingCard();
+    card.innerHTML =
+      "<div class='rg-read-head'>👁 The goblin squints at your drawing…</div>" +
+      "<div class='rg-read-runes'><span class='rg-read-rune rg-read-wait'>" +
+      "<i></i><i></i><i></i></span></div>" +
+      "<div class='rg-read-note'>reading runes — first read can take a while</div>";
+    card.classList.add("open");
+    clearTimeout(readingTimer);
+  }
+  function showReading(res) {
+    const vr = res.visual_reading || {};
+    const s = res.spell || {};
+    const card = readingCard();
+    const det = vr.detected_runes || [];
+    const amb = (vr.ambiguous_runes || []).filter((r) => !det.includes(r));
+    const chip = (r, dim) => {
+      const known = (runesMeta || []).some((x) => x.key === r);
+      return "<span class='rg-read-rune" + (dim ? " dim" : "") + "'>" +
+        (known ? "<img src='" + ICON(r) + "' alt=''> " : "") +
+        escapeHtml(runeLabel(r)) + (dim ? " ?" : "") + "</span>";
+    };
+    const chips = det.map((r) => chip(r, false)).concat(amb.map((r) => chip(r, true))).join("");
+    const conf = typeof vr.confidence === "number" && vr.confidence > 0
+      ? "<div class='rg-read-conf' title='reading confidence'><i style='width:" +
+        Math.round(Math.min(1, vr.confidence) * 100) + "%'></i></div>" : "";
+    const note = (vr.notes && vr.notes[0]) || vr.drawing_style || "";
+    const head = res.visual_reading
+      ? "👁 The goblin read your drawing:"
+      : "👁 The goblin couldn't read it — the rule engine took over:";
+    card.innerHTML =
+      "<div class='rg-read-head'>" + head + "</div>" +
+      "<div class='rg-read-runes'>" + (chips ||
+        "<span class='rg-read-rune dim'>unreadable scribble</span>") + "</div>" +
+      "<div class='rg-read-spell'>“" + escapeHtml(s.spell_name || "Mystery Spell") + "”</div>" +
+      (note ? "<div class='rg-read-note'>" + escapeHtml(note) + "</div>" : "") +
+      conf;
+    card.classList.add("open");
+    clearTimeout(readingTimer);
+    readingTimer = setTimeout(hideReading, 5200);
+  }
+  function hideReading() { const c = $("rg-reading"); if (c) c.classList.remove("open"); }
+
   // ---- drawing overlay ----
   function openDraw() {
     if (over) return;
@@ -1891,6 +2046,15 @@
     toast("🗡️ Equipped <b>" + weaponLabel(id) + "</b>. " + ((WEAPONS[id] || {}).identity || ""));
     refreshPanels();
   }
+  function weaponStats(w) {
+    const s = [];
+    if (w.bonus_damage) s.push("+" + w.bonus_damage + " dmg on " + (w.school || []).join("/"));
+    if (w.courage_relief) s.push("-" + w.courage_relief + " courage cost");
+    if (w.shield_chance) s.push("shield chance");
+    if (w.unlock_bonus) s.push("better unlocks");
+    if (w.xp_bonus) s.push("+" + w.xp_bonus + " XP per win");
+    return s.length ? "<br><span class='wstats'>" + s.join(" · ") + "</span>" : "";
+  }
   function weaponsHtml() {
     const inv = P.weapon_inventory || [P.weapon];
     return inv.map((id) => {
@@ -1900,7 +2064,7 @@
       const sch = (w.school || []).length ? " <span class='flag'>(" + w.school.join("/") + ")</span>" : "";
       return "<button class='rg-wpn" + on + "' data-w='" + id + "'>" +
         "<img src='" + ic + "' alt=''> <b>" + w.label + (on ? " ✓" : "") + "</b>" + sch +
-        "<br><span class='wdesc'>" + w.identity + "</span></button>";
+        "<br><span class='wdesc'>" + w.identity + "</span>" + weaponStats(w) + "</button>";
     }).join("");
   }
 
