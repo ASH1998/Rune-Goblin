@@ -57,7 +57,7 @@ def _player_md(snap: dict) -> str:
 
 
 def new_game():
-    game = Game.new(use_model=USE_MODEL)
+    game = Game.new(use_text_model=USE_MODEL)
     snap = game.snapshot()
     return (game, _enemy_md(snap), _player_md(snap), "\n".join(snap["log"]),
             "", "*No spell cast yet.*")

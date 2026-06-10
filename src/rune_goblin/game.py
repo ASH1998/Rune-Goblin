@@ -24,11 +24,14 @@ class Game:
     score: int = 0
     over: bool = False
     won: bool = False
-    use_model: bool = True
+    # Drawing casts go through the fine-tuned vision model; rune-button casts use
+    # the deterministic rule engine by default (the text model is not fine-tuned).
+    use_vision_model: bool = True
+    use_text_model: bool = False
 
     @classmethod
-    def new(cls, use_model: bool = True) -> Game:
-        g = cls(use_model=use_model)
+    def new(cls, use_vision_model: bool = True, use_text_model: bool = False) -> Game:
+        g = cls(use_vision_model=use_vision_model, use_text_model=use_text_model)
         g._enter_room(0)
         g.log.append("You descend into the dungeon. Draw bad spells. Suffer beautifully.")
         return g
@@ -55,7 +58,7 @@ class Game:
         if self.over:
             return SpellResult(spell_name="Nothing", effect="The run is already over.")
 
-        spell = cast_spell(self.state, runes, use_model=self.use_model)
+        spell = cast_spell(self.state, runes, use_model=self.use_text_model)
 
         # apply deltas
         self.state.enemy_hp = max(0, min(self.state.enemy_max_hp, self.state.enemy_hp + spell.enemy_hp_delta))
@@ -83,7 +86,7 @@ class Game:
             self.state,
             image,
             room_name=self.current_room.name,
-            use_model=self.use_model,
+            use_model=self.use_vision_model,
         )
         spell = result.spell
         runes = result.visual_reading.detected_runes

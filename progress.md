@@ -19,8 +19,13 @@
 | Merged model + LoRA pushed | Done: `ASHu2/goblinV1` root + `lora/` |
 | Fine-tuned GGUF files downloaded locally | Done: `models/goblinV1-gguf/gguf/` |
 | Gradio drawing app using local GGUF | Done and pushed: `3960dc8` |
+| Full playable game (draw + rune board, VFX, guide) | Done: `app/vision_app.py` |
+| Deterministic VFX/asset planner | Done: `src/rune_goblin/vfx.py` |
+| Free-roaming RPG sandbox (canvas world) | Done: `app/rpg_app.py` + `world.py` |
+| Real Tiny Swords art + music + full screen | Done: `app/rpg_static/` |
+| Spell VFX + magic SFX + icon runes + creatures + camera | Done |
+| Magic circles, animated enemies, fuller world, tuned audio | Done |
 | Task-level eval over validation set | Pending |
-| Full game polish loop | Pending |
 
 ---
 
@@ -32,20 +37,60 @@
 - `src/rune_goblin/engine.py` - deterministic spell physics and HP clamping.
 - `src/rune_goblin/schema.py` - spell JSON schema plus nested vision schema:
   `visual_reading` + `spell`.
-- `src/rune_goblin/game.py` - 5-room dungeon state machine; now supports both
-  rune-button casts and drawing-based casts.
+- `src/rune_goblin/game.py` - 5-room dungeon state machine. Two cast paths:
+  `use_vision_model` drives drawing casts (goblinV1), `use_text_model` drives
+  rune-button casts (defaults to the deterministic rule engine).
+- `src/rune_goblin/vfx.py` - deterministic asset/VFX planner. Maps a validated
+  `SpellResult` to renderer metadata (palette, projectile glyph, particles,
+  screen shake, floating damage number) plus enemy-sprite and biome lookups.
+  Rule-based stand-in for the MiniCPM-V-4.6 asset planner.
 - `src/rune_goblin/inference.py` - text-model spell inference path.
 - `src/rune_goblin/vision_inference.py` - MiniCPM-V vision path with two backends:
   Transformers/safetensors and local GGUF via `llama-cpp-python`.
 
 ### Apps
 
-- `app/app.py` - existing Gradio rune-button game.
-- `app/vision_app.py` - new Gradio drawing app. It uses a sketch canvas, sends
-  the canvas image plus current game state to the vision model, parses the
-  nested JSON, and applies the validated/clamped spell result to the same game
-  state machine.
+- `app/vision_app.py` - **the full playable game**. Retro cursed-dungeon Gradio
+  UI: animated battle stage (enemy sprite, HP bar, room backdrop, per-cast VFX),
+  heart/score/courage HUD, a sketch canvas (drawings read by goblinV1) AND a
+  16-rune board for instant rule-engine casts, a RuneLang grimoire/combo guide,
+  spell result panel with detected runes + confidence, dungeon log, win/loss
+  banners, and a parsed-JSON trace panel. A blank-canvas guard and a "reading…"
+  beat smooth out the model latency.
+- `app/app.py` - minimal legacy Gradio rune-button game.
 - `api/server.py` and `frontend/` - existing FastAPI + Vite/React path.
+
+### RPG sandbox (free-roaming)
+
+- `src/rune_goblin/world.py` - the RPG world: four tile-map areas (overworld hub
+  + Mirror Fungus Caverns, Wet Library, Calendar Beast Arena), entity types
+  (enemy/boss/npc/chest/locked_door/shrine/portal/powerup), `build_world()`
+  serialization, `validate_world()` (placement + reachability), and
+  `resolve_world_cast()` mapping runes+target → spell outcome + world actions.
+- `app/rpg_app.py` - Gradio shell that mounts FastAPI (`gr.mount_gradio_app`) and
+  serves the canvas game at `/play`, embedded via an iframe. Run on port 7862.
+- `app/rpg_bridge.py` - `/rg/world` and `/rg/cast` routes; `/rg/cast` runs the
+  goblinV1 vision model for drawings, then resolves world effects deterministically.
+- `app/rpg_static/rpg.js` + `rpg.css` - HTML5 canvas client: tile/sprite
+  rendering, WASD/arrow roaming + facing, collision, entity targeting, rune
+  quick-cast + drawing overlay, VFX, multi-area portals, win/loss screens.
+
+The Gradio `head=`/`js=` hooks are dropped under `mount_gradio_app` and `gr.HTML`
+won't run inline scripts, so the canvas game is served as a standalone page and
+embedded via a same-origin iframe — robust, and still one Gradio app.
+
+Polish (real assets, music, full screen):
+
+- Art is **Tiny Swords** by Pixel Frog (CC0). The raw packs sit in the
+  git-ignored `assets/`; a curated subset (grass/water tiles, blue Warrior =
+  player, Torch goblins = enemies, Tower = shrine, gold = chest) is baked into
+  `app/rpg_static/sprites/` and drawn by a sprite loader with emoji fallback.
+  Walkable tiles render as grass, walls/voids as water → a clean island look.
+- Music is an original procedural chiptune (Web Audio), `🔊` mute toggle; starts
+  on the first click/keypress (browser autoplay policy).
+- The game is full-bleed: the iframe fills the viewport, the canvas resizes to
+  the stage, and the Gradio container padding/footer are hidden. `⛶` requests
+  true browser fullscreen.
 
 ### Fine-tune and docs
 
@@ -78,20 +123,32 @@ Install the GGUF runtime:
 uv sync --extra gguf
 ```
 
-Run the drawing app:
+Run the **RPG sandbox** (free-roaming, the main game):
 
 ```bash
 RG_USE_MODEL=1 \
 RG_VISION_MODEL=models/goblinV1-gguf/gguf/rune-goblin-v46-Q4_K_M.gguf \
 RG_VISION_MMPROJ=models/goblinV1-gguf/gguf/rune-goblin-v46-mmproj-f16.gguf \
-uv run --extra gguf python app/vision_app.py
+uv run --extra gguf python app/rpg_app.py        # → http://localhost:7862
 ```
 
-Default URL:
+Controls: WASD/arrows move · 1–9 pick runes · Space cast · E draw · step into
+portals to travel. `RG_USE_MODEL=0` plays purely on the rule engine.
 
-```text
-http://localhost:7861
+Run the **linear combat game**:
+
+```bash
+RG_USE_MODEL=1 \
+RG_VISION_MODEL=models/goblinV1-gguf/gguf/rune-goblin-v46-Q4_K_M.gguf \
+RG_VISION_MMPROJ=models/goblinV1-gguf/gguf/rune-goblin-v46-mmproj-f16.gguf \
+uv run --extra gguf python app/vision_app.py     # → http://localhost:7861
 ```
+
+Play with `RG_USE_MODEL=0` to skip the model entirely (drawings then fall back
+to the rule engine; rune-button casts are unaffected). Rune-button casts are
+always instant; the first drawing cast loads the vision model (~30s on CPU).
+`.claude/launch.json` has a `rune-goblin` preview config (model off) for quick
+UI checks.
 
 ---
 
@@ -139,8 +196,39 @@ metadata patch may need to be repeated or the GGUF re-exported correctly.
 - `uv run --extra gguf ruff check app src/rune_goblin` - passing.
 - `uv run --extra gguf python -m compileall app src/rune_goblin` - passing.
 - Local Q4 GGUF + mmproj load through `llama-cpp-python` - passing after metadata patch.
-- End-to-end `Game.cast_drawing(...)` smoke test - produced valid nested
-  `visual_reading` + `spell` JSON and applied the turn.
+- End-to-end `Game.cast_drawing(...)` smoke test with the live goblinV1 GGUF -
+  detected `['three_dots','wave']` @0.92, valid nested JSON, ~32s on CPU.
+- `uvx ruff check app/vision_app.py src/rune_goblin/{vfx,game}.py` - passing.
+- Headless app-callback test: new game, rune selection, rune-button cast
+  (bell+coin → -4 on Queue Goblin), drawing-cast generator frames, blank-canvas
+  guard, and a full 5-room playthrough that wins (score 596 in 8 turns).
+- Browser smoke test (Gradio on :7861): retro UI renders, a live bell+coin cast
+  resolved to "Mildly Regret" (-4, weakness_revealed) with the gold VFX flash.
+- RPG world (`world.py`): `validate_world()` reports zero placement/reachability
+  problems; cast resolution unit-checked for combat, chest gating+loot, doors,
+  item-gated gate, shrine, NPC, air-cast, and boss-kill (`win_game`).
+- RPG bridge (:7862): `/rg/world` serves 4 areas + 16 runes; `/rg/cast` resolves
+  rune and drawing modes (drawing falls back gracefully with the model off).
+- RPG browser playthrough (canvas): roam + face + cast (bell+coin → -4 on the
+  Queue Goblin + retaliation), chest unlock with loot, shrine heal/courage,
+  portal travel overworld→library, then the full quest chain — ink chest →
+  Calendar Key → open sealed gate → arena → Calendar Beast 18→0 → 🏆 win screen.
+- Asset/full-screen pass (canvas :7862): all 11 Tiny Swords sprites load, canvas
+  fills the viewport (1280×625 in a 1280×760 window), combat unaffected
+  (Queue Goblin 5→1, score 46) — verified by screenshot + state introspection.
+  No console errors. Music is wired but not audibly checked headless (autoplay).
+- Asset-rich polish pass (:7862): manifest loads all VFX/creature/deco/icon/sfx
+  assets; bigger maps (overworld 30×20) with a follow-camera; rune deck shows
+  Mythril icons (no emoji), HUD uses text labels; magical-creature enemies/NPCs
+  + Tiny Swords deco render; a tier-4 cast draws layered VFX (fire cast →
+  projectile → explosion → tornado ring + screen shake) — verified by screenshots.
+  Element spell SFX wired (not audible headless). No console errors.
+- Polish round (:7862): trees/deco now static (no shake); ~26 scattered Update-010
+  decorations per area fill the world (overworld 46 entities); creatures shrunk via
+  per-creature scale (fairy/pixie/wisp ~0.85); goblins animate (idle row 0, 7
+  frames); BGM 0.05 / SFX 0.22 (lowered); magic-circle atlas plays under caster +
+  target on cast (vfx list shows 2 circles + projectile + impacts + damage num,
+  atlas ready) — verified by screenshots + state. No console errors.
 
 ---
 
@@ -153,11 +241,9 @@ metadata patch may need to be repeated or the GGUF re-exported correctly.
    - weakness usage
 2. If rune recall is weak, consider another run with `--freeze_vit false`.
 3. Add a small eval script for `ASHu2/goblinV1` GGUF using validation images.
-4. Improve the drawing UX:
-   - rune guide/reference panel
-   - better canvas reset
-   - spell history with detected runes
-   - room win/loss polish
+4. Drawing UX — **done** in `app/vision_app.py`: rune guide/combo panel, canvas
+   reset, detected-rune readout with confidence, animated VFX, win/loss banners.
+   Remaining polish ideas: GPU offload for faster drawing casts, optional sound.
 5. Decide deployment target:
    - Hugging Face Space with Transformers model, or
    - local/hosted llama.cpp GGUF runtime.

@@ -1,0 +1,11 @@
+# Rune Goblin HF Space — slim runtime deps for the RPG sandbox (rpg_app.py).
+#
+# No torch / llama-cpp / transformers: the drawn-rune vision model is OFF
+# (RG_USE_MODEL=0 -> rule engine reads glyphs) and NPC dialogue is a remote
+# HTTP call (stdlib urllib) to the Modal API. CPU-basic tier is enough.
+gradio>=6.16,<7
+fastapi>=0.136,<1
+uvicorn[standard]>=0.49,<1
+pydantic>=2.13,<3
+python-dotenv>=1.0
+pillow>=10.0          # decode drawn-spell PNGs (the ✍ Draw button)

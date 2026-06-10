@@ -1,0 +1,88 @@
+name: Deploy to Hugging Face Space
+
+# Manual only: trigger from the GitHub Actions tab ("Run workflow") and pick the
+# branch to deploy (e.g. feat/game-maker or master). Pushes the checked-out
+# branch to the HF Space's `main` branch, where HF builds the root Dockerfile.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-hf-space
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      HF_USER: ASHu2
+      HF_SPACE: test-goblin-space
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Hugging Face Hub client
+        run: python -m pip install --upgrade huggingface_hub
+
+      - name: Sync Space runtime config
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          RG_USE_MODEL: ${{ vars.RG_USE_MODEL }}
+          RG_USE_DIALOGUE_API: ${{ vars.RG_USE_DIALOGUE_API }}
+          GRADIO_SERVER_PORT: ${{ vars.GRADIO_SERVER_PORT }}
+          RG_DIALOGUE_API_URL: ${{ vars.RG_DIALOGUE_API_URL }}
+          RG_DIALOGUE_API_MODEL: ${{ vars.RG_DIALOGUE_API_MODEL }}
+          RG_DIALOGUE_API_TIMEOUT: ${{ vars.RG_DIALOGUE_API_TIMEOUT }}
+          RG_DIALOGUE_API_KEY: ${{ secrets.RG_DIALOGUE_API_KEY }}
+        run: |
+          test -n "${HF_TOKEN}"
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi
+
+          repo_id = f"{os.environ['HF_USER']}/{os.environ['HF_SPACE']}"
+          api = HfApi(token=os.environ["HF_TOKEN"])
+
+          variables = {
+              "RG_USE_MODEL": os.environ.get("RG_USE_MODEL") or "0",
+              "RG_USE_DIALOGUE_API": os.environ.get("RG_USE_DIALOGUE_API") or "1",
+              "GRADIO_SERVER_PORT": os.environ.get("GRADIO_SERVER_PORT") or "7860",
+          }
+          optional_variables = {
+              "RG_DIALOGUE_API_URL": os.environ.get("RG_DIALOGUE_API_URL", ""),
+              "RG_DIALOGUE_API_MODEL": os.environ.get("RG_DIALOGUE_API_MODEL", ""),
+              "RG_DIALOGUE_API_TIMEOUT": os.environ.get("RG_DIALOGUE_API_TIMEOUT", ""),
+          }
+          secrets = {
+              "RG_DIALOGUE_API_KEY": os.environ.get("RG_DIALOGUE_API_KEY", ""),
+          }
+
+          for key, value in optional_variables.items():
+              if value:
+                  variables[key] = value
+
+          for key, value in variables.items():
+              api.add_space_variable(repo_id=repo_id, key=key, value=value)
+              print(f"set variable {key}")
+
+          for key, value in secrets.items():
+              if value:
+                  api.add_space_secret(repo_id=repo_id, key=key, value=value)
+                  print(f"set secret {key}")
+          PY
+
+      - name: Push to HF Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          test -n "${HF_TOKEN}"
+          git push --force \
+            "https://${HF_USER}:${HF_TOKEN}@huggingface.co/spaces/${HF_USER}/${HF_SPACE}" \
+            "HEAD:main"

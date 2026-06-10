@@ -44,7 +44,7 @@ class CastRequest(BaseModel):
 @app.post("/api/new")
 def new_game() -> dict:
     sid = uuid.uuid4().hex
-    game = Game.new(use_model=USE_MODEL)
+    game = Game.new(use_text_model=USE_MODEL)
     _SESSIONS[sid] = game
     return {"session_id": sid, **game.snapshot()}
 
