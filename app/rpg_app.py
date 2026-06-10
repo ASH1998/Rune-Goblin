@@ -22,16 +22,19 @@ import os
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+APP_DIR = Path(__file__).resolve().parent
+ROOT = APP_DIR.parent
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "src"))
 
 import gradio as gr  # noqa: E402
 import uvicorn  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
 from fastapi.responses import HTMLResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
-from rpg_bridge import register_routes  # noqa: E402
+from app.rpg_bridge import register_routes  # noqa: E402
 
-STATIC_DIR = Path(__file__).resolve().parent / "rpg_static"
+STATIC_DIR = APP_DIR / "rpg_static"
 PORT = int(os.environ.get("GRADIO_SERVER_PORT", "7862"))
 
 PLAY_PAGE = """<!doctype html>
@@ -143,7 +146,7 @@ def play_page() -> str:
 
 
 def build() -> gr.Blocks:
-    with gr.Blocks(title="Rune Goblin RPG", theme=gr.themes.Base()) as demo:
+    with gr.Blocks(title="Rune Goblin RPG") as demo:
         gr.HTML(SHELL_HTML)
     return demo
 
