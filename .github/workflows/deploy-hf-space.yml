@@ -31,6 +31,27 @@ jobs:
       - name: Install Hugging Face Hub client
         run: python -m pip install --upgrade huggingface_hub
 
+      - name: Install Git Xet
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/huggingface/xet-core/refs/heads/main/git_xet/install.sh | sh
+          git xet install
+          git xet --version
+
+      - name: Install Git LFS
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git-lfs
+          git lfs install
+
+      - name: Clean checkout before LFS migration
+        run: |
+          git reset --hard HEAD
+          git clean -fd
+
+      - name: Migrate binaries to LFS pointers for Space push
+        run: |
+          git lfs migrate import --yes --everything --include="*.wav,*.png,*.jpg,*.jpeg,*.mp3,*.ogg,*.gif"
+
       - name: Sync Space runtime config
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
