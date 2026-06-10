@@ -50,6 +50,19 @@ class QuestRequest(BaseModel):
     player: dict = Field(default_factory=dict)
 
 
+class BeatRequest(BaseModel):
+    beat_id: str = ""
+    area: str = ""
+    player: dict = Field(default_factory=dict)
+
+
+class ShopRequest(BaseModel):
+    npc_id: str = ""
+    weapon_id: str = ""  # empty = just list the stock
+    quoted_price: int | None = None  # the listed price the player clicked
+    player: dict = Field(default_factory=dict)
+
+
 def _decode_image(data_url: str):
     from PIL import Image
 
@@ -75,6 +88,25 @@ def register_routes(app: FastAPI) -> None:
             area=req.area, scene=req.scene, target=req.target,
             player=req.player, action=req.action,
         )
+
+    @app.post("/rg/story_beat")
+    def story_beat(req: BeatRequest) -> dict:
+        """Proactive story beat (area enter / first meet) — LLM + fallback.
+
+        The client decides WHEN a beat fires (triggers ship in /rg/world);
+        this endpoint owns the TEXT and rechecks the beat's flag conditions.
+        """
+        from rune_goblin.dialogue import generate_beat
+
+        return generate_beat(beat_id=req.beat_id, area=req.area, player=req.player)
+
+    @app.post("/rg/shop")
+    def shop(req: ShopRequest) -> dict:
+        """Bone Market shop: LLM-priced stock inside engine bands, gold buys."""
+        from rune_goblin.world import resolve_shop
+
+        return resolve_shop(req.player, req.npc_id, req.weapon_id,
+                            quoted_price=req.quoted_price)
 
     @app.post("/rg/quest")
     def quest(req: QuestRequest) -> dict:

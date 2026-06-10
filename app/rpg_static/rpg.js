@@ -38,6 +38,8 @@
   let lastEnding = null;        // {ending,title,text} from win_game action
   let lastCastMetadata = null;  // structured /rg/cast metadata for HUD/debug
   let CLASSES = [], WEAPONS = {}, ITEMS = {}, QUESTS_META = {};
+  let STORY_BEATS = [];         // proactive beat triggers from /rg/world
+  let barks = [];               // live speech bubbles: {eid, area, text, until}
   const CLASS_SPRITE = {        // in-game sprite per class (Goblin Pack #1 hero sheets)
     warrior: "hero_warrior", rogue: "hero_rogue", poison: "hero_poison",
     hunter: "hero_hunter", barbarian: "hero_barbarian",
@@ -364,6 +366,7 @@
     P.four_rune_unlocked = P.four_rune_unlocked || false;
     P.items = P.items || {};      // counted bag: { item_id: qty }
     P.quests = P.quests || {};    // { quest_id: "active" | "done" }
+    P.beats_seen = P.beats_seen || [];  // story beats already fired
   }
   function hasFlag(f) { return (P.story_flags || []).includes(f); }
   function rememberStoryEvent(kind, text) {
@@ -537,7 +540,10 @@
     const e = entityAt(nx, ny);
     if (e && e.blocking) {
       if (e.type === "deco") { updateTarget(); return; } // scenery just blocks
-      if (e.type === "npc") { openDialogue(e, []); updateTarget(); return; }
+      if (e.type === "npc") {
+        if (SHOP_NPCS.has(e.id)) shopTalk(e); else openDialogue(e, []);
+        updateTarget(); return;
+      }
       toast("<b>" + e.name + "</b> — " + (e.hint || (e.dialogue || "")));
       updateTarget(); return;
     }
@@ -549,6 +555,7 @@
     }
     enemyTurn();
     updateTarget();
+    checkProximityBeats();
   }
 
   function travel(portal) {
@@ -561,6 +568,8 @@
     regionCue();
     if (P.area === "gate_approach") addFlag("arena_approach_reached");
     toast("You enter <b>" + A.name + "</b>. " + moodLine());
+    checkAreaBeats();
+    checkProximityBeats();
   }
 
   // ---- admin mode (client toggle: Shift+L+A) ----
@@ -603,6 +612,8 @@
     facing = "down"; selected = []; renderPalette();
     enemyCooldown = {}; updateTarget(); regionCue();
     toast("🔓 Warped to <b>" + A.name + "</b>. " + moodLine());
+    checkAreaBeats();
+    checkProximityBeats();
   }
   function setAdmin(on) {
     if (on === adminMode) return;
@@ -992,6 +1003,9 @@
           P.weapon = a.weapon;
           if (WEAPONS[a.weapon] && WEAPONS[a.weapon].story_flag) addFlag(WEAPONS[a.weapon].story_flag);
           break;
+        case "upgrade_weapon":
+          if (a.message) { addUnique(P.journal, a.message); rememberStoryEvent("journal", a.message); }
+          break;
         case "add_inventory": addInventory(a.item); break;
         case "add_gold": P.gold = Math.max(0, (P.gold || 0) + (a.amount || 0)); break;
         case "add_xp": applyProgressGain(a.amount || 0); leveled = true; break;
@@ -1026,12 +1040,170 @@
     }
   }
 
+  // ---- Bone Market shop (deterministic, via /rg/shop) ----
+  const SHOP_NPCS = new Set(["market_merchant", "secret_merchant"]);
+  function shopHtml(d) {
+    const rows = (d.offers || []).map((o) => {
+      const buyable = !o.owned && (o.affordable || o.cursed);
+      let tag = o.owned ? "owned" : (o.cursed ? "free*" : o.price + "g");
+      return "<button class='rg-shop-buy" + (buyable ? "" : " off") + "' data-w='" + o.id + "'" +
+        " data-p='" + (o.price || 0) + "'" + (buyable ? "" : " disabled") + ">" +
+        "<span class='rg-shop-row'><b>" + o.label + "</b>" +
+        "<span class='rg-shop-price" + (o.cursed ? " cursed" : "") + "'>" + tag + "</span></span>" +
+        "<small>" + (o.pitch || o.identity || "") + "</small>" +
+        (o.haggle ? "<small class='rg-shop-haggle'>“" + o.haggle + "”</small>" : "") +
+        "</button>";
+    }).join("");
+    const cursedNote = (d.offers || []).some((o) => o.cursed && !o.owned)
+      ? " · <i>free* = paid in curse, not coins</i>" : "";
+    // Attribute live model-set prices (matches the dialogue panel's tag).
+    const srcTag = d.pricing_source === "model"
+      ? "<div class='rg-shop-model'>✶ prices haggled by " + (d.model || "the story model") + "</div>"
+      : "";
+    return "<div class='rg-shop-line'>" + (d.line || "") + "</div>" +
+      "<div class='rg-shop-gold'>Your purse: <b>" + (P.gold || 0) + "g</b>" + cursedNote + "</div>" +
+      "<div class='rg-shop'>" + rows + "</div>" + srcTag;
+  }
+  async function shopTalk(npc, weaponId, quotedPrice) {
+    if (over || !npc) return;
+    if (!weaponId) showDialogue(npc, "<i>…</i>", true);
+    try {
+      let d = await api("/rg/shop", { npc_id: npc.id, weapon_id: weaponId || "",
+        quoted_price: weaponId ? (quotedPrice || 0) : null, player: playerCtx() });
+      if (d.error) { openDialogue(npc, []); return; }
+      const bought = (d.world_actions || []).length > 0;
+      applyQuestActions(d.world_actions || []);
+      if (bought) {
+        refreshPanels();
+        // re-list with post-purchase gold/ownership, keep the merchant's line
+        const fresh = await api("/rg/shop", { npc_id: npc.id, weapon_id: "", player: playerCtx() });
+        if (!fresh.error) { fresh.line = d.line; d = fresh; }
+      }
+      showDialogue(npc, shopHtml(d), false);
+      document.querySelectorAll(".rg-shop-buy:not([disabled])").forEach((b) => {
+        b.onclick = (ev) => {
+          ev.stopPropagation();
+          shopTalk(npc, b.dataset.w, parseInt(b.dataset.p || "0", 10));
+          canvas.focus();
+        };
+      });
+    } catch (e) { openDialogue(npc, []); }
+  }
+
   function talk() {
     const t = facedTarget();
     if (!t || t.type !== "npc") { toast("Face an NPC, then press T to talk."); return; }
-    if (t.quest) questTalk(t);     // quest-giver -> deterministic quest flow
-    else openDialogue(t, []);      // everyone else -> live story dialogue
+    if (SHOP_NPCS.has(t.id)) shopTalk(t);  // merchants -> shop panel
+    else if (t.quest) questTalk(t);    // quest-giver -> deterministic quest flow
+    else openDialogue(t, []);          // everyone else -> live story dialogue
   }
+
+  // ---- proactive story beats (LLM-triggered via /rg/story_beat) ----
+  // Triggers ship with the world payload; the client fires each beat at most
+  // once (P.beats_seen) and the server owns the text (model + fallback).
+  function beatEligible(b) {
+    if ((P.beats_seen || []).includes(b.id)) return false;
+    if ((b.requires || []).some((f) => !hasFlag(f))) return false;
+    if ((b.requires_any || []).length && !b.requires_any.some(hasFlag)) return false;
+    if ((b.requires_any_2 || []).length && !b.requires_any_2.some(hasFlag)) return false;
+    if ((b.forbids || []).some(hasFlag)) return false;
+    return true;
+  }
+  async function fireBeat(b, ent) {
+    P.beats_seen.push(b.id);  // mark first so a slow request can't double-fire
+    try {
+      const d = await api("/rg/story_beat", {
+        beat_id: b.id, area: A.name,
+        player: { goblin_class: P.goblin_class, level: P.level, hp: P.hp,
+          courage: P.courage, weapon: P.weapon,
+          story_flags: (P.story_flags || []).slice(),
+          recent_story_events: (P.recent_story_events || []).slice(-3) },
+      });
+      if (!d || d.skip) return;
+      if (d.story_toast) { toast(d.story_toast); rememberStoryEvent("story", d.story_toast); }
+      if (d.npc_line && ent) showBark(ent, d.npc_line);
+      if (d.journal_entry) {
+        addUnique(P.journal, d.journal_entry); addUnique(P.discoveries, d.journal_entry);
+        rememberStoryEvent("journal", d.journal_entry);
+      }
+    } catch (e) { console.warn("[story_beat] " + b.id + " failed:", e); }
+  }
+  function checkAreaBeats() {
+    if (!P || !A) return;
+    const b = (STORY_BEATS || []).find((x) =>
+      x.trigger === "area_enter" && x.area === P.area && beatEligible(x));
+    if (b) fireBeat(b, null);
+  }
+  function checkProximityBeats() {
+    if (!P || !A) return;
+    for (const b of STORY_BEATS || []) {
+      if (b.trigger !== "first_meet" || b.area !== P.area || !beatEligible(b)) continue;
+      const e = (A.entities || []).find((x) => x.id === b.npc &&
+        x.state !== "defeated" && x.state !== "hidden");
+      if (e && distToPlayer(e) <= (b.radius || 3)) fireBeat(b, e);
+    }
+  }
+
+  // ---- speech-bubble barks over entities ----
+  function showBark(ent, text) {
+    let clean = String(text).replace(/<[^>]*>/g, "");
+    const prefix = (ent.name || "") + ":";
+    if (clean.startsWith(prefix)) clean = clean.slice(prefix.length).trim();
+    barks = barks.filter((b) => b.eid !== ent.id);
+    barks.push({ eid: ent.id, area: P.area, text: clean.slice(0, 160), until: now() + 6200 });
+  }
+  function wrapBark(text, maxChars) {
+    const words = text.split(/\s+/), lines = [];
+    let line = "";
+    for (const w of words) {
+      if ((line + " " + w).trim().length > maxChars && line) { lines.push(line); line = w; }
+      else line = (line + " " + w).trim();
+      if (lines.length >= 3) break;
+    }
+    if (line && lines.length < 4) lines.push(line);
+    return lines;
+  }
+  function drawBarks() {
+    const t = now();
+    barks = barks.filter((b) => b.until > t);
+    for (const b of barks) {
+      if (b.area !== P.area) continue;
+      const e = (A.entities || []).find((x) => x.id === b.eid);
+      if (!e || e.state === "defeated") continue;
+      const lines = wrapBark(b.text, 28);
+      if (!lines.length) continue;
+      const fs = Math.max(10, Math.floor(TILE * 0.26));
+      ctx.font = fs + "px monospace";
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      const w = Math.max(...lines.map((l) => ctx.measureText(l).width)) + 16;
+      const lh = fs + 4, h = lines.length * lh + 10;
+      const cx = sx(e.x) + TILE / 2;
+      let bx = cx - w / 2, by = sy(e.y) - h - TILE * 0.45;
+      bx = clamp(bx, 4, canvas.width - w - 4);
+      by = Math.max(HUD_TOP + 4, by);
+      const fade = Math.min(1, (b.until - t) / 500);
+      ctx.save();
+      ctx.globalAlpha = 0.92 * fade;
+      ctx.fillStyle = "#13101d"; ctx.strokeStyle = "#b07cff"; ctx.lineWidth = 1.5;
+      if (ctx.roundRect) {
+        ctx.beginPath(); ctx.roundRect(bx, by, w, h, 7); ctx.fill(); ctx.stroke();
+      } else { ctx.fillRect(bx, by, w, h); ctx.strokeRect(bx, by, w, h); }
+      // tail
+      ctx.beginPath();
+      ctx.moveTo(cx - 5, by + h); ctx.lineTo(cx + 5, by + h); ctx.lineTo(cx, by + h + 7);
+      ctx.closePath(); ctx.fill();
+      ctx.fillStyle = "#e8e2f5";
+      lines.forEach((l, i) => ctx.fillText(l, bx + w / 2, by + 8 + lh * i + lh / 2 - 2));
+      ctx.restore();
+    }
+  }
+
+  // Dev/debug peephole (read-only): lets tooling inspect beat + bark state.
+  window.__rgDebug = {
+    barks: () => barks.slice(),
+    beatsSeen: () => (P && P.beats_seen ? P.beats_seen.slice() : []),
+    pos: () => (P ? { area: P.area, x: P.x, y: P.y } : null),
+  };
 
   // ---- banner (boss phase / evolution) ----
   let bannerTimer = null;
@@ -1535,6 +1707,7 @@
     }
     if (!playerDrawn) drawPlayer();
     drawVfx();
+    drawBarks();
     drawHud();
     drawMinimap();
     requestAnimationFrame(render);
@@ -1668,6 +1841,8 @@
     WEAPONS = {}; (W.weapons || []).forEach((w) => { WEAPONS[w.id] = w; });
     ITEMS = {}; (W.items || []).forEach((i) => { ITEMS[i.id] = i; });
     QUESTS_META = {}; (W.quests || []).forEach((q) => { QUESTS_META[q.id] = q; });
+    STORY_BEATS = W.story_beats || [];
+    barks = [];
     areas = JSON.parse(JSON.stringify(W.areas));
     P = JSON.parse(JSON.stringify(W.player));
     ensurePlayerMeta();
@@ -1701,6 +1876,8 @@
     const seedLine = W.world_seed === null || W.world_seed === undefined ? "" :
       " Loop seed <b>" + W.world_seed + "</b>: " + ((W.variation || {}).label || "seeded loop") + ".";
     toast("You are the <b>" + label + "</b>. You broke the calendar. " + moodLine() + "." + seedLine + " — roam, talk (T), and cast.");
+    // Opening beat lands shortly after the class toast so both get read.
+    setTimeout(() => { if (!over && !selecting) { checkAreaBeats(); checkProximityBeats(); } }, 1800);
     if (bootMasteryChoice) setTimeout(() => grantMasteryChoice(), 250);
   }
 
