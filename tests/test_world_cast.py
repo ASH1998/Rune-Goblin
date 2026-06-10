@@ -396,3 +396,76 @@ def test_gate_approach_final_gate_requires_calendar_key():
 
     opened = resolve_world_cast(["key"], _player(inventory=["Calendar Key"]), final_gate, seed=20)
     assert "set_entity_blocking" in _types(opened)
+
+
+def _flags(res):
+    return [a["flag"] for a in res["world_actions"] if a["type"] == "set_story_flag"]
+
+
+def _gold_delta(res):
+    return sum(a["amount"] for a in res["world_actions"] if a["type"] == "add_gold")
+
+
+TOLL_GOBLIN = {"id": "toll_goblin", "type": "enemy", "name": "Queue Goblin",
+               "hp": 5, "max_hp": 5}
+
+
+def test_toll_paid_with_coin_spends_gold_and_opens_gate():
+    res = resolve_world_cast(["coin"], _player(gold=3), dict(TOLL_GOBLIN), seed=1)
+    assert _gold_delta(res) == -1  # one coin spent
+    assert "queue_goblin_paid" in _flags(res)
+    assert "defeat_entity" in _types(res)  # gate opens
+    assert res["spell"]["player_hp_delta"] == 0  # no blood toll when you can pay
+
+
+def test_toll_without_coin_costs_hp_but_still_passes():
+    res = resolve_world_cast(["coin"], _player(gold=0), dict(TOLL_GOBLIN), seed=1)
+    assert _gold_delta(res) == 0  # nothing to spend
+    assert res["spell"]["player_hp_delta"] == -2  # paid in blood
+    assert "queue_goblin_forced" in _flags(res)
+    assert "defeat_entity" in _types(res)  # never soft-locks: still passes
+
+
+def test_toll_bell_passes_free_and_opens_tollmaster_route():
+    res = resolve_world_cast(["bell"], _player(gold=0), dict(TOLL_GOBLIN), seed=1)
+    assert _gold_delta(res) == 0
+    assert res["spell"]["player_hp_delta"] == 0  # ringing is free
+    flags = _flags(res)
+    assert "queue_goblin_paid" in flags and "tollmaster_route_open" in flags
+
+
+def test_player_starts_with_spendable_coins():
+    assert build_world()["player"]["gold"] >= 1
+
+
+def test_enemy_defeat_drops_gold():
+    tgt = {"id": "toll_wisp", "type": "enemy", "name": "Toll Wisp", "hp": 1, "max_hp": 5,
+           "weakness": ["bone"], "resistance": []}
+    res = resolve_world_cast(["bone"], _player(), tgt, seed=3)
+    assert "defeat_entity" in _types(res)
+    assert _gold_delta(res) >= 1  # coins drop on defeat
+
+
+def test_world_exposes_items_and_quests_metadata():
+    w = build_world()
+    item_ids = {i["id"] for i in w["items"]}
+    assert {"health_potion", "courage_draught", "monster_trophy", "fungus_spore"} <= item_ids
+    quest_ids = {q["id"] for q in w["quests"]}
+    assert {"road_patrol", "spore_sample", "quartermaster_kit"} <= quest_ids
+    assert w["player"]["items"] == {} and w["player"]["quests"] == {}
+
+
+def test_quest_giver_npcs_are_tagged():
+    road = build_world()["areas"]["overworld"]["entities"]
+    givers = {e["id"]: e["quest"] for e in road if e["type"] == "npc" and e.get("quest")}
+    assert givers.get("watch_archer") == "road_patrol"
+    assert givers.get("road_druid") == "spore_sample"
+    assert givers.get("quartermaster") == "quartermaster_kit"
+
+
+def test_enemy_defeat_drops_quest_items():
+    tgt = {"id": "toll_wisp", "type": "enemy", "name": "Toll Wisp", "hp": 1, "max_hp": 5,
+           "weakness": ["bone"], "resistance": []}
+    res = resolve_world_cast(["bone"], _player(), tgt, seed=3)
+    drops = [a["item"] for a in res["world_actions"] if a["type"] == "add_item"]
+    assert "monster_trophy" in drops
