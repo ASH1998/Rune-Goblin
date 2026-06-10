@@ -514,6 +514,17 @@ NPC_VOICES: dict[str, NpcVoice] = {
         },
         journal="Blue Watch Archer: face a target, read its weakness, then exploit it.",
     ),
+    "quartermaster": NpcVoice(
+        name="Quartermaster Bramble",
+        greeting="Bring me monster trophies and I'll trade you proper equipment and potions. "
+                 "A clerk needs more than a training wand.",
+        reactions={
+            "coin": "Coins are nice, but I deal in trophies. Go thin the herd.",
+            "insight": "You want gear? Bring proof you can survive the road first.",
+            "neutral": "Trophies for equipment. Potions for trophies. Simple economy, clerk.",
+        },
+        journal="Quartermaster Bramble trades monster trophies for weapons and potions.",
+    ),
     "road_druid": NpcVoice(
         name="Road Druid",
         greeting="Calendars are just gardens with numbers. Yours has weeds.",
