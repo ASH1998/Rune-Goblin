@@ -1,4 +1,11 @@
-
+---
+title: Rune Goblin
+colorFrom: purple
+colorTo: gray
+sdk: docker
+app_port: 7860
+pinned: false
+---
 
 # 🪄 Rune Goblin
 
