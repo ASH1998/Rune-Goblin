@@ -17,7 +17,7 @@ import os
 import random
 from dataclasses import asdict, dataclass, field
 
-from . import quests, story
+from . import beats, quests, story
 from .engine import GameState, resolve_spell
 from .runelang import ENEMIES, GLYPHS, find_combo, rune_matches
 from .schema import SpellResult
@@ -1060,6 +1060,7 @@ def build_world(seed: int | None = None, admin: bool | None = None) -> dict:
             "items": {}, "quests": {},
             "quest_log": ["Find the Calendar Shard in the Mirror Fungus Caverns."],
             "discoveries": [], "recent_story_events": [], "trust": {},
+            "beats_seen": [],
         },
         "classes": [_class_to_dict(c) for c in story.GOBLIN_CLASSES.values()],
         "weapons": [_weapon_to_dict(w) for w in story.WEAPONS.values()],
@@ -1067,6 +1068,7 @@ def build_world(seed: int | None = None, admin: bool | None = None) -> dict:
         "quests": quests.quests_payload(),
         "runes": [{"key": k, "symbol": g.symbol, "label": g.label,
                    "meanings": list(g.meanings)} for k, g in GLYPHS.items()],
+        "story_beats": beats.client_manifest(),
         "walkable": "".join(sorted(WALKABLE)),
     }
     _apply_world_variation(payload, seed)
@@ -1220,6 +1222,120 @@ _MERCHANT_STOCK = {
         "bell": "coin_sling",
     },
 }
+
+# Display order for the shop panel (the stock map is keyed by rune intent).
+_SHOP_ORDER = {
+    "market_merchant": ("mirror_shield", "bell_staff", "river_thread", "bone_blade"),
+    "secret_merchant": ("coin_sling",),
+}
+
+
+def _shop_offers(npc_id: str, player: dict, pricing: dict | None = None) -> list[dict]:
+    owned = set(player.get("weapon_inventory") or [])
+    gold = int(player.get("gold", 0) or 0)
+    offers = []
+    for wid in _SHOP_ORDER.get(npc_id, ()):
+        w = story.WEAPONS[wid]
+        cursed = wid == "bone_blade"
+        band = story.price_band(wid, player)
+        quote = (pricing or {}).get(wid) or {}
+        price = 0 if cursed else int(quote.get("price", band[2]))
+        offers.append({
+            "id": wid, "label": w.label, "identity": w.identity,
+            "pitch": w.pitch or w.identity, "price": price, "band": band,
+            "haggle": quote.get("reason", ""), "cursed": cursed,
+            "owned": wid in owned,
+            "affordable": cursed or gold >= price,
+        })
+    return offers
+
+
+def resolve_shop(player: dict, npc_id: str, weapon_id: str = "",
+                 quoted_price: int | None = None) -> dict:
+    """Bone Market shop: list stock (LLM-priced) or buy a weapon for gold.
+
+    Pricing is split between flavor and authority: Python derives a [lo, hi]
+    band per item from quest stage + reputation (:func:`story.price_band`);
+    the dialogue model haggles inside it and writes the reason; anything
+    outside the band is clamped. On buy, the client echoes the quoted price
+    and the engine honors it only if it sits inside the band.
+
+    The cursed Bone Blade costs no gold — its price is a debt the endings
+    remember (``debt_accepted`` + devour pressure), matching the rune-cast
+    cursed-deal route. All purchases stay engine-owned: the client only
+    replays the returned world actions.
+    """
+    if npc_id not in _SHOP_ORDER:
+        return {"error": "not_a_merchant", "npc_id": npc_id}
+    voice = story.NPC_VOICES.get(npc_id)
+    name = voice.name if voice else "Merchant"
+    gold = int(player.get("gold", 0) or 0)
+
+    if not weapon_id:  # browsing: let the model price today's stock
+        from .dialogue import DIALOGUE_API_MODEL, generate_shop_prices
+
+        skeleton = _shop_offers(npc_id, player)
+        pricing = generate_shop_prices(
+            player=player, area="The Bone Market", offers=skeleton)
+        offers = _shop_offers(npc_id, player, pricing)
+        priced_by_model = any(p.get("source") == "model" for p in pricing.values())
+        return {
+            "npc_id": npc_id, "name": name, "gold": gold, "offers": offers,
+            "world_actions": [],
+            "line": voice.greeting if voice else "Browse. Carefully.",
+            "pricing_source": "model" if priced_by_model else "fallback",
+            "model": DIALOGUE_API_MODEL if priced_by_model else "",
+        }
+
+    # buying: no LLM in the loop — bands decide what a valid quote is
+    base = {"npc_id": npc_id, "name": name, "gold": gold,
+            "offers": _shop_offers(npc_id, player), "world_actions": []}
+    offer = next((o for o in base["offers"] if o["id"] == weapon_id), None)
+    if offer is None:
+        base["line"] = "Not in stock. Probably for legal reasons."
+        return base
+    w = story.WEAPONS[weapon_id]
+    lo, hi, anchor = offer["band"]
+    price = 0 if offer["cursed"] else anchor
+    if quoted_price is not None and lo <= int(quoted_price) <= hi:
+        price = int(quoted_price)  # honor the model's quote, it's in band
+    if offer["owned"]:
+        base["world_actions"] = [{
+            "type": "upgrade_weapon", "weapon": weapon_id,
+            "message": f"{w.label} is honed by the market's bad advice.",
+        }]
+        base["line"] = "You already own that. I sharpened it out of spite. No charge."
+        return base
+    if price > gold:
+        base["line"] = (f"That is {price} coins and you are {price - gold} short. "
+                        "The market does not do credit. Well — not the kind you'd survive.")
+        base["denied"] = True
+        return base
+
+    actions: list[dict] = []
+    if price:
+        actions.append({"type": "add_gold", "amount": -price})
+    actions.append({"type": "add_weapon", "weapon": weapon_id})
+    actions.append({"type": "add_inventory", "item": w.label})
+    actions += _flag_actions(["weapon_bought", "bone_market_entered"])
+    if npc_id == "secret_merchant":
+        actions += _flag_actions(["secret_merchant_met", "tollmaster_route_open"])
+    if w.story_flag:
+        actions += _flag_actions([w.story_flag])
+    if offer["cursed"]:
+        deal = ("The Bone Market approves the cursed deal: power now, "
+                "interest later.")
+        actions.append({"type": "add_courage", "amount": 3})
+        actions.append({"type": "add_journal_entry", "text": deal})
+        actions += _flag_actions(["debt_accepted", "calendar_devour_pressure"])
+        base["line"] = "Excellent. Your future has approved the loan by screaming."
+    else:
+        base["line"] = (f"{w.label}, {price} coins. {w.pitch or ''} "
+                        "A pleasure doing business with someone solvent.")
+        actions.append({"type": "add_journal_entry",
+                        "text": f"Bought the {w.label} at the Bone Market for {price} coins."})
+    base["world_actions"] = actions
+    return base
 
 
 # ---------------------------------------------------------------------------
@@ -1600,8 +1716,22 @@ def resolve_world_cast(
             actions.append({"type": "add_journal_entry", "text": voice.journal})
 
         # Bone Market merchants sell deterministic weapons by rune intent.
+        # Same till as resolve_shop: gold is charged unless the deal is cursed.
         stock = _MERCHANT_STOCK.get(tid, {})
         wid = next((stock[r] for r in runes if r in stock), "")
+        if wid:
+            cursed_deal = tid == "market_merchant" and intent == "fear"
+            # same stage-aware anchor the shop quotes around
+            price = 0 if cursed_deal else story.price_band(wid, player)[2]
+            gold = int(player.get("gold", 0) or 0)
+            already_owned = wid in (player.get("weapon_inventory") or [])
+            if price and gold < price and not already_owned:
+                short_msg = (f"The {story.WEAPONS[wid].label} costs {price} coins; "
+                             f"you carry {gold}. The merchant smiles patiently.")
+                actions.append({"type": "add_journal_entry", "text": short_msg})
+                wid = ""
+            elif price and not already_owned:
+                actions.append({"type": "add_gold", "amount": -price})
         if wid:
             if wid in (player.get("weapon_inventory") or []):
                 actions.append({"type": "upgrade_weapon", "weapon": wid,

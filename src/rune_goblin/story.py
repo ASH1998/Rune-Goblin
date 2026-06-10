@@ -121,6 +121,8 @@ class Weapon:
     xp_bonus: int = 0
     npc_reaction: str = ""
     story_flag: str = ""  # flag set when first acquired/used
+    price: int = 0  # gold cost at the Bone Market (0 = not sold / cursed deal)
+    pitch: str = ""  # merchant sales line shown in the shop
 
 
 WEAPONS: dict[str, Weapon] = {
@@ -132,31 +134,36 @@ WEAPONS: dict[str, Weapon] = {
         "bell_staff", "Bell Staff", "Summons help, annoys goblins, interrupts bosses.",
         ("bell", "coin"), bonus_damage=1, xp_bonus=1,
         npc_reaction="Please stop ringing public infrastructure.",
-        story_flag="tollmaster_route_open",
+        story_flag="tollmaster_route_open", price=4,
+        pitch="Rings once for help, twice for trouble, three times for lawyers.",
     ),
     "mirror_shield": Weapon(
         "mirror_shield", "Mirror Shield", "Defensive, reflective, patient.",
         ("mirror", "eye", "closed_circle"), shield_chance=True, courage_relief=1,
         npc_reaction="That shield shows people the version they were avoiding.",
-        story_flag="calendar_repair_possible",
+        story_flag="calendar_repair_possible", price=4,
+        pitch="For people who want enemies to participate in their own defeat.",
     ),
     "bone_blade": Weapon(
         "bone_blade", "Bone Blade", "Strong, scary, debt-heavy.",
         ("bone", "tooth", "broken_mark"), bonus_damage=2,
         npc_reaction="That knife has more opinions than most citizens.",
-        story_flag="debt_deepened",
+        story_flag="debt_deepened", price=0,  # paid in curse, not coins
+        pitch="For customers who think healing lacks teeth. Free! The price is elsewhere.",
     ),
     "coin_sling": Weapon(
         "coin_sling", "Coin Sling", "Economy magic: tolls, bribery, secret merchant.",
         ("coin", "bell"), bonus_damage=1, unlock_bonus=True,
         npc_reaction="You weaponized payment. The goblins are moved.",
-        story_flag="tollmaster_route_open",
+        story_flag="tollmaster_route_open", price=5,
+        pitch="Turns money into arguments at excellent range.",
     ),
     "river_thread": Weapon(
         "river_thread", "River Thread", "Utility, binding, repair, ally support.",
         ("wave", "leaf", "thread"), courage_relief=1, xp_bonus=1,
         npc_reaction="That thread smells like rain that forgave someone.",
-        story_flag="calendar_repair_possible",
+        story_flag="calendar_repair_possible", price=4,
+        pitch="That thread smells like rain that forgave someone.",
     ),
 }
 
@@ -268,6 +275,129 @@ BOSS_FLAG_REACTIONS: dict[str, str] = {
     "debt_deepened": "Borrowed power tastes best when the bill arrives late.",
     "calendar_truth_read": "You read the truth. Most meals do not read the menu back.",
 }
+
+
+# Plain-English meaning of each flag, written as something that happened to the
+# player. This is what the dialogue model sees — never raw flag keys, which a
+# small model tends to parrot back as gibberish ("you have tourist_helped").
+FLAG_GLOSS: dict[str, str] = {
+    "tourist_helped": "You calmed the Lost Tourist with kind magic.",
+    "tourist_scared": "You frightened the Lost Tourist away with scary magic.",
+    "librarian_trust": "The Mold Librarian trusts you because you read before taking.",
+    "librarian_angry": "The Mold Librarian is angry because you damaged the library.",
+    "water_spirit_helped": "You helped the Water Spirit in the sewer.",
+    "queue_goblin_paid": "You paid the Queue Goblin's toll properly.",
+    "queue_goblin_forced": "You forced your way past the Queue Goblin.",
+    "mirror_truth_seen": "The Mirror Stone showed you the Beast's true fear.",
+    "fungus_colony_spared": "You spared the fungus colony in the caverns.",
+    "fungus_colony_burned": "You burned the fungus colony in the caverns.",
+    "wet_catalog_read": "You read the library catalog and learned where the Key hides.",
+    "library_shelves_burned": "You burned library shelves for a shortcut.",
+    "clean_water_restored": "You restored clean water to the Clock Sewer.",
+    "sewer_valves_aligned": "You aligned the sewer valves.",
+    "sewer_shortcut_open": "You opened the sewer shortcut.",
+    "debt_accepted": "You took a cursed deal and owe a debt.",
+    "debt_repaid": "You repaid your debt at the Bone Market.",
+    "debt_deepened": "You deepened your cursed debt.",
+    "weapon_bought": "You bought a weapon at the Bone Market.",
+    "secret_merchant_met": "You met the Hooded Merchant.",
+    "bone_market_entered": "You visited the Bone Market.",
+    "toll_paid": "You paid the road toll.",
+    "toll_forced": "You forced the toll gate open.",
+    "mycologist_defeated": "You defeated the Mirror Mycologist.",
+    "calendar_shard_1_taken": "You carry the first Calendar Shard.",
+    "calendar_truth_read": "You read the calendar truth: the road borrowed against tomorrow.",
+    "calendar_key_found": "You carry the Calendar Key.",
+    "debt_collector_spawned": "The Debt Collector is hunting you for unpaid debts.",
+    "arena_approach_reached": "You have reached the Calendar Gate.",
+    "player_evolved": "You have evolved into the Goblin King.",
+    "calendar_beast_phase_2": "The Calendar Beast is wounded and has changed stance.",
+    "calendar_beast_phase_3": "The Calendar Beast is near its end; the final choice is open.",
+}
+
+
+def flag_story(flags, *, limit: int = 6) -> list[str]:
+    """Translate flags into short plain-English 'what happened' lines.
+
+    Most recent flags last (matching set order); unknown/internal flags are
+    silently skipped so the model never sees raw keys.
+    """
+    lines = [FLAG_GLOSS[f] for f in filter_flags(flags) if f in FLAG_GLOSS]
+    return lines[-limit:]
+
+
+def main_objective(player: dict) -> str:
+    """The player's current main-quest objective in one plain sentence.
+
+    Mirrors the client HUD logic using only state the server receives
+    (inventory + flags); the dialogue model uses this so every line can point
+    the player the right way.
+    """
+    inv = set(player.get("inventory") or ())
+    flags = set(player.get("story_flags") or ())
+    if flags & {"calendar_repaired", "calendar_broken", "calendar_devoured",
+                "tollmaster_ending"}:
+        return "The Calendar Beast is decided; the story is ending."
+    if flags & {"calendar_beast_phase_2", "calendar_beast_phase_3"}:
+        return "Defeat or repair the Calendar Beast."
+    if "Calendar Shard" not in inv and "calendar_shard_1_taken" not in flags:
+        return "Find the Calendar Shard in the Mirror Fungus Caverns."
+    if "Calendar Key" not in inv and "calendar_key_found" not in flags:
+        return "Find the Calendar Key in the Wet Library."
+    if "arena_approach_reached" not in flags:
+        return "Open the Calendar Gate and cross the Gate Approach."
+    return "Face the Calendar Beast in its arena."
+
+
+def story_chapter(player: dict) -> str:
+    """Coarse 'where are we in the story' label for the dialogue model."""
+    inv = set(player.get("inventory") or ())
+    flags = set(player.get("story_flags") or ())
+    if flags & {"calendar_beast_phase_2", "calendar_beast_phase_3"}:
+        return "the final boss fight"
+    if "arena_approach_reached" in flags:
+        return "the approach to the final boss"
+    if "Calendar Key" in inv or "calendar_key_found" in flags:
+        return "late game, ready for the Calendar Gate"
+    if "Calendar Shard" in inv or "calendar_shard_1_taken" in flags:
+        return "mid game, hunting the Calendar Key"
+    return "the early game, just after the calendar broke"
+
+
+# ---------------------------------------------------------------------------
+# Bone Market pricing — deterministic bands the LLM may haggle inside
+# ---------------------------------------------------------------------------
+# The model never invents a price: Python derives a [lo, hi] band from the
+# weapon's base price, how deep into the quest the player is (markets gouge
+# when the world is ending), and the player's reputation flags. The LLM picks
+# a price inside the band and writes the haggle line; anything outside is
+# clamped to the band.
+_STAGE_BUMP = {
+    "the early game, just after the calendar broke": 0,
+    "mid game, hunting the Calendar Key": 1,
+    "late game, ready for the Calendar Gate": 2,
+    "the approach to the final boss": 3,
+    "the final boss fight": 3,
+}
+
+
+def price_band(weapon_id: str, player: dict) -> tuple[int, int, int]:
+    """Return (lo, hi, anchor) gold for a weapon given quest stage + flags.
+
+    The cursed Bone Blade is always (0, 0, 0): its price is the debt.
+    """
+    w = WEAPONS.get(weapon_id)
+    if w is None or w.price <= 0:
+        return (0, 0, 0)
+    flags = set(player.get("story_flags") or ())
+    bump = _STAGE_BUMP.get(story_chapter(player), 0)
+    # reputation: responsible customers get kinder bands, desperate ones pay
+    if "debt_repaid" in flags or "queue_goblin_paid" in flags:
+        bump -= 1
+    if flags & {"debt_accepted", "debt_deepened", "calendar_devour_pressure"}:
+        bump += 1
+    anchor = max(1, w.price + bump)
+    return (max(1, anchor - 1), anchor + 1, anchor)
 
 
 def is_allowed_flag(flag: str) -> bool:
