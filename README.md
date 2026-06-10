@@ -19,6 +19,8 @@ pinned: false
 
 > Draw bad spells, suffer beautifully.
 
+[![Deploy to Hugging Face Space](https://github.com/ASH1998/Rune-Goblin/actions/workflows/deploy-hf-space.yml/badge.svg)](https://github.com/ASH1998/Rune-Goblin/actions/workflows/deploy-hf-space.yml)
+
 A tiny dungeon crawler where players draw spells in an invented symbolic
 language (**RuneLang**) and a fine-tuned [`openbmb/MiniCPM5-1B-SFT`](https://huggingface.co/openbmb/MiniCPM5-1B-SFT)
 acts as the **spell engine** — reading glyph combinations and emitting JSON
