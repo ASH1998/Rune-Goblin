@@ -145,7 +145,7 @@ html, body {
 .rg-journal.open { display:flex; }
 .rg-journal h3 { font-family:"Press Start 2P", monospace; font-size:12px; color:var(--accent); margin:0 0 10px; display:flex; justify-content:space-between; align-items:center; }
 .rg-journal-close { font-size:10px; color:var(--muted); cursor:pointer; }
-#rg-journal-body { overflow:auto; font-size:12.5px; line-height:1.6; }
+#rg-journal-body, #rg-inventory-body { overflow:auto; font-size:12.5px; line-height:1.6; }
 .rg-jsec { margin-bottom:12px; }
 .rg-jsec h4 { font-size:11px; color:var(--gold); margin:0 0 5px; text-transform:uppercase; }
 .rg-jsec ul { margin:0; padding-left:16px; color:var(--ink); }
@@ -179,3 +179,19 @@ html, body {
 .rg-wpn.equipped { border-color:var(--gold); box-shadow:0 0 0 1px var(--gold) inset; }
 .rg-wpn img { width:18px; height:18px; image-rendering:pixelated; vertical-align:middle; }
 .rg-wpn .wdesc { color:var(--muted); font-size:10px; }
+
+/* item bag (inventory) */
+.rg-bag { display:flex; flex-direction:column; gap:5px; }
+.rg-item {
+  display:flex; align-items:center; gap:8px; background:#180f2a;
+  border:1px solid var(--border); border-radius:8px; padding:6px 9px; font-size:12px;
+}
+.rg-item.usable { cursor:pointer; transition:border-color .12s, background .12s; }
+.rg-item.usable:hover { border-color:var(--green); background:#1d1430; }
+.rg-item-ic { font-size:16px; line-height:1; }
+.rg-item-lb { flex:1; color:var(--ink); }
+.rg-item-qty { color:var(--muted); font-size:11px; }
+.rg-item-use {
+  color:#0c1a12; background:var(--green); border-radius:6px; padding:2px 7px;
+  font-size:10px; text-transform:uppercase; letter-spacing:.04em;
+}
