@@ -105,10 +105,19 @@ def test_boss_phase_thresholds():
 
 
 def test_can_evolve():
-    assert story.can_evolve(5, [], 3) is True
-    assert story.can_evolve(1, ["tourist_helped"], 3) is True
-    assert story.can_evolve(1, [], 3) is False  # no level, no identity
-    assert story.can_evolve(5, [], 2) is False  # not final phase
+    # rpg_plan.md §6: King now requires level 16+ (no longer boss-phase based).
+    assert story.can_evolve(16, [], 0) is True
+    assert story.can_evolve(20, [], 0) is True
+    assert story.can_evolve(15, [], 0) is False  # below the king level
+    assert story.can_evolve(16, ["player_evolved"], 0) is False  # already evolved
+
+
+def test_can_become_king():
+    # Needs level 16+ AND the Cracked Crown in inventory, and not already king.
+    assert story.can_become_king(16, ["Cracked Crown"], []) is True
+    assert story.can_become_king(15, ["Cracked Crown"], []) is False  # too low
+    assert story.can_become_king(16, [], []) is False  # no crown
+    assert story.can_become_king(16, ["Cracked Crown"], ["player_evolved"]) is False
 
 
 def test_npc_intent_buckets():
