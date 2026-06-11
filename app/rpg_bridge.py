@@ -62,6 +62,19 @@ class ShopRequest(BaseModel):
     player: dict = Field(default_factory=dict)
 
 
+class LootRequest(BaseModel):
+    item_spec: dict = Field(default_factory=dict)  # Python-rolled trinket
+    area: str = ""
+
+
+class TauntRequest(BaseModel):
+    enemy_name: str = ""
+    archetype: str = ""  # charge | spit | summon | boss | brute
+    event: str = "spotted"  # spotted | windup | enrage | player_low | defeated
+    area: str = ""
+    player: dict = Field(default_factory=dict)
+
+
 def _decode_image(data_url: str):
     from PIL import Image
 
@@ -106,6 +119,23 @@ def register_routes(app: FastAPI) -> None:
 
         return resolve_shop(req.player, req.npc_id, req.weapon_id,
                             quoted_price=req.quoted_price)
+
+    @app.post("/rg/loot")
+    def loot(req: LootRequest) -> dict:
+        """Christen a Python-rolled trinket (LLM names it; stats stay engine-owned)."""
+        from rune_goblin.dialogue import generate_loot_name
+
+        return generate_loot_name(item_spec=req.item_spec, area=req.area)
+
+    @app.post("/rg/taunt")
+    def taunt(req: TauntRequest) -> dict:
+        """One in-character combat line for an elite/boss (LLM + deterministic fallback)."""
+        from rune_goblin.dialogue import generate_taunt
+        from rune_goblin.story import flag_story
+
+        return generate_taunt(
+            enemy_name=req.enemy_name, archetype=req.archetype, event=req.event,
+            area=req.area, flag_story=flag_story(req.player.get("story_flags")))
 
     @app.post("/rg/quest")
     def quest(req: QuestRequest) -> dict:
