@@ -226,8 +226,8 @@
   },
   "hero_king": {
    "file": "sprites/heroes/hero_king.png",
-   "fw": 80,
-   "fh": 64,
+   "fw": 640,
+   "fh": 512,
    "frames": 18
   },
   "champion_warrior": {

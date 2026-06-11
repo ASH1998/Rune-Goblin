@@ -143,7 +143,7 @@
     // Goblin Pack hero frames include weapon swing padding. Keep their draw
     // boxes near one tile wide so they read as units beside houses and towers.
     hero_warrior: 1.65, hero_rogue: 1.45, hero_poison: 1.45,
-    hero_hunter: 1.4, hero_barbarian: 1.7, hero_king: 1.75, water_foam: 1.0, water_rocks: 1.0,
+    hero_hunter: 1.4, hero_barbarian: 1.7, hero_king: 2.3, water_foam: 1.0, water_rocks: 1.0,
     // tier-2 champion sheets (Tiny Swords units; frames include attack padding)
     champion_warrior: 1.9, champion_rogue: 2.2, champion_poison: 1.9,
     champion_hunter: 1.9, champion_barbarian: 1.9,
@@ -173,15 +173,15 @@
     try { m = await fetch(STATIC + "manifest.json", { cache: "no-store" }).then((r) => r.json()); }
     catch (e) { return; }
     for (const [k, v] of Object.entries(m.vfx || {})) {
-      const img = new Image(); img.src = STATIC + v.file;
+      const img = new Image(); img.src = STATIC + v.file + "?v=46";
       VFXM[k] = { img, fw: v.fw, fh: v.fh, frames: v.frames };
     }
     for (const [k, v] of Object.entries(m.creatures || {})) {
-      const img = new Image(); img.src = STATIC + v.file;
+      const img = new Image(); img.src = STATIC + v.file + "?v=46";
       SPRITES[k] = { img, fw: v.fw, fh: v.fh, frames: v.frames, anim: v.frames > 1, scale: CRE_SCALE[k] || 1.0 };
     }
     for (const [k, v] of Object.entries(m.deco || {})) {
-      const img = new Image(); img.src = STATIC + v.file;
+      const img = new Image(); img.src = STATIC + v.file + "?v=46";
       const tall = v.fh > v.fw, big = v.fw >= 192;
       SPRITES[k] = { img, fw: v.fw, fh: v.fh, frames: 1, anim: false,
         scale: DECO_SCALE[k] || (big ? 1.45 : tall ? 1.25 : 0.95) };
@@ -907,7 +907,71 @@
       ids.map((id) => "<option value='" + id + "'>" + (areas[id].name || id) + "</option>").join("");
     sel.value = "";
   }
-  function showAdminGoto(on) { const sel = $("rg-admin-goto"); if (sel) sel.style.display = on ? "" : "none"; }
+  function showAdminGoto(on) {
+    const sel = $("rg-admin-goto"); if (sel) sel.style.display = on ? "" : "none";
+    const act = $("rg-admin-actions"); if (act) act.style.display = on ? "" : "none";
+  }
+  // Admin cheat menu: jump levels, force evolutions, grant gear/materials.
+  const ADMIN_ACTIONS = [
+    { v: "lvl1", label: "+1 Level" },
+    { v: "lvl5", label: "+5 Levels" },
+    { v: "lvlmax", label: "Level 20 (max)" },
+    { v: "champion", label: "Evolve → Champion (tier 2)" },
+    { v: "king", label: "Evolve → Goblin King (tier 3)" },
+    { v: "unevolve", label: "Reset evolution → base" },
+    { v: "weapons", label: "Grant ALL weapons" },
+    { v: "reforge", label: "Reforge equipped weapon +1" },
+    { v: "crown", label: "Give Cracked Crown" },
+    { v: "riches", label: "+100 gold + 20 of each material" },
+    { v: "potions", label: "+5 of every potion" },
+    { v: "heal", label: "Full heal + courage" },
+  ];
+  function buildAdminActions() {
+    const sel = $("rg-admin-actions"); if (!sel) return;
+    sel.innerHTML = "<option value=''>⚙ Admin cheats…</option>" +
+      ADMIN_ACTIONS.map((a) => "<option value='" + a.v + "'>" + a.label + "</option>").join("");
+    sel.value = "";
+  }
+  function adminAddLevels(n) {
+    for (let i = 0; i < n && P.level < MAX_LEVEL; i++) {
+      applyProgressGain(Math.max(1, (P.xp_to_next || 1) - (P.xp || 0)));
+    }
+  }
+  function adminAction(v) {
+    if (!P) return;
+    if (v === "lvl1") adminAddLevels(1);
+    else if (v === "lvl5") adminAddLevels(5);
+    else if (v === "lvlmax") adminAddLevels(MAX_LEVEL);
+    else if (v === "champion") { if (P.level < 10) adminAddLevels(10 - P.level); evolveToTier(2); }
+    else if (v === "king") {
+      if (P.level < KING_MIN_LEVEL) adminAddLevels(KING_MIN_LEVEL - P.level);
+      if (!(P.inventory || []).includes(CRACKED_CROWN)) P.inventory.push(CRACKED_CROWN);
+      if ((P.evolution_tier || 1) < 2) evolveToTier(2);
+      wearCrown();
+    } else if (v === "unevolve") {
+      P.evolved = false; P.evolution_tier = 1;
+      P.story_flags = (P.story_flags || []).filter((f) => f !== "player_evolved");
+      toast("Evolution reset to base goblin."); refreshPanels(); requestSave();
+    } else if (v === "weapons") {
+      Object.keys(WEAPONS).forEach((id) => { if (!P.weapon_inventory.includes(id)) P.weapon_inventory.push(id); });
+      toast("🗡️ Granted all weapons — open Bag (I) to equip."); refreshPanels(); requestSave();
+    } else if (v === "reforge") {
+      const t = Math.min(3, ((P.weapon_tiers || {})[P.weapon] || 0) + 1);
+      applyReforge({ weapon: P.weapon, tier: t, message: weaponLabel(P.weapon) + " reforged to +" + t + " (admin)." });
+    } else if (v === "crown") {
+      if (!(P.inventory || []).includes(CRACKED_CROWN)) P.inventory.push(CRACKED_CROWN);
+      toast("👑 Cracked Crown granted — wear it from the Bag at level " + KING_MIN_LEVEL + "+."); refreshPanels(); requestSave();
+    } else if (v === "riches") {
+      P.gold = (P.gold || 0) + 100;
+      ["rune_grit", "warped_cog"].forEach((m) => addItem(m, 20));
+      toast("💰 +100 gold and materials."); refreshPanels(); requestSave();
+    } else if (v === "potions") {
+      ["health_potion", "courage_draught", "ward_salve"].forEach((p) => addItem(p, 5));
+      toast("🧪 Potions stocked."); refreshPanels(); requestSave();
+    } else if (v === "heal") {
+      P.hp = P.max_hp; P.courage = P.max_courage; toast("Fully restored."); requestSave();
+    }
+  }
   function warpToArea(id) {
     if (!P || !areas[id]) return;
     P.area = id; A = areas[id];
@@ -924,7 +988,7 @@
     if (on === adminMode) return;
     adminMode = on;
     if (W) W.admin = on;            // drives the HUD badge
-    if (on) { applyAdminUnlock(); buildAdminGoto(); }
+    if (on) { applyAdminUnlock(); buildAdminGoto(); buildAdminActions(); }
     else { restoreAdminLocks(); }
     showAdminGoto(on);
     toast(on ? "🔓 <b>ADMIN MODE ON</b> — every map unlocked. Use the green dropdown to warp."
@@ -2718,6 +2782,8 @@
     window.addEventListener("blur", () => keysDown.clear());
     const goto = $("rg-admin-goto");
     if (goto) goto.onchange = () => { const id = goto.value; goto.value = ""; if (id) warpToArea(id); canvas.focus(); };
+    const acts = $("rg-admin-actions");
+    if (acts) acts.onchange = () => { const v = acts.value; acts.value = ""; if (v) adminAction(v); canvas.focus(); };
     canvas.addEventListener("click", (ev) => {
       gesture(); canvas.focus();
       // Clicking the HUD objective icons opens the Journal (full objective + quests).
