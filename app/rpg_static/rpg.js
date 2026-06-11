@@ -173,15 +173,15 @@
     try { m = await fetch(STATIC + "manifest.json", { cache: "no-store" }).then((r) => r.json()); }
     catch (e) { return; }
     for (const [k, v] of Object.entries(m.vfx || {})) {
-      const img = new Image(); img.src = STATIC + v.file + "?v=46";
+      const img = new Image(); img.src = STATIC + v.file + "?v=49";
       VFXM[k] = { img, fw: v.fw, fh: v.fh, frames: v.frames };
     }
     for (const [k, v] of Object.entries(m.creatures || {})) {
-      const img = new Image(); img.src = STATIC + v.file + "?v=46";
+      const img = new Image(); img.src = STATIC + v.file + "?v=49";
       SPRITES[k] = { img, fw: v.fw, fh: v.fh, frames: v.frames, anim: v.frames > 1, scale: CRE_SCALE[k] || 1.0 };
     }
     for (const [k, v] of Object.entries(m.deco || {})) {
-      const img = new Image(); img.src = STATIC + v.file + "?v=46";
+      const img = new Image(); img.src = STATIC + v.file + "?v=49";
       const tall = v.fh > v.fw, big = v.fw >= 192;
       SPRITES[k] = { img, fw: v.fw, fh: v.fh, frames: 1, anim: false,
         scale: DECO_SCALE[k] || (big ? 1.45 : tall ? 1.25 : 0.95) };
@@ -2011,30 +2011,93 @@
     if (fb && spr(fb)) return fb;
     return spr("player") ? "player" : null;
   }
+  // ---- Goblin King aura: procedural DBZ-style ki corona --------------------
+  // No asset exists for this, so it renders one in code. The corona is drawn
+  // as nested zigzag polygons (deep green -> green -> pale core) on a tiny
+  // offscreen canvas, then blitted up with smoothing off -- so it lands on
+  // exactly the same chunky pixel grid as the art around it. Spike lengths
+  // step at ~9fps like a hand-animated sheet. Sharp tips lean outward at the
+  // rim (fountain shape) so the king stands INSIDE the energy, not on fire.
+  let auraSparks = [];   // {dx, y0, born, life} -- offsets relative to the player
+  let auraCanvas = null, auraCtx = null;
+  const AURA_TIPS = [-0.95, -0.74, -0.52, -0.31, -0.12, 0.06, 0.24, 0.45, 0.66, 0.88];
+  const AURA_LENS = [0.30, 0.52, 0.72, 0.60, 0.92, 1.00, 0.78, 0.88, 0.58, 0.36];
+  function drawKingAura(cx, baseY) {
+    const t = now();
+    // The king's body sits left of his frame center (sword padding on the
+    // right); nudge the aura onto the body. Mirrors when facing left.
+    cx += (facing === "left" ? 1 : -1) * TILE * 0.14;
+    const CW = 56, CH = 64;                 // low-res aura canvas (the "pixels")
+    if (!auraCanvas) {
+      auraCanvas = document.createElement("canvas");
+      auraCanvas.width = CW; auraCanvas.height = CH;
+      auraCtx = auraCanvas.getContext("2d");
+    }
+    const g = auraCtx;
+    g.clearRect(0, 0, CW, CH);
+    const frame = (t / 110) | 0;            // stepped ~9fps, reads as sprite frames
+    const baseYc = CH - 2, midX = CW / 2;
+    const poly = (scale) => {
+      const hf = 0.55 + 0.45 * scale;       // inner layers narrower too
+      const pts = [[midX - (CW * 0.5 - 1) * hf, baseYc]];
+      for (let i = 0; i < AURA_TIPS.length; i++) {
+        const p = AURA_TIPS[i];
+        // per-spike stepped flicker (two beats, no RNG -> stable between rows)
+        const j = Math.sin(frame * 1.7 + i * 2.3) * 0.5 + Math.sin(frame * 0.9 + i * 1.1) * 0.5;
+        const L = AURA_LENS[i] * (0.76 + 0.24 * Math.abs(j)) * scale;
+        const tipX = midX + (p + p * 0.22) * CW * 0.5 * hf;   // rim tips lean out
+        const tipY = baseYc - L * (CH - 6);
+        const vp = (i === 0) ? p - 0.1 : (AURA_TIPS[i - 1] + p) / 2;
+        const vL = Math.min(AURA_LENS[i], AURA_LENS[Math.max(0, i - 1)]) * 0.40 * scale;
+        pts.push([midX + vp * CW * 0.48 * hf, baseYc - vL * (CH - 6)]);
+        pts.push([tipX, tipY]);
+      }
+      pts.push([midX + (CW * 0.5 - 1) * hf, baseYc]);
+      return pts;
+    };
+    const fill = (pts, col) => {
+      g.fillStyle = col; g.beginPath();
+      g.moveTo(pts[0][0], pts[0][1]);
+      for (const q of pts) g.lineTo(q[0], q[1]);
+      g.closePath(); g.fill();
+    };
+    fill(poly(1.00), "#0d4d20");            // deep silhouette
+    fill(poly(0.72), "#2fe14f");            // ki body
+    fill(poly(0.45), "#b9ff9e");            // pale core
+    // blit up, pixelated, anchored at the feet
+    const dw = TILE * 2.3, dh = dw * (CH / CW);
+    ctx.save();
+    ctx.imageSmoothingEnabled = false;
+    ctx.globalAlpha = 0.88;
+    ctx.drawImage(auraCanvas, Math.round(cx - dw / 2), Math.round(baseY - dh + TILE * 0.10), dw, dh);
+    // rising ki motes (relative to the player so the aura travels with him)
+    const px = Math.max(2, Math.round(TILE / 12));
+    const q2 = (v) => Math.round(v / px) * px;
+    if (Math.random() < 0.45) {
+      auraSparks.push({ dx: (Math.random() - 0.5) * TILE * 1.4,
+        y0: Math.random() * TILE * 0.5, born: t, life: 480 + Math.random() * 360 });
+    }
+    auraSparks = auraSparks.filter((s) => t - s.born < s.life);
+    for (const s of auraSparks) {
+      const k = (t - s.born) / s.life;
+      ctx.globalAlpha = 0.85 * (1 - k);
+      ctx.fillStyle = k < 0.35 ? "#b9ff9e" : "#2fe14f";
+      ctx.fillRect(q2(cx + s.dx), q2(baseY - s.y0 - k * TILE * 1.7), px, px);
+    }
+    ctx.restore();
+  }
+
   function drawPlayer() {
     const cx = sx(P.x) + TILE / 2, cy = sy(P.y) + TILE / 2, baseY = sy(P.y) + TILE * 0.98;
     const fi = (now() / 140) | 0;
     const name = playerSprite();
-    // evolved Goblin King aura
-    if (P.evolved) {
-      ctx.save();
-      ctx.globalAlpha = 0.35 + 0.15 * Math.sin(now() / 220);
-      const g = ctx.createRadialGradient(cx, cy, 2, cx, cy, TILE * 0.7);
-      g.addColorStop(0, "rgba(255,210,74,0.8)"); g.addColorStop(1, "rgba(255,210,74,0)");
-      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, TILE * 0.7, 0, Math.PI * 2); ctx.fill();
-      ctx.restore();
-    }
+    if (P.evolved) drawKingAura(cx, baseY);   // behind the sprite
     let drew = false;
     if (name) {
       ctx.save();
       if (facing === "left") { ctx.translate(cx * 2, 0); ctx.scale(-1, 1); }
       drew = drawUnitSprite(name, cx, baseY, null, fi);  // hero scale from CRE_SCALE
       ctx.restore();
-    }
-    if (P.evolved) {
-      ctx.font = Math.floor(TILE * 0.4) + "px serif";
-      ctx.textAlign = "center"; ctx.textBaseline = "middle";
-      ctx.fillText("👑", cx, sy(P.y) + TILE * 0.06);
     }
     if (!drew) {
       ctx.font = Math.floor(TILE * 0.7) + "px serif";
