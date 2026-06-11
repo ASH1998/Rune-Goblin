@@ -133,9 +133,10 @@ def _tier_dmg(tier: str, dr: int) -> int:
 def _tier_level(tier: str, dr: int) -> int:
     """Display level shown above a threat's head (rpg_plan.md §2 clarity tweak).
     Derived from area DR + tier so it tracks the player-level band the area is
-    tuned for (e.g. arena DR6 boss = 15, a notch above the demo player's ~11-12)."""
+    tuned for (e.g. arena DR6 boss = 20, the level cap and a clear notch above
+    the demo player's ~11-12)."""
     base = {"minion": 2 * dr - 2, "standard": 2 * dr,
-            "elite": 2 * dr + 2, "boss": 2 * dr + 3}.get(tier, 2 * dr)
+            "elite": 2 * dr + 2, "boss": 2 * dr + 8}.get(tier, 2 * dr)
     return max(1, base)
 
 

@@ -146,8 +146,8 @@
     hero_warrior: 1.65, hero_rogue: 1.45, hero_poison: 1.45,
     hero_hunter: 1.4, hero_barbarian: 1.7, hero_king: 2.3, water_foam: 1.0, water_rocks: 1.0,
     // tier-2 champion sheets (Tiny Swords units; frames include attack padding)
-    champion_warrior: 1.9, champion_rogue: 2.2, champion_poison: 1.9,
-    champion_hunter: 1.9, champion_barbarian: 1.9,
+    champion_warrior: 2.28, champion_rogue: 2.64, champion_poison: 2.28,
+    champion_hunter: 2.28, champion_barbarian: 2.28,
     // new Tiny Swords additions
     flame: 1.0, tnt_goblin: 1.4, barrel_goblin: 1.35,
     wood_tower_blue: 1.6, wood_tower_purple: 1.6, wood_tower_yellow: 1.6,
@@ -672,6 +672,7 @@
     if (P.fx && P.fx.shield > 0) { P.fx.shield -= 1; if (P.fx.shield <= 0) delete P.fx.shield; toast("Your shield absorbs <b>" + e.name + "</b>."); return; }
     P.hp = clamp(P.hp - dmg, 0, P.max_hp);
     enemyOnHit(e);
+    if (e.type === "boss") bossSpellVfx(e, dmg);
     spawnHit();
     toast("<b>" + e.name + "</b> " + verb + " for " + dmg + ". Cast a weak rune.");
     if (P.hp <= 0 && !over) lose();
@@ -1885,6 +1886,23 @@
   }
   function spawnHit() { vfx.push({ kind: "hit", start: now(), dur: 360 }); shakeAmt = Math.max(shakeAmt, 0.35); }
 
+  // Boss attacks land as full spell casts (reusing the player's spell sheets):
+  // magic circle under the boss, cast flash, projectile to the player, impact.
+  // Dark magic normally; fire once enraged so the last phase reads hotter.
+  function bossSpellVfx(e, dmg) {
+    const cfg = ELEM_VFX[e.fx && e.fx.enraged ? "fire" : "dark"];
+    const ec = tcOf(e), pc = pcOf();
+    const travel = 260;
+    addCircle(circleRow(["spiral", "eye"]), ec[0], ec[1] + 0.1, 2.6, 800);
+    addAnim(cfg.cast, ec[0], ec[1] - 0.3, 1.5, 0);
+    addProj(cfg.proj, ec, pc, travel, 100);
+    addAnim(cfg.impact, pc[0], pc[1] - 0.2, 1.4, 100 + travel);
+    addAnim("explosion", pc[0], pc[1] - 0.2, 1.1, 140 + travel);
+    addNum("-" + dmg, "#ff5d73", pc[0], pc[1] - 0.6, 100 + travel);
+    shakeAmt = Math.max(shakeAmt, 0.5);
+    playSfx(cfg.sound, 2);
+  }
+
   // ---- rendering ----
   function waterColor() {
     if (A.biome === "cavern") return ["#255968", "#326f7e", "#78c7d8"];
@@ -1967,6 +1985,134 @@
     ctx.restore();
   }
 
+  // The final boss radiates a roiling Super Saiyan-style energy aura: a pulsing
+  // halo, rising violet flame tongues, a white-hot core, a ground burst ring,
+  // and upward sparks. All additive ("lighter") so the energy reads as glowing.
+  // Drawn behind the sprite; hotter and taller once the boss enters its last
+  // phase (hp <= 1/3) so the fight feels like it's escalating.
+  function drawBossAura(cx, baseY, e) {
+    const t = now() / 1000;
+    const cy = baseY - TILE * 0.5;            // visual center of the body
+    const enraged = e.hp <= e.max_hp / 3;     // final phase → bigger, hotter
+    const R = TILE * (enraged ? 1.45 : 1.2);
+    const flick = 0.85 + 0.15 * Math.sin(t * 9) * Math.sin(t * 5.3);
+
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter"; // energy stacks additively
+
+    // 1) outer halo
+    const halo = ctx.createRadialGradient(cx, cy, R * 0.1, cx, cy, R * flick);
+    halo.addColorStop(0, "rgba(200,140,255,0.5)");
+    halo.addColorStop(0.45, "rgba(140,60,255,0.36)");
+    halo.addColorStop(1, "rgba(90,20,200,0)");
+    ctx.fillStyle = halo;
+    ctx.beginPath(); ctx.arc(cx, cy, R * flick, 0, Math.PI * 2); ctx.fill();
+
+    // 2) rising flame tongues, each with its own flicker/sway phase
+    const N = enraged ? 11 : 8;
+    for (let i = 0; i < N; i++) {
+      const ph = i * 1.7;
+      const sway = Math.sin(t * 6 + ph) * TILE * 0.12;
+      const rise = 0.5 + 0.5 * Math.sin(t * 7 + ph);          // 0..1
+      const baseX = cx + (i / (N - 1) - 0.5) * TILE * 1.6;
+      const fh = TILE * (1.0 + 1.0 * rise) * (enraged ? 1.3 : 1);
+      const fw = TILE * 0.2;
+      const tipX = baseX + sway, tipY = cy - fh;
+      const g = ctx.createLinearGradient(baseX, baseY, tipX, tipY);
+      g.addColorStop(0, "rgba(130,50,255,0)");
+      g.addColorStop(0.25, "rgba(165,90,255,0.65)");
+      g.addColorStop(0.7, "rgba(120,40,245,0.5)");
+      g.addColorStop(1, "rgba(220,180,255,0)");
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.moveTo(baseX - fw, baseY);
+      ctx.quadraticCurveTo(baseX - fw * 0.4, cy - fh * 0.5, tipX, tipY);
+      ctx.quadraticCurveTo(baseX + fw * 0.4, cy - fh * 0.5, baseX + fw, baseY);
+      ctx.closePath(); ctx.fill();
+    }
+
+    // 3) white-hot inner core
+    const core = ctx.createRadialGradient(cx, cy + TILE * 0.1, 1, cx, cy + TILE * 0.1, R * 0.5);
+    core.addColorStop(0, "rgba(245,230,255," + (0.45 * flick).toFixed(3) + ")");
+    core.addColorStop(1, "rgba(190,140,255,0)");
+    ctx.fillStyle = core;
+    ctx.beginPath(); ctx.arc(cx, cy + TILE * 0.1, R * 0.5, 0, Math.PI * 2); ctx.fill();
+
+    // 4) ground burst ring at the feet
+    ctx.globalAlpha = 0.5 * flick;
+    ctx.strokeStyle = "rgba(200,150,255,0.85)"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.ellipse(cx, baseY - TILE * 0.06, R * 0.55, R * 0.16, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    // 5) upward energy sparks rising from the body
+    const sparks = enraged ? 9 : 6;
+    for (let i = 0; i < sparks; i++) {
+      const prog = (t * (0.6 + (i % 3) * 0.12) + i * 0.37) % 1;   // 0..1 loop
+      const px = cx + Math.sin(i * 2.3 + i) * TILE * 0.7;
+      const py = baseY - prog * TILE * 2.0;
+      ctx.fillStyle = "rgba(230,205,255," + ((1 - prog) * 0.8).toFixed(3) + ")";
+      ctx.beginPath(); ctx.arc(px, py, TILE * 0.05 * (1 - prog * 0.5), 0, Math.PI * 2); ctx.fill();
+    }
+
+    ctx.restore();
+  }
+
+  // Deterministic 0..1 hash so lightning bolts flicker without Math.random
+  // (re-rolled per time bucket — same frame, same bolts).
+  function boltRnd(seed, n) {
+    const x = Math.sin(seed * 127.1 + n * 311.7) * 43758.5453;
+    return x - Math.floor(x);
+  }
+
+  // Electric crackle drawn IN FRONT of a sprite: jagged arcs that wrap the
+  // body (Super Saiyan style), blinking in and out per time bucket. Colors and
+  // bolt count come from `o` so the boss (violet) and the Goblin King (green)
+  // can share the effect.
+  function drawCrackle(cx, baseY, o) {
+    const seed = ((now() / 90) | 0) + (o.seedOff || 0);  // re-roll ~11x/sec
+    const bolts = o.bolts || 4;
+    const cy = baseY - (o.lift || TILE * 0.55);          // vertical body center
+    const rx = o.rx || TILE * 0.62, ry = o.ry || TILE * 0.78;
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    ctx.lineJoin = "round"; ctx.lineCap = "round";
+    for (let b = 0; b < bolts; b++) {
+      if (boltRnd(seed, b * 7 + 1) < 0.3) continue;   // bolts blink
+      const a0 = boltRnd(seed, b * 7 + 2) * Math.PI * 2;
+      const a1 = a0 + 0.7 + boltRnd(seed, b * 7 + 3) * (o.long ? 1.6 : 1.1);
+      const segs = 5;
+      ctx.beginPath();
+      for (let s = 0; s <= segs; s++) {
+        const a = a0 + (a1 - a0) * (s / segs);
+        const jr = 1 + (boltRnd(seed, b * 31 + s + 5) - 0.5) * 0.5;
+        const x = cx + Math.cos(a) * rx * jr;
+        const y = cy + Math.sin(a) * ry * jr;
+        if (s) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+      }
+      // colored glow pass, then white-hot core pass over the same path
+      ctx.strokeStyle = o.glow; ctx.lineWidth = 2.6; ctx.stroke();
+      ctx.strokeStyle = "rgba(255,255,255,0.95)"; ctx.lineWidth = 1; ctx.stroke();
+      // small fork off the last segment
+      if (boltRnd(seed, b * 7 + 4) > 0.5) {
+        const fa = a1 + 0.3, fl = TILE * 0.3;
+        const fx0 = cx + Math.cos(a1) * rx, fy0 = cy + Math.sin(a1) * ry;
+        ctx.beginPath();
+        ctx.moveTo(fx0, fy0);
+        ctx.lineTo(fx0 + Math.cos(fa) * fl, fy0 + Math.sin(fa) * fl * 0.6);
+        ctx.strokeStyle = o.fork; ctx.lineWidth = 1.2; ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
+  function drawBossLightning(cx, baseY, e) {
+    const enraged = e.hp <= e.max_hp / 3;
+    drawCrackle(cx, baseY, {
+      bolts: enraged ? 6 : 4, long: enraged,
+      glow: "rgba(185,110,255,0.8)", fork: "rgba(215,170,255,0.85)",
+    });
+  }
+
   function drawEntity(e) {
     const cx = sx(e.x) + TILE / 2;
     const cy = sy(e.y) + TILE / 2, baseY = sy(e.y) + TILE * 0.98;
@@ -1979,6 +2125,8 @@
       ctx.fillStyle = "#050309";
       ctx.beginPath(); ctx.ellipse(cx, baseY - TILE * 0.1, TILE * 0.28, TILE * 0.08, 0, 0, Math.PI * 2); ctx.fill();
       ctx.restore();
+      // The final boss radiates a menacing energy aura behind its sprite.
+      if (e.type === "boss" && e.hp > 0) drawBossAura(cx, baseY, e);
       // Elite enemies get a pulsing gold ring; enraged ones a red flare.
       if (e.tier === "elite" && e.hp > 0) {
         const enr = e.fx && e.fx.enraged;
@@ -1999,6 +2147,8 @@
         ctx.textAlign = "center"; ctx.textBaseline = "middle";
         ctx.fillText(e.type === "chest" && e.state === "open" ? "📭" : e.sprite, cx, cy);
       }
+      // Electricity crackles OVER the boss body so the aura wraps the sprite.
+      if (e.type === "boss" && e.hp > 0) drawBossLightning(cx, baseY, e);
     }
     // lock badge
     if (e.state === "locked") {
@@ -2156,6 +2306,16 @@
       ctx.textAlign = "center"; ctx.textBaseline = "middle";
       ctx.fillText("🧙", cx, cy);
     }
+    // The Goblin King crackles with green lightning over the king aura; the
+    // tier-2 champion gets a lighter gold crackle with no aura behind it.
+    if (P.evolved) drawCrackle(cx, baseY, {
+      bolts: 4, seedOff: 17, lift: TILE * 1.0, rx: TILE * 0.7, ry: TILE * 1.0,
+      glow: "rgba(90,255,140,0.75)", fork: "rgba(170,255,200,0.85)",
+    });
+    else if ((P.evolution_tier || 1) === 2) drawCrackle(cx, baseY, {
+      bolts: 3, seedOff: 29, lift: TILE * 0.95, rx: TILE * 0.65, ry: TILE * 0.9,
+      glow: "rgba(255,210,74,0.7)", fork: "rgba(255,235,160,0.8)",
+    });
     // facing pip
     const v = DIRV[facing];
     ctx.fillStyle = "#ffd24a";
