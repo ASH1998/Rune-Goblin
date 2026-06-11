@@ -26,6 +26,8 @@
   let toastMsg = "";
   let vfx = [];                 // active visual effects
   let turnNo = 0;
+  let transitions = 0;          // area-transition counter (drives respawns)
+  let devBoot = false;          // true when ?seed/?flags/?area/?mastery present
   let recentRunes = [];
   let enemyCooldown = {};
   let masteryChoiceOpen = false;
@@ -47,6 +49,14 @@
   const CLASS_SPRITE_FALLBACK = {  // generic goblins if a hero sheet fails to load
     warrior: "goblin_red", rogue: "goblin_yellow", poison: "goblin_purple",
     hunter: "goblin_blue", barbarian: "goblin_red",
+  };
+  const CHAMPION_SPRITE = {     // tier-2 evolution forms (Tiny Swords unit sheets)
+    warrior: "champion_warrior", rogue: "champion_rogue", poison: "champion_poison",
+    hunter: "champion_hunter", barbarian: "champion_barbarian",
+  };
+  const CHAMPION_NAME = {
+    warrior: "Goblin Champion", rogue: "Goblin Reaver", poison: "Goblin Plaguewarden",
+    hunter: "Goblin Sharpeye", barbarian: "Goblin Ravager",
   };
   const KING_SPRITE = "hero_king";  // evolved Goblin King in-game sprite
 
@@ -134,6 +144,9 @@
     // boxes near one tile wide so they read as units beside houses and towers.
     hero_warrior: 1.65, hero_rogue: 1.45, hero_poison: 1.45,
     hero_hunter: 1.4, hero_barbarian: 1.7, hero_king: 1.75, water_foam: 1.0, water_rocks: 1.0,
+    // tier-2 champion sheets (Tiny Swords units; frames include attack padding)
+    champion_warrior: 1.9, champion_rogue: 2.2, champion_poison: 1.9,
+    champion_hunter: 1.9, champion_barbarian: 1.9,
     // new Tiny Swords additions
     flame: 1.0, tnt_goblin: 1.4, barrel_goblin: 1.35,
     wood_tower_blue: 1.6, wood_tower_purple: 1.6, wood_tower_yellow: 1.6,
@@ -157,7 +170,7 @@
   }
   async function loadManifest() {
     let m;
-    try { m = await fetch(STATIC + "manifest.json").then((r) => r.json()); }
+    try { m = await fetch(STATIC + "manifest.json", { cache: "no-store" }).then((r) => r.json()); }
     catch (e) { return; }
     for (const [k, v] of Object.entries(m.vfx || {})) {
       const img = new Image(); img.src = STATIC + v.file;
@@ -334,6 +347,7 @@
       .map((x) => x.trim()).filter(Boolean);
     bootArea = (params.get("area") || "").trim();
     bootMasteryChoice = params.get("mastery") === "1";
+    devBoot = worldSeed !== null || bootFlags.length > 0 || !!bootArea || bootMasteryChoice;
     return "/rg/world" + (worldSeed === null ? "" : ("?seed=" + encodeURIComponent(String(worldSeed))));
   }
 
@@ -354,7 +368,7 @@
     P.trust = P.trust || {};
     P.level = P.level || 1;
     P.xp = P.xp || 0;
-    P.xp_to_next = P.xp_to_next || 8;
+    P.xp_to_next = P.xp_to_next || 10;
     P.goblin_class = P.goblin_class || "warrior";
     P.weapon = P.weapon || "clerk_wand";
     P.weapon_inventory = P.weapon_inventory || [P.weapon];
@@ -367,6 +381,100 @@
     P.items = P.items || {};      // counted bag: { item_id: qty }
     P.quests = P.quests || {};    // { quest_id: "active" | "done" }
     P.beats_seen = P.beats_seen || [];  // story beats already fired
+    // --- RPG depth stats (rpg_plan.md §1, §5, §6) ---
+    P.spell_power = P.spell_power || 0;      // flat damage added to every cast
+    P.crit = P.crit || 0;                    // crit chance %, unlocked at L8
+    P.crit_knockback = P.crit_knockback || false;
+    P.king_eligible = P.king_eligible || false;
+    P.evolution_tier = P.evolution_tier || 1;   // 1 base, 2 champion, 3 king
+    P.potion_belt_slots = P.potion_belt_slots || 1;  // quick-use slots (L7 → 2)
+    P.defeats = P.defeats || {};   // non-unique kills → respawn ledger
+    P.weapon_tiers = P.weapon_tiers || {};   // weapon_id → reforge tier 0..3
+    P.trinket = P.trinket || null;           // single equipped trinket
+  }
+  // XP curve + per-level rewards mirror story.py (server is authoritative for
+  // combat XP; this drives client-applied quest XP and the local fallback).
+  const XP_TO_NEXT = {1:10,2:14,3:18,4:22,5:26,6:30,7:34,8:38,9:44,10:50,
+    11:56,12:62,13:70,14:78,15:86,16:96,17:106,18:118,19:130,20:0};
+  const MAX_LEVEL = 20;
+  const LEVEL_MILESTONES = {
+    2:{max_hp:2,note:"Level 2 — toughened up: +2 max HP."},
+    3:{unlock_four_runes:true,note:"Level 3 — you can weave 4-rune casts."},
+    4:{rune_mastery_choice:true,note:"Level 4 — choose a rune mastery."},
+    5:{max_courage:2,note:"Level 5 — steadier nerves: +2 max courage."},
+    6:{spell_power:1,note:"Level 6 — sharper intent: +1 spell power."},
+    7:{potion_belt:2,note:"Level 7 — potion belt slot 2 unlocked (key 2)."},
+    8:{crit:10,note:"Level 8 — you learn to find the soft spot: 10% crit."},
+    9:{max_hp:2,note:"Level 9 — scarred and sturdier: +2 max HP."},
+    10:{max_hp:3,spell_power:1,evolve_tier:2,note:"Level 10 — you evolve into your champion form: +3 max HP, +1 spell power."},
+    11:{max_courage:1,note:"Level 11 — +1 max courage."},
+    12:{rune_mastery_choice:true,note:"Level 12 — choose a second rune mastery."},
+    13:{crit:5,note:"Level 13 — keener eye: +5% crit."},
+    14:{max_hp:2,note:"Level 14 — +2 max HP."},
+    15:{crit_knockback:true,note:"Level 15 — your crits knock enemies back a tile."},
+    16:{king_eligible:true,note:"Level 16 — you could wear the Goblin King's crown, if you found one."},
+    17:{spell_power:1,note:"Level 17 — +1 spell power."},
+    18:{crit:5,note:"Level 18 — +5% crit."},
+    19:{max_hp:2,note:"Level 19 — +2 max HP."},
+    20:{max_hp:2,spell_power:1,crit:5,note:"Level 20 — Calendar Sovereign: +2 max HP, +1 spell power, +5% crit."},
+  };
+  function levelReward(lvl) {
+    const r = Object.assign({max_hp:1,note:"Level "+lvl+" — +1 max HP."},
+                            LEVEL_MILESTONES[lvl] || {});
+    r.level = lvl; return r;
+  }
+  function xpToNext(lvl) { return XP_TO_NEXT[lvl] || 0; }
+
+  // ---- save / load (rpg_plan.md §7) ----------------------------------------
+  // Single-slot localStorage persistence. We snapshot the full mutable world
+  // (`areas`) plus the player and run cursor; the static world payload `W`
+  // (runes/classes/weapons metadata) is always re-fetched from /rg/world on
+  // boot, so only run state lives in the save. SAVE_VERSION gates the schema:
+  // any change that would make an old snapshot incompatible bumps it, and a
+  // mismatch (or parse error) is retired gracefully back to a new game.
+  const SAVE_VERSION = 1;
+  const SAVE_KEY = "rg_save";
+  const SAVE_DEV_KEY = "rg_save_dev";   // smoke/test runs never touch the real slot
+  let saveTimer = null;
+  function saveKey() { return devBoot ? SAVE_DEV_KEY : SAVE_KEY; }
+  function storage() { try { return window.localStorage; } catch (e) { return null; } }
+
+  function serializeSave() {
+    return {
+      version: SAVE_VERSION,
+      ts: Date.now(),
+      seed: W ? W.world_seed : null,
+      player: P,
+      areas: areas,
+      turnNo: turnNo,
+      transitions: transitions,
+    };
+  }
+  function writeSave() {
+    const s = storage(); if (!s || !P || selecting || over) return;
+    try { s.setItem(saveKey(), JSON.stringify(serializeSave())); } catch (e) { /* quota / private mode */ }
+  }
+  // Debounced autosave — many actions fire in a burst during one cast.
+  function requestSave() {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => { saveTimer = null; writeSave(); }, 250);
+  }
+  function readSave() {
+    const s = storage(); if (!s) return null;
+    let raw; try { raw = s.getItem(saveKey()); } catch (e) { return null; }
+    if (!raw) return null;
+    let data; try { data = JSON.parse(raw); } catch (e) { return null; }
+    if (!data || data.version !== SAVE_VERSION || !data.player || !data.areas) return null;
+    if (!data.areas[data.player.area]) return null;   // current area must exist
+    return data;
+  }
+  function hasSave() { return !devBoot && !!readSave(); }
+  function clearSave() { const s = storage(); if (s) { try { s.removeItem(saveKey()); } catch (e) {} } }
+  function saveSummary() {
+    const d = readSave(); if (!d) return "";
+    const cls = (CLASSES.find((c) => c.id === d.player.goblin_class) || {}).label || "Goblin";
+    const area = (areas[d.player.area] || {}).name || d.player.area;
+    return cls + " · Lv " + (d.player.level || 1) + " · " + area;
   }
   function hasFlag(f) { return (P.story_flags || []).includes(f); }
   function rememberStoryEvent(kind, text) {
@@ -398,14 +506,30 @@
     const meta = ITEMS[id];
     if (!meta || meta.kind !== "potion" || itemCount(id) <= 0) return;
     // Don't waste a potion that would do nothing (already topped up).
-    const wouldHelp = (meta.heal && P.hp < P.max_hp) || (meta.courage && P.courage < P.max_courage);
+    const wouldHelp = (meta.heal && P.hp < P.max_hp) || (meta.courage && P.courage < P.max_courage) || meta.shield;
     if (!wouldHelp) { toast("Already full — save the <b>" + meta.label + "</b> for later."); return; }
     let msg = "";
     if (meta.heal) { const before = P.hp; P.hp = clamp(P.hp + meta.heal, 0, P.max_hp); msg = "+" + (P.hp - before) + " HP"; }
     if (meta.courage) { const before = P.courage; P.courage = clamp(P.courage + meta.courage, 0, P.max_courage); msg += (msg ? ", " : "") + "+" + (P.courage - before) + " courage"; }
+    if (meta.shield) { P.fx = P.fx || {}; P.fx.shield = Math.max(P.fx.shield || 0, meta.shield); msg += (msg ? ", " : "") + "🛡 shield " + meta.shield; }
     removeItem(id, 1);
     toast("🧪 Used <b>" + meta.label + "</b> (" + (msg || "no effect") + ").");
     refreshPanels();
+    requestSave();
+  }
+  // Potion belt quick-use (rpg_plan.md §5). Slot 1 = healing (key H), slot 2 =
+  // ward/courage (key G), unlocked at L7. We use H/G rather than 1/2 because the
+  // number keys already pick runes in this build.
+  function quickUse(slot) {
+    if (busy || over || drawing || dialogueOpen || selecting) return;
+    let id = null;
+    if (slot === 1) { id = itemCount("health_potion") > 0 ? "health_potion" : null; }
+    else if (slot === 2) {
+      if ((P.potion_belt_slots || 1) < 2) { toast("Potion belt slot 2 unlocks at level 7."); return; }
+      id = itemCount("ward_salve") > 0 ? "ward_salve" : (itemCount("courage_draught") > 0 ? "courage_draught" : null);
+    }
+    if (!id) { toast("Belt slot " + slot + " is empty."); return; }
+    useItem(id);
   }
   function weaponLabel(id) { return (WEAPONS[id] && WEAPONS[id].label) || id; }
   function addUnique(arr, text) { if (text && !arr.includes(text)) arr.push(text); }
@@ -503,29 +627,207 @@
     if (!WALK.has(A.rows[y][x]) || (x === P.x && y === P.y)) return false;
     return !liveEntities().some((o) => o !== e && o.blocking && o.x === x && o.y === y);
   }
+  // Base melee damage an enemy deals (server-stamped e.dmg), +1 while enraged.
+  function enemyHitDamage(e) {
+    let d = e.dmg || (e.type === "boss" ? 3 : 1);
+    if (e.fx && e.fx.enraged) d += 1;
+    return d;
+  }
+  // Elite affix riders that fire whenever the enemy lands a blow on the player.
+  function enemyOnHit(e) {
+    if (e.affix === "vampiric" && e.hp > 0 && e.hp < e.max_hp) {
+      e.hp = clamp(e.hp + 1, 0, e.max_hp);
+      addNum("+1", "#6df5a0", e.x + 0.5, e.y - 0.2, 0);
+    } else if (e.affix === "hexed" && P.courage > 0) {
+      P.courage = clamp(P.courage - 1, 0, P.max_courage);
+      addNum("-1✦", "#b07cff", P.x + 0.5, P.y + 0.2, 0);
+    }
+  }
   function enemyAttack(e, verb) {
     if (now() - (enemyCooldown[e.id] || 0) < 850) return;
     enemyCooldown[e.id] = now();
-    const dmg = e.type === "boss" ? 3 : 1;
+    const dmg = enemyHitDamage(e);
+    if (P.fx && P.fx.shield > 0) { P.fx.shield -= 1; if (P.fx.shield <= 0) delete P.fx.shield; toast("Your shield absorbs <b>" + e.name + "</b>."); return; }
     P.hp = clamp(P.hp - dmg, 0, P.max_hp);
+    enemyOnHit(e);
     spawnHit();
     toast("<b>" + e.name + "</b> " + verb + " for " + dmg + ". Cast a weak rune.");
     if (P.hp <= 0 && !over) lose();
   }
+  // Combat taunts (rpg_plan.md §8): elites/bosses speak via /rg/taunt. The line
+  // renders as a speech bubble; a slow/failed request just stays silent. Each
+  // (enemy, event) fires at most once per run.
+  const tauntsSeen = new Set();
+  async function fireTaunt(enemy, event) {
+    if (!enemy || (enemy.tier !== "elite" && enemy.type !== "boss")) return;
+    const arche = enemy.type === "boss" ? "boss" : (enemy.ability || "brute");
+    const key = enemy.id + ":" + event;
+    if (tauntsSeen.has(key)) return;
+    tauntsSeen.add(key);
+    try {
+      const d = await api("/rg/taunt", { enemy_name: enemy.name, archetype: arche,
+        event: event, area: A ? A.name : "",
+        player: { story_flags: (P.story_flags || []).slice() } });
+      const live = byId(enemy.id);
+      if (d && d.line && live && (event === "defeated" || live.hp > 0)) showBark(enemy, d.line);
+    } catch (e) { /* fallback is silence; never blocks combat */ }
+  }
+  // Loot christening (rpg_plan.md §8): patch a rolled trinket's name/flavor in
+  // place once the model answers. The item is fully usable before this lands.
+  async function requestLootName(t) {
+    if (!t || !t.id) return;
+    try {
+      const d = await api("/rg/loot", { item_spec: t, area: A ? A.name : "" });
+      if (!d || !d.name) return;
+      [P.trinket, P.pending_trinket].forEach((x) => {
+        if (x && x.id === t.id) { x.name = d.name; if (d.flavor) x.flavor = d.flavor; }
+      });
+      refreshPanels(); requestSave();
+    } catch (e) { /* keep the deterministic fallback name */ }
+  }
+  // Knock the player back one tile away from a charging enemy (if walkable).
+  function knockbackPlayer(e) {
+    const dx = Math.sign(P.x - e.x), dy = Math.sign(P.y - e.y);
+    const nx = P.x + dx, ny = P.y + dy;
+    if (ny >= 0 && nx >= 0 && ny < A.rows.length && nx < A.rows[0].length &&
+        WALK.has(A.rows[ny][nx]) && !entityAt(nx, ny)) { P.x = nx; P.y = ny; }
+  }
+  // Knock an enemy one tile away from the player (crit / heavy hit).
+  function knockbackEntity(e) {
+    if (!e || e.type === "boss") return;   // bosses are immovable
+    const dx = Math.sign(e.x - P.x), dy = Math.sign(e.y - P.y);
+    const nx = e.x + (dx || 0), ny = e.y + (dy || 0);
+    if (ny >= 0 && nx >= 0 && ny < A.rows.length && nx < A.rows[0].length &&
+        WALK.has(A.rows[ny][nx]) && !entityAt(nx, ny) && !(nx === P.x && ny === P.y)) {
+      e.x = nx; e.y = ny;
+    }
+  }
+  // Tiles between an enemy and the player along a straight line (charge lane).
+  function chargeLane(e) {
+    if (e.x !== P.x && e.y !== P.y) return null;     // must be orthogonal
+    if (distToPlayer(e) > 4) return null;
+    const dx = Math.sign(P.x - e.x), dy = Math.sign(P.y - e.y);
+    const tiles = []; let x = e.x + dx, y = e.y + dy, n = 0;
+    while ((x !== P.x || y !== P.y) && n < 4) {
+      if (!WALK.has(A.rows[y][x])) return null;       // wall breaks the lane
+      tiles.push([x, y]); x += dx; y += dy; n += 1;
+    }
+    tiles.push([P.x, P.y]);
+    return { dx, dy, tiles };
+  }
+  function ownMinionsAlive(e) {
+    return liveEntities().filter((o) => o.tier === "minion" && o.hp > 0 &&
+      o.id.indexOf(e.id + "_spawn") === 0).length;
+  }
+  function spawnMinionNear(e, idx) {
+    for (const d of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1]]) {
+      const nx = e.x + d[0], ny = e.y + d[1];
+      if (ny < 0 || nx < 0 || ny >= A.rows.length || nx >= A.rows[0].length) continue;
+      if (!WALK.has(A.rows[ny][nx]) || entityAt(nx, ny)) continue;
+      A.entities.push({ id: e.id + "_spawn" + idx + "_" + turnNo, type: "enemy",
+        name: "Summoned Shade", sprite: "👾", sprite_key: e.sprite_key,
+        hp: 3 + 2 * (e.dr || 1), max_hp: 3 + 2 * (e.dr || 1),
+        weakness: (e.weakness || []).slice(0, 1), resistance: [], mood: "summoned",
+        tier: "minion", dr: e.dr || 1, dmg: 1, ability: "", unique: false,
+        state: "idle", blocking: true, x: nx, y: ny, spawn_x: nx, spawn_y: ny });
+      return true;
+    }
+    return false;
+  }
+  // Resolve a telegraphed windup that was set on this enemy a turn ago.
+  function resolveWindup(e) {
+    const w = e.windup; e.windup = null;
+    if (e.fx && (e.fx.stun > 0 || e.fx.calm > 0)) { toast("<b>" + e.name + "</b>'s " + w.kind + " is interrupted!"); return; }
+    if (w.kind === "charge") {
+      // dash up to the lane end, then strike if adjacent for double damage.
+      const last = w.tiles[w.tiles.length - 1];
+      const land = w.tiles.filter((t) => !entityAt(t[0], t[1]) || (t[0] === last[0] && t[1] === last[1]));
+      const dest = land.length ? land[land.length - 1] : [e.x, e.y];
+      if (WALK.has(A.rows[dest[1]][dest[0]]) && !entityAt(dest[0], dest[1])) { e.x = dest[0]; e.y = dest[1]; }
+      if (distToPlayer(e) <= 1) {
+        const dmg = enemyHitDamage(e) * 2;
+        P.hp = clamp(P.hp - dmg, 0, P.max_hp); enemyOnHit(e); spawnHit();
+        knockbackPlayer(e);
+        toast("<b>" + e.name + "</b> charges for " + dmg + " and knocks you back!");
+        if (P.hp <= 0 && !over) lose();
+      } else { toast("<b>" + e.name + "</b> charges past — you dodged!"); }
+    } else if (w.kind === "spit") {
+      if (P.x === w.target[0] && P.y === w.target[1]) {
+        const dmg = enemyHitDamage(e);
+        P.hp = clamp(P.hp - dmg, 0, P.max_hp); enemyOnHit(e); spawnHit();
+        toast("<b>" + e.name + "</b>'s spit hits for " + dmg + "!");
+        if (P.hp <= 0 && !over) lose();
+      } else { toast("<b>" + e.name + "</b> spits — splashes where you stood."); }
+    } else if (w.kind === "summon") {
+      let n = 0; for (let i = 0; i < 2; i++) { if (spawnMinionNear(e, i)) n++; }
+      if (n) toast("<b>" + e.name + "</b> summons " + n + " shade" + (n > 1 ? "s" : "") + "!");
+    }
+  }
   function enemyTurn() {
     if (!A || over || busy) return;
     turnNo += 1;
+    if (turnNo % 25 === 0) requestSave();   // periodic autosave (rpg_plan.md §7)
     for (const e of liveEntities()) {
       if (!(e.type === "enemy" || e.type === "boss") || e.hp <= 0) continue;
+      // Elites/bosses bark when they first close to within sight.
+      if ((e.tier === "elite" || e.type === "boss") && distToPlayer(e) <= 4) fireTaunt(e, "spotted");
+      // Enrage: elites/bosses below 33% HP get angrier (and faster).
+      if ((e.tier === "elite" || e.type === "boss") && e.hp <= e.max_hp / 3) {
+        e.fx = e.fx || {};
+        if (!e.fx.enraged) { e.fx.enraged = 999; toast("<b>" + e.name + "</b> ENRAGES!"); fireTaunt(e, "enrage"); }
+      }
+      // Resolve a pending telegraphed attack first.
+      if (e.windup) { resolveWindup(e); continue; }
       const d0 = distToPlayer(e);
+      // Initiate a telegraphed special if the situation fits.
+      if (e.ability === "charge" && d0 >= 2) {
+        const lane = chargeLane(e);
+        if (lane) { e.windup = { kind: "charge", dx: lane.dx, dy: lane.dy, tiles: lane.tiles }; toast("<b>" + e.name + "</b> winds up a charge — step off the line!"); continue; }
+      }
+      if (e.ability === "spit" && d0 >= 2 && d0 <= 4) {
+        e.windup = { kind: "spit", target: [P.x, P.y] }; toast("<b>" + e.name + "</b> takes aim — move!"); continue;
+      }
+      if (e.ability === "summon" && turnNo % 4 === 0 && ownMinionsAlive(e) < 3 && d0 <= 6) {
+        e.windup = { kind: "summon" }; toast("<b>" + e.name + "</b> begins a summon…"); continue;
+      }
       if (d0 <= 1) { enemyAttack(e, "presses in"); continue; }
-      if (e.type === "boss" || d0 > 6 || (d0 > 3 && (turnNo + e.id.length) % 3 !== 0)) continue;
+      const enraged = e.fx && e.fx.enraged;
+      if (e.type === "boss" || d0 > 6 || (!enraged && d0 > 3 && (turnNo + e.id.length) % 3 !== 0)) continue;
       const step = ["up", "down", "left", "right"].map((dir) => {
         const v = DIRV[dir], nx = e.x + v[0], ny = e.y + v[1];
         return { nx, ny, d: Math.abs(nx - P.x) + Math.abs(ny - P.y) };
       }).sort((a, b) => a.d - b.d).find((p) => canEnemyStep(e, p.nx, p.ny));
       if (step) { e.x = step.nx; e.y = step.ny; }
       if (distToPlayer(e) <= 1) enemyAttack(e, "lunges");
+    }
+  }
+
+  // Called whenever an enemy dies (cast, burn, or summon cleanup).
+  function onEnemyDefeated(e) {
+    if (e.tier === "elite" || e.type === "boss") fireTaunt(e, "defeated");
+    // Splitting affix: the elite bursts into two minions.
+    if (e.affix === "splitting") {
+      let n = 0; for (let i = 0; i < 2; i++) { if (spawnMinionNear(e, "split" + i)) n++; }
+      if (n) toast("<b>" + e.name + "</b> splits into " + n + " shards!");
+    }
+    // Record non-unique deaths so the area can repopulate them later.
+    if (e.unique === false) {
+      P.defeats = P.defeats || {};
+      P.defeats[e.id] = transitions;
+    }
+  }
+  // Respawn non-unique enemies whose death is ≥2 area-transitions old (§2.3).
+  function respawnEnemies(areaId) {
+    const ar = areas[areaId]; if (!ar || !P.defeats) return;
+    for (const e of ar.entities) {
+      if (e.unique !== false || e.state !== "defeated") continue;
+      const when = P.defeats[e.id];
+      if (when == null || transitions - when < 2) continue;
+      e.state = "idle"; e.blocking = true; e.hp = e.max_hp;
+      e.x = e.spawn_x != null ? e.spawn_x : e.x;
+      e.y = e.spawn_y != null ? e.spawn_y : e.y;
+      e.respawned = true;            // server halves XP/gold for these
+      delete P.defeats[e.id];
     }
   }
 
@@ -561,7 +863,9 @@
   function travel(portal) {
     P.area = portal.target_area;
     A = areas[P.area];
+    transitions += 1;             // drives respawn cadence (rpg_plan.md §2.3)
     applyConditionalSpawns(P.area);
+    respawnEnemies(P.area);
     layout();
     P.x = portal.target_x; P.y = portal.target_y;
     enemyCooldown = {};
@@ -570,6 +874,7 @@
     toast("You enter <b>" + A.name + "</b>. " + moodLine());
     checkAreaBeats();
     checkProximityBeats();
+    requestSave();                // autosave on area travel
   }
 
   // ---- admin mode (client toggle: Shift+L+A) ----
@@ -672,6 +977,8 @@
              weapon_inventory: (P.weapon_inventory || []).slice(),
              story_flags: (P.story_flags || []).slice(), rune_mastery: P.rune_mastery || {},
              gold: P.gold, recent_runes: recentRunes.slice(), evolved: P.evolved,
+             spell_power: P.spell_power || 0, crit: P.crit || 0, area: P.area,
+             weapon_tiers: Object.assign({}, P.weapon_tiers || {}), trinket: P.trinket || null,
              items: Object.assign({}, P.items || {}), quests: Object.assign({}, P.quests || {}) };
   }
   function targetCtx(t) {
@@ -679,7 +986,7 @@
     return { id: t.id, type: t.type, name: t.name, hp: t.hp, max_hp: t.max_hp,
              weakness: t.weakness, resistance: t.resistance, state: t.state,
              requires: t.requires, tags: t.tags, mood: t.mood, loot: t.loot,
-             dialogue: t.dialogue };
+             dialogue: t.dialogue, tier: t.tier, dr: t.dr, respawned: t.respawned };
   }
 
   function metadataLine(meta) {
@@ -746,6 +1053,7 @@
         case "set_entity_hp": if (e) e.hp = a.hp; break;
         case "defeat_entity": if (e) { e.state = "defeated"; e.blocking = false;
           P.score += (e.type === "boss" ? 200 : 50); defeated = true;
+          onEnemyDefeated(e);
           toast("<b>" + e.name + "</b> is defeated!"); } break;
         case "set_entity_state": if (e) e.state = a.state; break;
         case "set_entity_blocking": if (e) e.blocking = a.blocking; break;
@@ -799,11 +1107,7 @@
           P.level = a.level; P.xp = a.xp; P.xp_to_next = a.xp_to_next;
           break;
         case "level_up":
-          if (a.max_hp) { P.max_hp += a.max_hp; P.hp = clamp(P.hp + a.max_hp, 0, P.max_hp); }
-          if (a.max_courage) { P.max_courage += a.max_courage; P.courage = clamp(P.courage + a.max_courage, 0, P.max_courage); }
-          if (a.unlock_four_runes) P.four_rune_unlocked = true;
-          if (a.rune_mastery_choice) grantMasteryChoice();
-          showBanner("⬆ LEVEL " + a.level + "<br><span style='font-size:11px'>" + (a.note || "") + "</span>");
+          applyLevelReward(a);
           break;
         case "add_weapon":
           if (!P.weapon_inventory.includes(a.weapon)) P.weapon_inventory.push(a.weapon);
@@ -819,6 +1123,14 @@
           break;
         case "spawn_entity":
           if (a.entity && !byId(a.entity.id)) A.entities.push(a.entity);
+          break;
+        case "add_trinket": gainTrinket(a.trinket); break;
+        case "reforge_weapon": applyReforge(a); break;
+        case "knockback_entity": if (e) knockbackEntity(e); break;
+        case "evolve_player": applyEvolvePlayer(a); break;
+        case "apply_status":
+          if (a.status && a.status.indexOf("player_") === 0) { P.fx = P.fx || {}; const k = (STATUS_FX[a.status] || {}).key || a.status.replace("player_", ""); P.fx[k] = Math.max(P.fx[k] || 0, a.turns || 1); }
+          else if (e) { e.fx = e.fx || {}; const k2 = (STATUS_FX[a.status] || {}).key || (a.status || "").replace("enemy_", ""); e.fx[k2] = Math.max(e.fx[k2] || 0, a.turns || 1); }
           break;
         case "unlock_shortcut":
           if (a.target_id && e) { e.state = "open"; e.blocking = false; }
@@ -842,7 +1154,7 @@
             const reactions = (a.boss_reactions || []).map((line) => "<br><span style='color:#ffce6b'>" + line + "</span>").join("");
             toast("<b>Calendar Beast</b>: " + (a.line || "") + reactions);
           }, 700);
-          if (a.phase >= 3) setTimeout(() => { if (!over && canEvolveNow()) maybeEvolve(); }, 1400);
+          if (a.phase >= 3) setTimeout(() => { if (!over && canBecomeKing()) toast("👑 You carry the Cracked Crown and the strength to wear it — open Bag (I) and crown yourself!"); }, 1400);
           break;
         case "win_game": lastEnding = { ending: a.ending, title: a.title, text: a.text,
           choices: a.choices || [], boss_reactions: a.boss_reactions || [] }; win(); break;
@@ -857,6 +1169,12 @@
     applyStatusEffects(s, target);
 
     spawnSpellVfx(s, target, runes, res.mode === "drawing");
+    // Crit emphasis: star burst, heavy shake, gold "CRIT!" pop.
+    if (target && lastCastMetadata && lastCastMetadata.combat && lastCastMetadata.combat.crit) {
+      addAnim("star", target.x + 0.5, target.y - 0.4, 1.9, 120);
+      shakeAmt = Math.max(shakeAmt, 0.85);
+      addNum("CRIT!", "#ffe27a", target.x + 0.5, target.y - 0.95, 60);
+    }
 
     if (!over) {
       let line = "<b>" + (s.spell_name || "Spell") + "</b> — " + (s.effect || "");
@@ -880,20 +1198,38 @@
     if (!over && target && target.type === "npc") openDialogue(target, runes);
     updateTarget();
     if (P.hp <= 0 && !over) lose();
+    requestSave();   // persist any state a cast changed (combat, flags, loot, phase)
+  }
+
+  // Apply one level's reward bundle (used by both the server level_up action
+  // and the client-side applyProgressGain fallback). Idempotent per level.
+  function applyLevelReward(r) {
+    if (!r) return;
+    if (r.level) P.level = Math.max(P.level, r.level);
+    if (r.max_hp) { P.max_hp += r.max_hp; P.hp = clamp(P.hp + r.max_hp, 0, P.max_hp); }
+    if (r.max_courage) { P.max_courage += r.max_courage; P.courage = clamp(P.courage + r.max_courage, 0, P.max_courage); }
+    if (r.spell_power) P.spell_power += r.spell_power;
+    if (r.crit) P.crit += r.crit;
+    if (r.crit_knockback) P.crit_knockback = true;
+    if (r.king_eligible) P.king_eligible = true;
+    if (r.potion_belt) P.potion_belt_slots = Math.max(P.potion_belt_slots, r.potion_belt);
+    if (r.unlock_four_runes) P.four_rune_unlocked = true;
+    if (r.evolve_tier && typeof evolveToTier === "function") evolveToTier(r.evolve_tier);
+    if (r.rune_mastery_choice) grantMasteryChoice();
+    showBanner("⬆ LEVEL " + (r.level || P.level) + "<br><span style='font-size:11px'>" + (r.note || "") + "</span>");
+    if (typeof requestSave === "function") requestSave();
   }
 
   function applyProgressGain(amount) {
     if (!amount) return;
     P.xp += amount;
-    while (P.xp_to_next > 0 && P.xp >= P.xp_to_next) {
+    while (P.level < MAX_LEVEL && P.xp_to_next > 0 && P.xp >= P.xp_to_next) {
       P.xp -= P.xp_to_next;
       P.level += 1;
-      if (P.level === 2) { P.max_hp += 2; P.hp = clamp(P.hp + 2, 0, P.max_hp); }
-      if (P.level === 3) P.four_rune_unlocked = true;
-      if (P.level === 4) grantMasteryChoice();
-      if (P.level >= 5) { P.max_courage += 2; P.courage = P.max_courage; P.xp_to_next = 0; break; }
-      P.xp_to_next = P.level === 2 ? 16 : (P.level === 3 ? 28 : (P.level === 4 ? 44 : 0));
+      applyLevelReward(levelReward(P.level));
+      P.xp_to_next = xpToNext(P.level);
     }
+    if (P.level >= MAX_LEVEL) P.xp_to_next = 0;
   }
 
   function grantMasteryChoice() {
@@ -921,6 +1257,7 @@
     closeDialogue();
     showBanner("✦ RUNE MASTERY<br><span style='font-size:11px'>" + runeLabel(key) + "</span>");
     toast("✦ You chose <b>" + runeLabel(key) + "</b> mastery.");
+    requestSave();
   }
 
   function openMasteryChoice(choices) {
@@ -949,7 +1286,8 @@
     player_shielded: { key: "shield", turns: 2 },  // absorbs one hit
     player_blessed: { key: "regen", turns: 2 },    // +1 HP per turn
   };
-  const FX_ICON = { burn: "🔥", stun: "💫", calm: "🌊", fear: "😨", shield: "🛡", regen: "✨" };
+  const FX_ICON = { burn: "🔥", stun: "💫", calm: "🌊", fear: "😨", shield: "🛡", regen: "✨", enraged: "😡", slow: "🐌" };
+  const WINDUP_ICON = { charge: "⚡", spit: "🎯", summon: "✚" };
 
   function applyStatusEffects(s, target) {
     (s.status_effects || []).forEach((st) => {
@@ -974,6 +1312,7 @@
         addNum("-1", "#ff9d4a", e.x + 0.5, e.y - 0.2, 0);
         if (e.hp <= 0) {
           e.state = "defeated"; e.blocking = false; P.score += 50;
+          onEnemyDefeated(e);
           toast("🔥 <b>" + e.name + "</b> succumbs to its wounds!");
         }
       }
@@ -993,7 +1332,7 @@
     const skip = ["enemy_confused", "enemy_soothed", "enemy_bound"].some((x) => statuses.includes(x)) ||
       fx.stun > 0 || fx.calm > 0;
     if (skip) { setTimeout(() => toast(enemy.name + " fumbles its turn."), 650); return; }
-    let dmg = enemy.type === "boss" ? 3 : (P.area === "arena" ? 2 : 1);
+    let dmg = enemyHitDamage(enemy);
     if (fx.fear > 0) dmg = Math.max(1, dmg - 1);
     if (statuses.includes("player_shielded") || (P.fx && P.fx.shield > 0)) {
       if (P.fx && P.fx.shield > 0) { P.fx.shield -= 1; if (P.fx.shield <= 0) delete P.fx.shield; }
@@ -1001,6 +1340,7 @@
     }
     setTimeout(() => {
       P.hp = clamp(P.hp - dmg, 0, P.max_hp);
+      enemyOnHit(enemy);
       spawnHit();
       toast(enemy.name + " strikes back for " + dmg + (fx.fear > 0 ? " (cowed by fear)" : "") + "!");
       if (P.hp <= 0 && !over) lose();
@@ -1089,6 +1429,8 @@
         case "heal_player": P.hp = clamp(P.hp + (a.amount || 0), 0, P.max_hp); break;
         case "add_courage": P.courage = clamp(P.courage + (a.amount || 0), 0, P.max_courage); break;
         case "set_story_flag": addFlag(a.flag); break;
+        case "add_trinket": gainTrinket(a.trinket); break;
+        case "reforge_weapon": applyReforge(a); break;
         case "add_journal_entry":
           addUnique(P.journal, a.text); addUnique(P.discoveries, a.text);
           rememberStoryEvent("journal", a.text);
@@ -1096,6 +1438,7 @@
         default: break;
       }
     });
+    requestSave();   // persist quest turn-ins, shop buys, gold/item changes
     return leveled;
   }
 
@@ -1137,9 +1480,21 @@
     const srcTag = d.pricing_source === "model"
       ? "<div class='rg-shop-model'>✶ prices haggled by " + (d.model || "the story model") + "</div>"
       : "";
+    // Reforge tab: spend gold + materials to raise owned weapons' tiers.
+    const reforgeRows = (d.reforge || []).map((r) => {
+      if (r.maxed) return "<button class='rg-shop-buy off' disabled><span class='rg-shop-row'><b>" + r.label + " +3</b><span class='rg-shop-price'>maxed</span></span><small>honed to its peak</small></button>";
+      const c = r.cost || {};
+      const cost = [c.gold + "g", c.rune_grit ? c.rune_grit + "⛏️" : "", c.warped_cog ? c.warped_cog + "⚙️" : "", c.min_level > 1 ? "L" + c.min_level : ""].filter(Boolean).join(" ");
+      return "<button class='rg-shop-buy rg-shop-reforge" + (r.affordable ? "" : " off") + "' data-rf='" + r.id + "'" + (r.affordable ? "" : " disabled") + ">" +
+        "<span class='rg-shop-row'><b>" + r.label + " +" + r.next + "</b><span class='rg-shop-price'>" + cost + "</span></span>" +
+        "<small>+1 damage" + (r.next >= 2 ? ", +crit" : "") + (r.next >= 3 ? ", perk awakens" : "") + "</small></button>";
+    }).join("");
+    const reforgeSec = reforgeRows
+      ? "<div class='rg-shop-line' style='margin-top:8px'>⚒️ Reforge (gold + materials)</div><div class='rg-shop'>" + reforgeRows + "</div>"
+      : "";
     return "<div class='rg-shop-line'>" + (d.line || "") + "</div>" +
       "<div class='rg-shop-gold'>Your purse: <b>" + (P.gold || 0) + "g</b>" + cursedNote + "</div>" +
-      "<div class='rg-shop'>" + rows + "</div>" + srcTag;
+      "<div class='rg-shop'>" + rows + "</div>" + reforgeSec + srcTag;
   }
   async function shopTalk(npc, weaponId, quotedPrice) {
     if (over || !npc) return;
@@ -1160,7 +1515,8 @@
       document.querySelectorAll(".rg-shop-buy:not([disabled])").forEach((b) => {
         b.onclick = (ev) => {
           ev.stopPropagation();
-          shopTalk(npc, b.dataset.w, parseInt(b.dataset.p || "0", 10));
+          if (b.dataset.rf) shopTalk(npc, "reforge:" + b.dataset.rf);
+          else shopTalk(npc, b.dataset.w, parseInt(b.dataset.p || "0", 10));
           canvas.focus();
         };
       });
@@ -1291,30 +1647,68 @@
     bannerTimer = setTimeout(() => { el.className = "rg-banner"; }, 2600);
   }
 
-  // ---- Goblin King evolution ----
-  const HELPER_FLAGS = ["tourist_helped", "fungus_colony_spared", "librarian_trust",
-    "clean_water_restored", "queue_goblin_paid"];
-  const DEVOUR_FLAGS = ["library_shelves_burned", "debt_deepened", "debt_accepted", "fungus_colony_burned"];
-  function canEvolveNow() {
-    if (P.evolved) return false;
-    const identity = HELPER_FLAGS.concat(DEVOUR_FLAGS).some(hasFlag);
-    return P.level >= 5 || identity;
+  // ---- evolution chain (rpg_plan.md §6): base → champion (L10) → King (crown, L16+) ----
+  const KING_MIN_LEVEL = 16, CRACKED_CROWN = "Cracked Crown";
+  // Tier-2 class perk applied on champion evolution.
+  const CHAMPION_PERK = {
+    rogue: () => { P.crit += 5; },           // +5% crit
+    warrior: () => {},                        // retaliation -1 handled in enemyOnHit-adjacent? cosmetic here
+    poison: () => {},                         // burn/poison +1 turn (status-side)
+    hunter: () => {},                         // reveal bonus (server king path)
+    barbarian: () => {},                      // knockback threshold (server heavy-hit)
+  };
+  // Auto champion form at level 10 (called from the level-up reward).
+  function evolveToTier(tier) {
+    tier = tier || 2;
+    if ((P.evolution_tier || 1) >= tier) return;
+    P.evolution_tier = tier;
+    if (tier === 2) {
+      const name = CHAMPION_NAME[P.goblin_class] || "Champion";
+      (CHAMPION_PERK[P.goblin_class] || (() => {}))();
+      P.spell_power = (P.spell_power || 0); // +1 already granted by the L10 reward bundle
+      addAnim && addAnim("holy", P.x + 0.5, P.y - 0.3, 2.0, 80);
+      shakeAmt = Math.max(shakeAmt || 0, 0.6);
+      showBanner("⬆ EVOLUTION<br><span style='font-size:11px'>You become the " + name + "</span>");
+      toast("✨ You evolve into the <b>" + name + "</b> — your champion form.");
+    }
+    refreshPanels(); requestSave();
   }
-  function maybeEvolve() {
-    if (P.evolved) return;
+  // Can the player crown themselves right now?
+  function canBecomeKing() {
+    return !P.evolved && P.level >= KING_MIN_LEVEL && (P.inventory || []).includes(CRACKED_CROWN);
+  }
+  // Wear the Cracked Crown → Goblin King (tier 3). Player-initiated from the bag.
+  function wearCrown() {
+    if (P.evolved) { toast("You are already the Goblin King."); return; }
+    if (!(P.inventory || []).includes(CRACKED_CROWN)) { toast("You have no Cracked Crown to wear."); return; }
+    if (P.level < KING_MIN_LEVEL) { toast("The crown weighs your résumé and finds it thin — return at level " + KING_MIN_LEVEL + "."); return; }
     const cls = CLASSES.find((c) => c.id === P.goblin_class) || {};
-    addFlag("player_evolved");
-    P.evolved = true;
-    P.courage = P.max_courage;          // refill courage
+    P.inventory = (P.inventory || []).filter((i) => i !== CRACKED_CROWN);
+    P.evolved = true; P.evolution_tier = 3; addFlag("player_evolved");
+    P.max_hp += 5; P.hp = clamp(P.hp + 5, 0, P.max_hp);
+    P.spell_power = (P.spell_power || 0) + 2;
+    P.crit = (P.crit || 0) + 10;
+    P.max_courage += 2; P.courage = P.max_courage;
     P.four_rune_unlocked = true;
-    P.rune_mastery[(cls.affinity || ["closed_circle"])[0]] = Math.max(5, P.rune_mastery[(cls.affinity || ["closed_circle"])[0]] || 0);
+    const aff = (cls.affinity || ["closed_circle"])[0];
+    P.rune_mastery[aff] = Math.max(5, P.rune_mastery[aff] || 0);
+    addAnim && addAnim("explosion_big", P.x + 0.5, P.y - 0.3, 2.4, 60);
+    addAnim && addAnim("star", P.x + 0.5, P.y - 0.5, 2.0, 220);
+    shakeAmt = Math.max(shakeAmt || 0, 1.0);
     showBanner("👑 GOBLIN KING<br><span style='font-size:11px'>" + (cls.king_line || "") + "</span>");
     toast("<b>You evolve into the Goblin King!</b> " + (cls.king_ability || ""));
+    refreshPanels(); requestSave();
+  }
+  // Server-driven evolution action (kept for completeness / future hooks).
+  function applyEvolvePlayer(a) {
+    if ((a.tier || 0) >= 3) wearCrown();
+    else evolveToTier(a.tier || 2);
   }
 
   // ---- win / lose ----
   function endScreen(cls, title, sub) {
     over = true;
+    clearSave();   // a finished run (win or loss) is not resumable
     const el = $("rg-end");
     el.className = "rg-end open " + cls;
     $("rg-end-title").textContent = title;
@@ -1488,6 +1882,15 @@
       ctx.fillStyle = "#050309";
       ctx.beginPath(); ctx.ellipse(cx, baseY - TILE * 0.1, TILE * 0.28, TILE * 0.08, 0, 0, Math.PI * 2); ctx.fill();
       ctx.restore();
+      // Elite enemies get a pulsing gold ring; enraged ones a red flare.
+      if (e.tier === "elite" && e.hp > 0) {
+        const enr = e.fx && e.fx.enraged;
+        ctx.save();
+        ctx.globalAlpha = 0.45 + 0.2 * Math.abs(Math.sin(now() / 260));
+        ctx.strokeStyle = enr ? "#ff3b3b" : "#ffd24a"; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.ellipse(cx, baseY - TILE * 0.1, TILE * 0.36, TILE * 0.12, 0, 0, Math.PI * 2); ctx.stroke();
+        ctx.restore();
+      }
       const name = entitySprite(e);
       const fi = (now() / 140) | 0;
       let drew = false;
@@ -1519,7 +1922,8 @@
         ctx.textAlign = "center"; ctx.textBaseline = "middle";
         ctx.fillText("!", cx, sy(e.y) - 13);
       }
-      const fxIcons = Object.keys(e.fx || {}).map((k) => FX_ICON[k]).filter(Boolean).join("");
+      let fxIcons = Object.keys(e.fx || {}).map((k) => FX_ICON[k]).filter(Boolean).join("");
+      if (e.windup) fxIcons = (WINDUP_ICON[e.windup.kind] || "❗") + fxIcons;
       if (fxIcons) {
         ctx.font = Math.floor(TILE * 0.32) + "px serif";
         ctx.textAlign = "center"; ctx.textBaseline = "middle";
@@ -1534,7 +1938,9 @@
   }
 
   function playerSprite() {
-    if (P.evolved && spr(KING_SPRITE)) return KING_SPRITE;
+    const tier = P.evolution_tier || (P.evolved ? 3 : 1);
+    if (tier >= 3 && spr(KING_SPRITE)) return KING_SPRITE;
+    if (tier >= 2) { const ch = CHAMPION_SPRITE[P.goblin_class]; if (ch && spr(ch)) return ch; }
     const c = CLASS_SPRITE[P.goblin_class];
     if (c && spr(c)) return c;
     const fb = CLASS_SPRITE_FALLBACK[P.goblin_class];
@@ -1660,7 +2066,9 @@
     hx += xpw + 16;
     const bagCount = Object.values(P.items || {}).reduce((a, b) => a + b, 0);
     ctx.fillStyle = "#9c8bc4"; ctx.fillText("BAG " + bagCount, hx, cy); hx += 95;
-    ctx.fillStyle = "#ffd24a"; ctx.fillText("G " + (P.gold || 0), hx, cy);
+    ctx.fillStyle = "#ffd24a"; ctx.fillText("G " + (P.gold || 0), hx, cy); hx += 80;
+    if (P.spell_power) { ctx.fillStyle = "#ff9d5c"; ctx.fillText("SP " + P.spell_power, hx, cy); hx += 70; }
+    if (P.crit) { ctx.fillStyle = "#ffe27a"; ctx.fillText("✷" + P.crit + "%", hx, cy); hx += 70; }
     ctx.textAlign = "right";
     const areaLabel = A.name.toUpperCase();
     ctx.fillStyle = "#b07cff";
@@ -1779,6 +2187,24 @@
     ctx.globalAlpha = 1;
   }
 
+  // Pulsing red overlay on tiles threatened by a telegraphed enemy attack.
+  function drawTelegraphs() {
+    if (!A) return;
+    const pulse = 0.28 + 0.18 * Math.abs(Math.sin(now() / 200));
+    ctx.save();
+    for (const e of liveEntities()) {
+      const w = e.windup; if (!w) continue;
+      let tiles = [];
+      if (w.kind === "charge") tiles = w.tiles || [];
+      else if (w.kind === "spit") tiles = [w.target];
+      else continue;
+      ctx.globalAlpha = pulse;
+      ctx.fillStyle = w.kind === "spit" ? "#5cc8ff" : "#ff4d4d";
+      for (const t of tiles) { ctx.fillRect(sx(t[0]) + 2, sy(t[1]) + 2, TILE - 4, TILE - 4); }
+    }
+    ctx.restore();
+  }
+
   function render() {
     if (paused) return;
     fitCanvas();
@@ -1793,6 +2219,7 @@
     ctx.fillStyle = "#0b0810"; ctx.fillRect(0, 0, canvas.width, canvas.height);
     drawTiles();
     drawCircles();
+    drawTelegraphs();
     // depth sort: lower y drawn first, player interleaved by row
     const ents = liveEntities().slice().sort((a, b) => a.y - b.y);
     let playerDrawn = false;
@@ -1947,6 +2374,8 @@
     if (invOpen && k === "escape") { toggleInventory(); return; }
     if (over) return;
     if (k === "t") { talk(); ev.preventDefault(); return; }
+    if (k === "h") { quickUse(1); ev.preventDefault(); return; }
+    if (k === "g") { quickUse(2); ev.preventDefault(); return; }
     if (["arrowup", "w"].includes(k)) { tryMove("up"); ev.preventDefault(); }
     else if (["arrowdown", "s"].includes(k)) { tryMove("down"); ev.preventDefault(); }
     else if (["arrowleft", "a"].includes(k)) { tryMove("left"); ev.preventDefault(); }
@@ -1986,6 +2415,19 @@
     $("rg-select").className = "rg-select open";
     $("rg-select-start").disabled = true;
     buildSelect();
+    buildContinue();
+  }
+  // Offer "Continue" above the roster when a resumable save exists.
+  function buildContinue() {
+    let btn = $("rg-continue");
+    if (!hasSave()) { if (btn) btn.remove(); return; }
+    if (!btn) {
+      btn = document.createElement("button");
+      btn.id = "rg-continue"; btn.className = "rg-btn primary rg-continue";
+      $("rg-heroes").before(btn);
+      btn.onclick = () => { continueGame(); canvas.focus(); };
+    }
+    btn.innerHTML = "▶ Continue — <span style='opacity:.8'>" + saveSummary() + "</span>";
   }
 
   // ---- boot ----
@@ -2015,18 +2457,13 @@
       P.goblin_class = c.id; P.hp = c.hp; P.max_hp = c.hp;
       P.courage = c.courage; P.max_courage = Math.max(9, c.courage + 2);
     }
-    selecting = false; $("rg-select").className = "rg-select";
+    clearSave();                  // a fresh shift retires any prior run
     P.area = (bootArea && areas[bootArea]) ? bootArea : W.start_area;
     A = areas[P.area];
     applyConditionalSpawns(P.area);
     const sp = A.spawn; P.x = sp[0]; P.y = sp[1];
-    facing = "down"; selected = []; vfx = []; busy = false; turnNo = 0; enemyCooldown = {};
-    layout(); buildPalette(); renderPalette(); updateTarget(); regionCue();
-    // Reconcile admin mode against the freshly-cloned (re-locked) world: honor the
-    // backend RG_ADMIN flag, and keep client admin on across a New Game.
-    const wantAdmin = adminMode || !!(W && W.admin);
-    adminMode = false; adminLockSnapshot = null;
-    if (wantAdmin) setAdmin(true); else showAdminGoto(false);
+    turnNo = 0; transitions = 0;
+    enterWorld();
     const label = c ? c.label : "goblin";
     const seedLine = W.world_seed === null || W.world_seed === undefined ? "" :
       " Loop seed <b>" + W.world_seed + "</b>: " + ((W.variation || {}).label || "seeded loop") + ".";
@@ -2034,6 +2471,34 @@
     // Opening beat lands shortly after the class toast so both get read.
     setTimeout(() => { if (!over && !selecting) { checkAreaBeats(); checkProximityBeats(); } }, 1800);
     if (bootMasteryChoice) setTimeout(() => grantMasteryChoice(), 250);
+    requestSave();
+  }
+
+  // Resume a saved run: restore state, then enter the world where we left off.
+  function continueGame() {
+    const data = readSave();
+    if (!data) { showSelect(); return; }
+    P = data.player; areas = data.areas;
+    turnNo = data.turnNo || 0; transitions = data.transitions || 0;
+    ensurePlayerMeta();
+    if (!areas[P.area]) { clearSave(); newGame(); return; }
+    A = areas[P.area];
+    applyConditionalSpawns(P.area);
+    enterWorld();
+    const cls = (CLASSES.find((x) => x.id === P.goblin_class) || {}).label || "goblin";
+    toast("Welcome back, <b>" + cls + "</b> — Lv " + P.level + " in " + A.name + ". The calendar is still broken.");
+  }
+
+  // Shared world-entry tail for both startGame and continueGame.
+  function enterWorld() {
+    selecting = false; $("rg-select").className = "rg-select";
+    facing = facing || "down"; selected = []; vfx = []; busy = false; enemyCooldown = {};
+    layout(); buildPalette(); renderPalette(); updateTarget(); regionCue();
+    // Reconcile admin mode against the world: honor the backend RG_ADMIN flag,
+    // and keep client admin on across a New Game.
+    const wantAdmin = adminMode || !!(W && W.admin);
+    adminMode = false; adminLockSnapshot = null;
+    if (wantAdmin) setAdmin(true); else showAdminGoto(false);
   }
 
   // ---- weapons ----
@@ -2045,6 +2510,49 @@
     P.weapon = id;
     toast("🗡️ Equipped <b>" + weaponLabel(id) + "</b>. " + ((WEAPONS[id] || {}).identity || ""));
     refreshPanels();
+    requestSave();
+  }
+  // ---- trinkets (one slot) + reforge (rpg_plan.md §3,§4) ----
+  function trinketMaxHp(t) { return t && t.stats ? (t.stats.max_hp || 0) : 0; }
+  function equipTrinket(t) {
+    if (!t) return;
+    if (P.trinket) P.max_hp = Math.max(1, P.max_hp - trinketMaxHp(P.trinket));  // revert old
+    P.trinket = t;
+    const mh = trinketMaxHp(t);
+    if (mh) { P.max_hp += mh; P.hp = clamp(P.hp + mh, 0, P.max_hp); }
+    refreshPanels(); requestSave();
+  }
+  function unequipTrinket() {
+    if (!P.trinket) return;
+    P.max_hp = Math.max(1, P.max_hp - trinketMaxHp(P.trinket));
+    P.hp = clamp(P.hp, 0, P.max_hp);
+    toast("Unequipped <b>" + P.trinket.name + "</b>.");
+    P.trinket = null; refreshPanels(); requestSave();
+  }
+  function trinketStatLine(t) {
+    const s = (t && t.stats) || {};
+    const lbl = { bonus_damage: "+dmg", crit: "% crit", max_hp: "max HP",
+      courage_relief: "courage", gold_find: "gold find", xp_bonus: "XP" };
+    return Object.keys(s).map((k) => "+" + s[k] + " " + (lbl[k] || k)).join(" · ");
+  }
+  // A freshly-dropped trinket: equip if the slot is empty, else offer in the bag.
+  function gainTrinket(t) {
+    if (!t) return;
+    P.pending_trinket = t;
+    const better = !P.trinket;
+    toast("✨ Loot: <b>" + t.name + "</b> <span style='opacity:.8'>(" + trinketStatLine(t) + ")</span>" +
+      (better ? " — equipped!" : " — open Bag (I) to equip."));
+    if (better) equipTrinket(t);
+    if (typeof requestLootName === "function") requestLootName(t);   // M7 christening
+    requestSave();
+  }
+  function applyReforge(a) {
+    if (!a.weapon) return;
+    P.weapon_tiers = P.weapon_tiers || {};
+    P.weapon_tiers[a.weapon] = Math.min(3, Math.max(P.weapon_tiers[a.weapon] || 0, a.tier || 0));
+    if (a.message) { addUnique(P.journal, a.message); rememberStoryEvent("journal", a.message); }
+    toast("⚒️ " + (a.message || "Weapon reforged."));
+    refreshPanels(); requestSave();
   }
   function weaponStats(w) {
     const s = [];
@@ -2123,19 +2631,38 @@
   }
 
   // ---- inventory panel (separate from the journal) ----
+  function crownHtml() {
+    if (P.evolved || !(P.inventory || []).includes(CRACKED_CROWN)) return "";
+    const ready = P.level >= KING_MIN_LEVEL;
+    return "<div class='rg-bag'><div class='rg-item" + (ready ? " usable" : "") + "'" +
+      (ready ? " data-crown='1'" : "") + " title='Become the Goblin King'>" +
+      "<span class='rg-item-ic'>👑</span><span class='rg-item-lb'>Cracked Crown" +
+      (ready ? "" : " <span class='flag'>(needs Lv " + KING_MIN_LEVEL + ")</span>") + "</span>" +
+      (ready ? "<span class='rg-item-use'>Wear</span>" : "") + "</div></div>";
+  }
   function renderInventory() {
     const body = $("rg-inventory-body"); if (!body) return;
     const li = (arr) => arr.length ? "<ul>" + arr.map((x) => "<li>" + x + "</li>").join("") + "</ul>" : "<ul><li class='flag'>— nothing yet —</li></ul>";
+    const tierTag = (id) => { const t = (P.weapon_tiers || {})[id] || 0; return t ? " <span class='flag'>+" + t + "</span>" : ""; };
+    const cur = P.trinket;
+    const pend = P.pending_trinket && (!cur || P.pending_trinket.id !== cur.id) ? P.pending_trinket : null;
+    let trinketHtml = "";
+    if (cur) trinketHtml += "<div class='rg-item' title='" + trinketStatLine(cur) + "'><span class='rg-item-ic'>✨</span><span class='rg-item-lb'>" + cur.name + " <span class='flag'>(" + trinketStatLine(cur) + ")</span></span><span class='rg-item-use' data-trinket='off'>Unequip</span></div>";
+    if (pend) trinketHtml += "<div class='rg-item usable' title='" + trinketStatLine(pend) + "'><span class='rg-item-ic'>✨</span><span class='rg-item-lb'>" + pend.name + " <span class='flag'>(" + trinketStatLine(pend) + ")</span></span><span class='rg-item-use' data-trinket='on'>Equip</span></div>";
+    if (!cur && !pend) trinketHtml = "<ul><li class='flag'>— no trinket — defeat elites for rare drops —</li></ul>";
     body.innerHTML =
       "<div class='rg-jsec'><h4>Equipped weapon</h4><div class='rg-wpns'>" +
         "<button class='rg-wpn equipped'><img src='/rg/static/icons/" + (WEAPON_ICON[P.weapon] || "wpn_magic") +
-        ".png' alt=''> <b>" + weaponLabel(P.weapon) + "</b></button></div></div>" +
+        ".png' alt=''> <b>" + weaponLabel(P.weapon) + tierTag(P.weapon) + "</b></button></div></div>" +
       "<div class='rg-jsec'><h4>Weapons (click to equip)</h4><div class='rg-wpns'>" + weaponsHtml() + "</div></div>" +
+      "<div class='rg-jsec'><h4>Trinket (1 slot)</h4>" + trinketHtml + "</div>" +
       "<div class='rg-jsec'><h4>Bag (click a potion to use)</h4>" + bagHtml() + "</div>" +
-      "<div class='rg-jsec'><h4>Key items</h4>" + li(P.inventory || []) + "</div>" +
+      "<div class='rg-jsec'><h4>Key items</h4>" + li(P.inventory || []) + crownHtml() + "</div>" +
       "<div class='rg-jsec'><h4>Coins</h4><ul><li>🪙 " + (P.gold || 0) + " coins</li></ul></div>";
     body.querySelectorAll(".rg-wpn[data-w]").forEach((b) => { b.onclick = () => equipWeapon(b.dataset.w); });
     body.querySelectorAll(".rg-item[data-use]").forEach((b) => { b.onclick = () => useItem(b.dataset.use); });
+    body.querySelectorAll("[data-trinket]").forEach((b) => { b.onclick = () => { if (b.dataset.trinket === "on") equipTrinket(P.pending_trinket); else unequipTrinket(); }; });
+    const cb = body.querySelector("[data-crown]"); if (cb) cb.onclick = () => { wearCrown(); renderInventory(); };
   }
   function toggleInventory() {
     invOpen = !invOpen;
@@ -2340,6 +2867,18 @@
       smoke: debugSmoke,
       start: (cls) => startGame(cls || "warrior"),
       selecting: () => selecting,
+      addxp: (n) => { applyProgressGain(n || 0); return { level: P.level, xp: P.xp, xp_to_next: P.xp_to_next, spell_power: P.spell_power, crit: P.crit, evolution_tier: P.evolution_tier }; },
+      save: () => { writeSave(); return !!readSave(); },
+      hasSave: () => hasSave(),
+      saveBlob: () => readSave(),
+      cont: () => continueGame(),
+      transitions: () => transitions,
+      gainTrinket: (t) => { gainTrinket(t); return P.trinket; },
+      reforge: (a) => { applyReforge(a); return P.weapon_tiers; },
+      gear: () => ({ weapon: P.weapon, weapon_tiers: P.weapon_tiers, trinket: P.trinket, max_hp: P.max_hp, gold: P.gold, items: P.items }),
+      champion: () => { evolveToTier(2); return { tier: P.evolution_tier, sprite: playerSprite() }; },
+      giveCrown: () => { P.inventory.push("Cracked Crown"); return P.inventory.slice(); },
+      crown: () => { wearCrown(); return { tier: P.evolution_tier, evolved: P.evolved, sprite: playerSprite(), max_hp: P.max_hp, crit: P.crit }; },
       prog: () => ({ level: P.level, xp: P.xp, xp_to_next: P.xp_to_next, weapon: P.weapon,
         gold: P.gold, evolved: P.evolved, flags: (P.story_flags || []).slice(),
         recent_story_events: (P.recent_story_events || []).slice(-3),

@@ -230,6 +230,36 @@
    "fh": 64,
    "frames": 18
   },
+  "champion_warrior": {
+   "file": "sprites/heroes/champion_warrior.png",
+   "fw": 192,
+   "fh": 192,
+   "frames": 8
+  },
+  "champion_rogue": {
+   "file": "sprites/heroes/champion_rogue.png",
+   "fw": 320,
+   "fh": 320,
+   "frames": 12
+  },
+  "champion_poison": {
+   "file": "sprites/heroes/champion_poison.png",
+   "fw": 192,
+   "fh": 192,
+   "frames": 6
+  },
+  "champion_hunter": {
+   "file": "sprites/heroes/champion_hunter.png",
+   "fw": 192,
+   "fh": 192,
+   "frames": 6
+  },
+  "champion_barbarian": {
+   "file": "sprites/heroes/champion_barbarian.png",
+   "fw": 192,
+   "fh": 192,
+   "frames": 8
+  },
   "flame": {
    "file": "sprites/flame.png",
    "fw": 128,
