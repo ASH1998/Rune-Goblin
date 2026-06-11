@@ -41,6 +41,11 @@ html, body {
 .rg-sel .plus { color:var(--muted); margin:0 3px; }
 .rg-sel .dim { color:var(--muted); }
 
+/* Locked-rune greying and the hover tooltip are applied via inline styles in
+   rpg.js (buildPalette/renderPalette) so they survive a cached stylesheet;
+   only the no-hover-lift for locked runes lives here as a light touch. */
+.rg-rune.locked:hover { transform:none; border-color:var(--border); box-shadow:none; }
+
 .rg-actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; justify-content:center; }
 .rg-btn {
   background:#2a1f3d; color:var(--ink); border:1px solid var(--border); border-radius:9px;

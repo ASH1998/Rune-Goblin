@@ -17,7 +17,8 @@
   let lastAdminToggle = 0;      // debounce for the Shift+L+A chord
   const keysDown = new Set();   // currently-held keys, for multi-key combos
   const ADMIN_ITEMS = ["Calendar Key", "Calendar Shard", "Debt Receipt", "Thawed Ember"];
-  let runesMeta = [];           // [{key,symbol,label,meanings}]
+  let runesMeta = [];           // [{key,symbol,label,meanings}] — server order
+  let paletteRunes = [];        // runesMeta reordered by unlock level (display order)
   let P = null;                 // player {area,x,y,hp,max_hp,courage,...}
   let A = null;                 // current area
   let selected = [];            // selected rune keys (quick-cast)
@@ -173,15 +174,15 @@
     try { m = await fetch(STATIC + "manifest.json", { cache: "no-store" }).then((r) => r.json()); }
     catch (e) { return; }
     for (const [k, v] of Object.entries(m.vfx || {})) {
-      const img = new Image(); img.src = STATIC + v.file + "?v=49";
+      const img = new Image(); img.src = STATIC + v.file + "?v=56";
       VFXM[k] = { img, fw: v.fw, fh: v.fh, frames: v.frames };
     }
     for (const [k, v] of Object.entries(m.creatures || {})) {
-      const img = new Image(); img.src = STATIC + v.file + "?v=49";
+      const img = new Image(); img.src = STATIC + v.file + "?v=56";
       SPRITES[k] = { img, fw: v.fw, fh: v.fh, frames: v.frames, anim: v.frames > 1, scale: CRE_SCALE[k] || 1.0 };
     }
     for (const [k, v] of Object.entries(m.deco || {})) {
-      const img = new Image(); img.src = STATIC + v.file + "?v=49";
+      const img = new Image(); img.src = STATIC + v.file + "?v=56";
       const tall = v.fh > v.fw, big = v.fw >= 192;
       SPRITES[k] = { img, fw: v.fw, fh: v.fh, frames: 1, anim: false,
         scale: DECO_SCALE[k] || (big ? 1.45 : tall ? 1.25 : 0.95) };
@@ -561,6 +562,22 @@
   }
   function maxRunes() { return P.four_rune_unlocked ? 4 : 3; }
 
+  // Runes unlock as the goblin levels: 3 at the start, then one more each
+  // level-up. The order is story-aware — puzzle-critical runes (eye, mirror,
+  // wave, key) come early so a low-level player is never gated out of the
+  // caverns/library/sewer content; pure combat/curse runes trail at the end.
+  const RUNE_UNLOCK_ORDER = [
+    "spiral", "jagged_line", "closed_circle",   // level 1 — the starting three
+    "eye", "mirror", "wave", "key", "flame", "leaf", "coin", "bell",
+    "thread", "bone", "three_dots", "tooth", "broken_mark",
+  ];
+  function runeUnlockLevel(key) {
+    const i = RUNE_UNLOCK_ORDER.indexOf(key);
+    if (i < 0) return 1;          // unknown rune: never gate it
+    return i < 3 ? 1 : i - 1;     // idx 3 -> L2, idx 4 -> L3, ... idx 15 -> L14
+  }
+  function isRuneUnlocked(key) { return (P.level || 1) >= runeUnlockLevel(key); }
+
   // ---- layout ----
   let shakeAmt = 0;
   function layout() {
@@ -590,6 +607,11 @@
   // Show/hide flag-gated entities (consequence enemies, returning allies).
   function applyConditionalSpawns(areaId) {
     const ar = areas[areaId]; if (!ar) return;
+    // Summoned shades are per-encounter only: clear any left over from a prior
+    // visit (and purge their respawn-ledger entries) so they never accumulate
+    // or respawn across area entries.
+    ar.entities = ar.entities.filter((e) => !e.summoned);
+    if (P.defeats) for (const k of Object.keys(P.defeats)) { if (k.indexOf("_spawn") >= 0) delete P.defeats[k]; }
     const set = (id, show, flagWhenShown) => {
       const e = ar.entities.find((x) => x.id === id);
       if (!e || e.state === "defeated") return;
@@ -729,6 +751,7 @@
         hp: 3 + 2 * (e.dr || 1), max_hp: 3 + 2 * (e.dr || 1),
         weakness: (e.weakness || []).slice(0, 1), resistance: [], mood: "summoned",
         tier: "minion", dr: e.dr || 1, dmg: 1, ability: "", unique: false,
+        summoned: true,   // per-encounter add: never respawns, cleared on area exit
         state: "idle", blocking: true, x: nx, y: ny, spawn_x: nx, spawn_y: ny });
       return true;
     }
@@ -759,7 +782,8 @@
         if (P.hp <= 0 && !over) lose();
       } else { toast("<b>" + e.name + "</b> spits — splashes where you stood."); }
     } else if (w.kind === "summon") {
-      let n = 0; for (let i = 0; i < 2; i++) { if (spawnMinionNear(e, i)) n++; }
+      const room = Math.max(0, 3 - ownMinionsAlive(e));   // hard cap of 3 live shades
+      let n = 0; for (let i = 0; i < Math.min(2, room); i++) { if (spawnMinionNear(e, i)) n++; }
       if (n) toast("<b>" + e.name + "</b> summons " + n + " shade" + (n > 1 ? "s" : "") + "!");
     }
   }
@@ -810,8 +834,9 @@
       let n = 0; for (let i = 0; i < 2; i++) { if (spawnMinionNear(e, "split" + i)) n++; }
       if (n) toast("<b>" + e.name + "</b> splits into " + n + " shards!");
     }
-    // Record non-unique deaths so the area can repopulate them later.
-    if (e.unique === false) {
+    // Record non-unique deaths so the area can repopulate them later. Summoned
+    // shades are excluded — they are per-encounter adds, not world population.
+    if (e.unique === false && !e.summoned) {
       P.defeats = P.defeats || {};
       P.defeats[e.id] = transitions;
     }
@@ -820,7 +845,7 @@
   function respawnEnemies(areaId) {
     const ar = areas[areaId]; if (!ar || !P.defeats) return;
     for (const e of ar.entities) {
-      if (e.unique !== false || e.state !== "defeated") continue;
+      if (e.unique !== false || e.summoned || e.state !== "defeated") continue;
       const when = P.defeats[e.id];
       if (when == null || transitions - when < 2) continue;
       e.state = "idle"; e.blocking = true; e.hp = e.max_hp;
@@ -1050,7 +1075,7 @@
     return { id: t.id, type: t.type, name: t.name, hp: t.hp, max_hp: t.max_hp,
              weakness: t.weakness, resistance: t.resistance, state: t.state,
              requires: t.requires, tags: t.tags, mood: t.mood, loot: t.loot,
-             dialogue: t.dialogue, tier: t.tier, dr: t.dr, respawned: t.respawned };
+             dialogue: t.dialogue, tier: t.tier, dr: t.dr, xp: t.xp, respawned: t.respawned };
   }
 
   function metadataLine(meta) {
@@ -1067,6 +1092,7 @@
 
   async function castRunes() {
     if (busy || over || drawing) return;
+    selected = selected.filter(isRuneUnlocked);   // guard: never cast a locked rune
     if (!selected.length) { toast("Pick at least one rune (click or press 1–9)."); return; }
     const target = facedTarget();
     busy = true; toast("Casting…");
@@ -1281,6 +1307,13 @@
     if (r.evolve_tier && typeof evolveToTier === "function") evolveToTier(r.evolve_tier);
     if (r.rune_mastery_choice) grantMasteryChoice();
     showBanner("⬆ LEVEL " + (r.level || P.level) + "<br><span style='font-size:11px'>" + (r.note || "") + "</span>");
+    // A new rune unlocks each level — surface it and ungrey the palette.
+    const newRune = RUNE_UNLOCK_ORDER.find((k) => runeUnlockLevel(k) === P.level);
+    if (newRune) {
+      const meta = (runesMeta || []).find((x) => x.key === newRune);
+      if (meta) toast("✨ New rune unlocked: " + meta.label);
+    }
+    renderPalette();
     if (typeof requestSave === "function") requestSave();
   }
 
@@ -1980,18 +2013,37 @@
       ctx.fillStyle = "#3a1020"; ctx.fillRect(bx, by, w, h);
       ctx.fillStyle = e.type === "boss" ? "#ffd24a" : "#ff5d73";
       ctx.fillRect(bx, by, w * clamp(e.hp / e.max_hp, 0, 1), h);
+      // Floating threat labels stack upward from just above the HP bar. A
+      // cursor keeps level / alert / status rows from colliding regardless of
+      // which are present.
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.lineJoin = "round";
+      let topY = sy(e.y) - 13;
+      // Level on every threat (rpg_plan.md §2 clarity tweak): outlined pixel
+      // text — no plate — so it reads as part of the HUD, not a debug box.
+      // Boss/elite glow gold; lesser foes get a softer cream.
+      if (e.level) {
+        const label = "Lv " + e.level;
+        ctx.font = "bold " + Math.floor(TILE * 0.22) + 'px "Press Start 2P", monospace';
+        ctx.lineWidth = 3; ctx.strokeStyle = "#170b12";
+        ctx.strokeText(label, cx, topY);
+        ctx.fillStyle = e.type === "boss" || e.tier === "elite" ? "#ffd24a" : "#ffd9a8";
+        ctx.fillText(label, cx, topY);
+        topY -= Math.floor(TILE * 0.30);
+      }
       if (distToPlayer(e) <= 4) {
-        ctx.fillStyle = "#ffd24a";
         ctx.font = "bold " + Math.floor(TILE * 0.24) + 'px "Press Start 2P", monospace';
-        ctx.textAlign = "center"; ctx.textBaseline = "middle";
-        ctx.fillText("!", cx, sy(e.y) - 13);
+        ctx.lineWidth = 3; ctx.strokeStyle = "#170b12";
+        ctx.strokeText("!", cx, topY);
+        ctx.fillStyle = "#ffd24a";
+        ctx.fillText("!", cx, topY);
+        topY -= Math.floor(TILE * 0.30);
       }
       let fxIcons = Object.keys(e.fx || {}).map((k) => FX_ICON[k]).filter(Boolean).join("");
       if (e.windup) fxIcons = (WINDUP_ICON[e.windup.kind] || "❗") + fxIcons;
       if (fxIcons) {
         ctx.font = Math.floor(TILE * 0.32) + "px serif";
-        ctx.textAlign = "center"; ctx.textBaseline = "middle";
-        ctx.fillText(fxIcons, cx, sy(e.y) - 22);
+        ctx.fillText(fxIcons, cx, topY);
       }
     }
     if (e.type === "npc" && P.trust && P.trust[e.id]) {
@@ -2369,12 +2421,61 @@
     if (sel) sel.innerHTML = selected.length
       ? selected.map((k) => "<img class='ricon' src='" + ICON(k) + "' alt=''>").join("<span class='plus'>+</span>")
       : "<span class='dim'>no runes</span>";
+    // Greying + lock badge are applied inline (not via stylesheet) so the
+    // locked state is always correct even if a cached rpg.css is in play.
     document.querySelectorAll(".rg-rune").forEach((b) => {
       b.classList.toggle("on", selected.includes(b.dataset.rune));
+      const locked = !isRuneUnlocked(b.dataset.rune);
+      b.classList.toggle("locked", locked);
+      b.style.cursor = locked ? "not-allowed" : "pointer";
+      const img = b.querySelector(".ricon");
+      if (img) { img.style.opacity = locked ? "0.18" : ""; img.style.filter = locked ? "grayscale(1)" : ""; }
+      const lk = b.querySelector(".rlock");   // drop any legacy lock badge
+      if (lk) lk.remove();
     });
   }
 
+  // ---- rune hover tooltip: a small box that follows the cursor and shows what
+  // the rune does (+ its unlock level when locked). All styles inline so it
+  // never depends on a cached stylesheet and never docks as a page section.
+  function runeTipEl() {
+    let t = $("rg-rune-tip");
+    if (!t) {
+      t = document.createElement("div");
+      t.id = "rg-rune-tip";
+      t.style.cssText =
+        "position:fixed;z-index:60;pointer-events:none;display:none;opacity:0;" +
+        "transform:translate(-50%,-100%);transition:opacity .08s;text-align:center;" +
+        "background:#160d24;border:1px solid #4a3a6a;border-radius:8px;padding:6px 9px;" +
+        "max-width:230px;font-size:12px;line-height:1.35;box-shadow:0 4px 14px rgba(0,0,0,.55);";
+      document.body.appendChild(t);
+    }
+    return t;
+  }
+  function showRuneTip(ev, r) {
+    const t = runeTipEl();
+    const locked = !isRuneUnlocked(r.key);
+    t.innerHTML =
+      "<b style='color:#c9a6ff;display:block;font-size:13px'>" + r.label + "</b>" +
+      "<span style='color:#9a8bb0;display:block'>" + (r.meanings || []).join(" · ") + "</span>" +
+      (locked ? "<span style='color:#ffd24a;display:block;margin-top:3px'>Unlocks at level " + runeUnlockLevel(r.key) + "</span>" : "");
+    t.style.display = "block";
+    positionRuneTip(ev);
+    requestAnimationFrame(() => { t.style.opacity = "1"; });
+  }
+  function positionRuneTip(ev) {
+    const t = $("rg-rune-tip"); if (!t) return;
+    t.style.left = ev.clientX + "px";
+    t.style.top = (ev.clientY - 12) + "px";
+  }
+  function hideRuneTip() { const t = $("rg-rune-tip"); if (t) { t.style.opacity = "0"; t.style.display = "none"; } }
+
   function toggleRune(k) {
+    if (!isRuneUnlocked(k)) {
+      const r = (runesMeta || []).find((x) => x.key === k) || {};
+      toast((r.label || "That rune") + " unlocks at level " + runeUnlockLevel(k) + ".");
+      return;
+    }
     const i = selected.indexOf(k);
     if (i >= 0) selected.splice(i, 1);
     else if (selected.length < maxRunes()) selected.push(k);
@@ -2385,15 +2486,24 @@
   function buildPalette() {
     const pal = $("rg-palette");
     pal.innerHTML = "";
-    runesMeta.forEach((r, i) => {
+    // Display runes in unlock order, so leveling fills the palette left-to-right
+    // (no gaps from a locked rune sitting between unlocked ones).
+    paletteRunes = runesMeta.slice().sort((a, b) => {
+      const ia = RUNE_UNLOCK_ORDER.indexOf(a.key), ib = RUNE_UNLOCK_ORDER.indexOf(b.key);
+      return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib);
+    });
+    paletteRunes.forEach((r, i) => {
       const b = document.createElement("button");
       b.className = "rg-rune"; b.dataset.rune = r.key;
-      b.title = r.label + " — " + (r.meanings || []).join(", ");
       b.innerHTML = (i < 9 ? "<span class='num'>" + (i + 1) + "</span>" : "")
         + "<img class='ricon' src='" + ICON(r.key) + "' alt='" + r.label + "'>";
       b.onclick = () => { toggleRune(r.key); canvas.focus(); };
+      b.onmouseenter = (ev) => showRuneTip(ev, r);
+      b.onmousemove = positionRuneTip;
+      b.onmouseleave = hideRuneTip;
       pal.appendChild(b);
     });
+    renderPalette();
   }
 
   // ---- spell reading card: what the vision model read from your drawing ----
@@ -2510,7 +2620,7 @@
     else if (k === " " || k === "enter") { castRunes(); ev.preventDefault(); }
     else if (k === "e") { openDraw(); ev.preventDefault(); }
     else if (k === "c") { selected = []; renderPalette(); }
-    else if (k >= "1" && k <= "9") { const idx = parseInt(k, 10) - 1; if (runesMeta[idx]) toggleRune(runesMeta[idx].key); }
+    else if (k >= "1" && k <= "9") { const idx = parseInt(k, 10) - 1; if (paletteRunes[idx]) toggleRune(paletteRunes[idx].key); }
   }
 
   // ---- character select ----

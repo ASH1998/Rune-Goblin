@@ -61,6 +61,8 @@ class Entity:
     # --- RPG depth (rpg_plan.md §2): monster tier system ---
     tier: str = ""          # minion | standard | elite | boss ("" = non-combatant)
     dr: int = 1             # area difficulty rating used for stat scaling
+    level: int = 0          # display level shown above the threat's head (0 = hidden)
+    xp: int = 0             # explicit kill-XP override (0 = use tier/DR default)
     dmg: int = 0            # melee damage this enemy deals (client retaliation)
     ability: str = ""       # charge | spit | summon (telegraphed special move)
     affix: str = ""         # elite affix: shielded|vampiric|splitting|hexed|stonehide
@@ -110,7 +112,7 @@ _MINION_KINDS = {
 }
 # How many minions to inject per area (none in arena — boss space stays clear).
 _MINION_COUNT = {
-    "overworld": 3, "caverns": 3, "library": 2, "bone_market": 2,
+    "overworld": 0, "caverns": 3, "library": 2, "bone_market": 2,
     "clock_sewer": 3, "gate_approach": 2, "frost_pass": 3, "ember_foundry": 3,
 }
 
@@ -126,6 +128,15 @@ def _tier_dmg(tier: str, dr: int) -> int:
     if tier == "elite":
         return 2 + dr // 2
     return 1 + dr // 2  # standard
+
+
+def _tier_level(tier: str, dr: int) -> int:
+    """Display level shown above a threat's head (rpg_plan.md §2 clarity tweak).
+    Derived from area DR + tier so it tracks the player-level band the area is
+    tuned for (e.g. arena DR6 boss = 15, a notch above the demo player's ~11-12)."""
+    base = {"minion": 2 * dr - 2, "standard": 2 * dr,
+            "elite": 2 * dr + 2, "boss": 2 * dr + 3}.get(tier, 2 * dr)
+    return max(1, base)
 
 
 def _enemy_ability(area_id: str, name: str, tier: str) -> str:
@@ -152,15 +163,18 @@ def _apply_monster_tiers(area: Area) -> None:
         if e.type == "boss":
             e.tier = "boss"
             e.dmg = e.dmg or 4
+            e.level = _tier_level("boss", dr)
             continue
         # The Queue Goblin is a scripted toll gate, not a scaling brawler.
         if e.id == "toll_goblin":
             e.tier = "standard"
             e.dmg = 1
+            e.level = _tier_level("standard", dr)
             continue
         e.tier = "elite" if e.id in ELITE_IDS else "standard"
         e.hp = e.max_hp = _tier_hp(e.tier, dr)
         e.dmg = _tier_dmg(e.tier, dr)
+        e.level = _tier_level(e.tier, dr)
         e.ability = _enemy_ability(area.id, e.name, e.tier)
         if e.tier == "elite":
             # Stable per-id affix so each elite has a consistent identity.
@@ -190,18 +204,18 @@ def _apply_monster_tiers(area: Area) -> None:
                 hp=_tier_hp("minion", dr), max_hp=_tier_hp("minion", dr),
                 weakness=list(weak), resistance=[], mood="skittering",
                 tags=["hostile", "minion"], hint="a minion — quick XP",
-                tier="minion", dr=dr, dmg=1, ability=ab, unique=False,
-                spawn_x=x, spawn_y=y,
+                tier="minion", dr=dr, level=_tier_level("minion", dr),
+                dmg=1, ability=ab, unique=False, spawn_x=x, spawn_y=y,
             ))
 
 
 def _mob(eid, name, x, y, *, hp, weakness, resistance, sprite_key,
-         mood="", boss=False) -> Entity:
+         mood="", boss=False, xp=0) -> Entity:
     return Entity(
         id=eid, type="boss" if boss else "enemy", name=name, x=x, y=y,
         sprite=enemy_sprite(name), sprite_key=sprite_key, hp=hp, max_hp=hp,
         weakness=list(weakness), resistance=list(resistance), mood=mood,
-        tags=["hostile"] + (["boss"] if boss else []),
+        tags=["hostile"] + (["boss"] if boss else []), xp=xp,
         hint=("the floor's master — cast to fight" if boss else "cast a spell to fight"),
     )
 
@@ -393,12 +407,13 @@ def _build_areas() -> dict[str, Area]:
         spawn=(3, 3),
         entities=[
             _enemy("toll_goblin", "Queue Goblin", 20, 16, "blocking the toll gate"),
-            _mob("ember_sprite", "Ember Sprite", 41, 5, hp=6, weakness=["wave", "closed_circle"],
-                 resistance=["flame"], sprite_key="fire_elemental", mood="crackling"),
-            _mob("toll_wisp", "Toll Wisp", 5, 18, hp=5, weakness=["bone", "broken_mark"],
-                 resistance=["jagged_line"], sprite_key="glowing_wisp", mood="flickering"),
-            _mob("road_brute", "Road Enforcer", 30, 27, hp=7, weakness=["bell", "coin"],
-                 resistance=["flame"], sprite_key="red_warrior", mood="enforcing the toll"),
+            # The starting hub stays calm so newcomers can explore: just two road
+            # pests, one by each main portal, each weak to a starting rune and
+            # worth enough XP that clearing both carries the player to level 3.
+            _mob("toll_wisp", "Toll Wisp", 6, 13, hp=5, weakness=["jagged_line", "spiral"],
+                 resistance=[], sprite_key="glowing_wisp", mood="flickering by the cave mouth", xp=14),
+            _mob("ember_sprite", "Ember Sprite", 42, 16, hp=6, weakness=["closed_circle", "wave"],
+                 resistance=[], sprite_key="fire_elemental", mood="crackling by the archway", xp=14),
             _npc("tourist", "Lost Tourist", 5, 6, sprite_key="magical_fairy",
                  dialogue="I lost my map. Soothe me (wave) and I'll bless your courage.",
                  hint="cast wave/leaf to comfort"),
@@ -1930,6 +1945,11 @@ def resolve_world_cast(
             actions.append({"type": "defeat_entity", "target_id": tid})
             if ttype == "boss":
                 kill_xp = story.XP_DEFEAT_BOSS_PHASE
+            elif int(target.get("xp") or 0) > 0:
+                # Authored per-entity override (e.g. the calm starter hub pests).
+                kill_xp = int(target["xp"])
+                if target.get("respawned"):
+                    kill_xp = max(1, kill_xp // 2)
             else:
                 kill_xp = story.xp_for_kill(
                     target.get("tier"), int(target.get("dr", 1) or 1),

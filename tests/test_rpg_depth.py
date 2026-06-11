@@ -65,10 +65,22 @@ def test_monster_tiers_applied_in_world():
     enemies = [e for e in cav.entities if e.type == "enemy"]
     assert any(e.tier == "elite" for e in enemies)
     assert any(e.tier == "minion" and e.unique is False for e in enemies)
-    # every combat entity is tier-stamped with a melee value
+    # every combat entity is tier-stamped with a melee value and display level
     for e in enemies:
         assert e.tier in ("minion", "standard", "elite")
         assert e.dmg >= 1
+        assert e.level >= 1
+
+
+def test_tier_levels_track_dr_and_tier():
+    # higher DR and tougher tiers read as higher display levels
+    assert world._tier_level("minion", 1) == 1   # floored at 1
+    assert world._tier_level("standard", 2) == 4
+    assert world._tier_level("elite", 5) == 12
+    assert world._tier_level("boss", 6) == 15
+    # the arena boss carries the level the client renders above its head
+    boss = next(e for e in world.AREAS["arena"].entities if e.type == "boss")
+    assert boss.level == 15
 
 
 def test_reforge_clamps_and_gates():
