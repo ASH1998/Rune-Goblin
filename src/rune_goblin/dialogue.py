@@ -641,3 +641,93 @@ def generate_shop_prices(*, player: dict, area: str, offers: list[dict]) -> dict
             "source": "model",
         }
     return out
+
+
+# ---------------------------------------------------------------------------
+# Loot christening — the model NAMES a Python-rolled trinket (no stats from it)
+# ---------------------------------------------------------------------------
+LOOT_NAMER_SYSTEM = (
+    "You are the loot-namer for Rune Goblin, a funny but sincere goblin RPG. "
+    "Given a trinket's rarity, the area it dropped in, and its mechanical "
+    "effects, invent a short evocative name and a one-line flavor description. "
+    "Rules:\n"
+    "- Name: under 32 characters, no quotes, title-case, a little weird.\n"
+    "- Flavor: under 140 characters, one sentence, clear before clever.\n"
+    "- Do NOT mention exact numbers or invent new powers.\n"
+    "- Return valid JSON only: {\"name\": \"...\", \"flavor\": \"...\"}."
+)
+
+
+def generate_loot_name(*, item_spec: dict, area: str = "") -> dict:
+    """Christen a rolled trinket. Returns {name, flavor, source}.
+
+    The stats are decided by Python (``item_spec``); the model only writes
+    display text. Any failure falls back to the deterministic rolled name."""
+    fb = {"name": item_spec.get("name", "Odd Trinket"),
+          "flavor": "", "source": "fallback"}
+    if not _use_api():
+        return fb
+    stats = item_spec.get("stats") or {}
+    effects = ", ".join(f"+{v} {k.replace('_', ' ')}" for k, v in stats.items()) or "a faint hum"
+    payload = (
+        f"Rarity: {item_spec.get('rarity', 'rare')}.\n"
+        f"Dropped in: {area or 'the dungeon'}.\n"
+        f"Mechanical effects: {effects}.\n"
+        "Name this trinket and write one flavor line. JSON only."
+    )
+    content = _remote_chat([
+        {"role": "system", "content": LOOT_NAMER_SYSTEM},
+        {"role": "user", "content": payload},
+    ])
+    if not content:
+        return fb
+    parsed = _extract_json(_strip_thinking(content))
+    name = _drop_placeholder(_clip(parsed.get("name"), 32))
+    if not name:
+        return fb
+    return {"name": name,
+            "flavor": _drop_placeholder(_clip(parsed.get("flavor"), 140)),
+            "source": "model"}
+
+
+# ---------------------------------------------------------------------------
+# Combat taunts — elites/bosses speak; the model flavors, fallback never blocks
+# ---------------------------------------------------------------------------
+TAUNT_SYSTEM = (
+    "You voice a single enemy in Rune Goblin during a fight. Write ONE short "
+    "taunt (under 90 characters) in this enemy's voice for the given moment. "
+    "Be funny, menacing, and clear. Reference the player's deeds only when "
+    "they fit. No stage directions, no quotes. Return JSON: {\"line\": \"...\"}."
+)
+_TAUNT_EVENT_HINT = {
+    "spotted": "the enemy just noticed the player",
+    "windup": "the enemy is winding up a big attack",
+    "enrage": "the enemy just dropped below a third of its health and enrages",
+    "player_low": "the player is nearly defeated",
+    "defeated": "the enemy has just been beaten",
+}
+
+
+def generate_taunt(*, enemy_name: str, archetype: str, event: str,
+                   area: str = "", flag_story: list[str] | None = None) -> dict:
+    """One in-character combat line for an elite/boss. Returns {line, source}."""
+    fb = {"line": story.taunt_fallback(archetype, event), "source": "fallback"}
+    if not _use_api():
+        return fb
+    deeds = " ".join(flag_story or []) or "Nothing notable yet."
+    payload = (
+        f"Enemy: {enemy_name} (a {archetype}-type).\n"
+        f"Area: {area or 'the dungeon'}.\n"
+        f"Moment: {_TAUNT_EVENT_HINT.get(event, event)}.\n"
+        f"What the player has done so far: {deeds}\n"
+        "Write this enemy's one-line taunt. JSON only."
+    )
+    content = _remote_chat([
+        {"role": "system", "content": TAUNT_SYSTEM},
+        {"role": "user", "content": payload},
+    ])
+    if not content:
+        return fb
+    parsed = _extract_json(_strip_thinking(content))
+    line = _drop_placeholder(_clip(parsed.get("line"), 90))
+    return {"line": line or fb["line"], "source": "model" if line else "fallback"}

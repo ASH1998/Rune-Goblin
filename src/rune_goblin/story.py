@@ -18,6 +18,7 @@ XP, inventory, flags or endings.
 
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass, field
 
 # ---------------------------------------------------------------------------
@@ -175,26 +176,204 @@ def weapon_or_default(weapon_id: str | None) -> Weapon:
 
 
 # ---------------------------------------------------------------------------
+# Weapon reforging (rpg_plan.md §4): gold + materials buy +1/+2/+3 tiers.
+# ---------------------------------------------------------------------------
+# tier -> {gold, rune_grit, warped_cog, min_level, bonus_damage, crit}
+REFORGE_TIERS: dict[int, dict] = {
+    1: {"gold": 6, "rune_grit": 2, "warped_cog": 0, "min_level": 1,
+        "bonus_damage": 1, "crit": 0},
+    2: {"gold": 12, "rune_grit": 4, "warped_cog": 1, "min_level": 1,
+        "bonus_damage": 2, "crit": 5},
+    3: {"gold": 20, "rune_grit": 0, "warped_cog": 2, "min_level": 12,
+        "bonus_damage": 3, "crit": 5},
+}
+MAX_REFORGE = 3
+
+
+def reforge_spec(tier: int) -> dict | None:
+    return REFORGE_TIERS.get(int(tier or 0))
+
+
+def weapon_tier_bonus(weapon_id: str, tiers: dict | None) -> int:
+    """Extra flat damage a weapon's reforge level adds, on top of its school bonus."""
+    if not tiers:
+        return 0
+    spec = REFORGE_TIERS.get(int(tiers.get(weapon_id, 0) or 0))
+    return spec["bonus_damage"] if spec else 0
+
+
+def weapon_tier_crit(weapon_id: str, tiers: dict | None) -> int:
+    if not tiers:
+        return 0
+    spec = REFORGE_TIERS.get(int(tiers.get(weapon_id, 0) or 0))
+    return spec["crit"] if spec else 0
+
+
+# ---------------------------------------------------------------------------
+# Trinkets (rpg_plan.md §3): one equip slot, rolled by Python, named by the LLM
+# (M7) within a deterministic stat band. Stats never come from the model.
+# ---------------------------------------------------------------------------
+TRINKET_STATS = ("bonus_damage", "crit", "max_hp", "courage_relief",
+                 "gold_find", "xp_bonus")
+_TRINKET_ROLL = {
+    "bonus_damage": 1, "crit": 5, "max_hp": 2, "courage_relief": 1,
+    "gold_find": 1, "xp_bonus": 1,
+}
+# Deterministic fallback names by primary stat (LLM overrides display in M7).
+_TRINKET_NAME = {
+    "bonus_damage": "Charm of Edges", "crit": "Eye of the Soft Spot",
+    "max_hp": "Knuckle of Endurance", "courage_relief": "Calm Bead",
+    "gold_find": "Tax Collector's Tooth", "xp_bonus": "Scholar's Bell",
+}
+
+
+def roll_trinket(rarity: str, area: str, seed: int) -> dict:
+    """Roll a trinket's deterministic stats + a placeholder name.
+
+    rare = one stat; epic = two distinct stats. Returns a dict the client
+    stores under ``player.trinket`` and the LLM can later re-christen."""
+    rng = random.Random(seed)
+    n = 2 if rarity == "epic" else 1
+    stats_keys = rng.sample(list(TRINKET_STATS), n)
+    stats = {k: _TRINKET_ROLL[k] for k in stats_keys}
+    primary = stats_keys[0]
+    area_word = (area or "dungeon").split()[-1].capitalize()
+    return {
+        "id": f"trinket_{seed}",
+        "name": _TRINKET_NAME.get(primary, "Odd Trinket") + " of the " + area_word,
+        "rarity": rarity,
+        "stats": stats,
+        "area": area,
+        "seed": seed,
+    }
+
+
+def trinket_bonus(trinket: dict | None, key: str) -> int:
+    if not trinket:
+        return 0
+    return int((trinket.get("stats") or {}).get(key, 0) or 0)
+
+
+# ---------------------------------------------------------------------------
+# LLM combat-taunt fallback table (rpg_plan.md §8). Keyed (archetype, event);
+# the model writes fresh lines, but a downed/absent model never blocks combat.
+# ---------------------------------------------------------------------------
+TAUNT_FALLBACK: dict[tuple[str, str], str] = {
+    ("charge", "spotted"): "Stand still. This will only hurt with conviction.",
+    ("charge", "windup"): "Here I come — paperwork can wait.",
+    ("charge", "enrage"): "Now I am late AND angry.",
+    ("charge", "player_low"): "Almost filed under 'finished'.",
+    ("charge", "defeated"): "Fine. Reschedule me.",
+    ("spit", "spotted"): "I taste your tomorrow from here.",
+    ("spit", "windup"): "Open wide, little clerk.",
+    ("spit", "enrage"): "I am all out of patience and full of bile.",
+    ("spit", "player_low"): "Drip. Drip. That's your morning leaking.",
+    ("spit", "defeated"): "Splattered, but memorable.",
+    ("summon", "spotted"): "I never argue alone.",
+    ("summon", "windup"): "Friends! Form a committee!",
+    ("summon", "enrage"): "If you want something eaten right, summon it yourself.",
+    ("summon", "player_low"): "My minions would like your forwarding address.",
+    ("summon", "defeated"): "Adjourned. The motion did not carry.",
+    ("boss", "spotted"): "Little clerk. You rang the bell. I answered.",
+    ("boss", "windup"): "Show me the language you broke me with.",
+    ("boss", "enrage"): "I know that spell now. Draw a new mistake.",
+    ("boss", "player_low"): "Your tomorrow is already on my plate.",
+    ("boss", "defeated"): "Then take your morning. It was always too bright for me.",
+    ("brute", "spotted"): "You look like an overdue invoice.",
+    ("brute", "windup"): "This is going to be load-bearing.",
+    ("brute", "enrage"): "No more warnings. Only dents.",
+    ("brute", "player_low"): "Stay down, it's cheaper.",
+    ("brute", "defeated"): "Worth it. Mostly.",
+}
+
+
+def taunt_fallback(archetype: str, event: str) -> str:
+    key = (archetype or "brute", event or "spotted")
+    return TAUNT_FALLBACK.get(key) or TAUNT_FALLBACK.get(("brute", event), "…")
+
+
+# ---------------------------------------------------------------------------
 # XP / leveling (game_plan.md level rewards)
 # ---------------------------------------------------------------------------
-# xp_to_next[level] = XP needed to advance FROM that level.
-XP_TO_NEXT: dict[int, int] = {1: 8, 2: 16, 3: 28, 4: 44, 5: 0}
-MAX_LEVEL = 5
+# xp_to_next[level] = XP needed to advance FROM that level. (rpg_plan.md §1)
+# Cumulative landmarks: L5=64, L8=154, L10=236, L12=342, L16=638, L20=1088.
+XP_TO_NEXT: dict[int, int] = {
+    1: 10, 2: 14, 3: 18, 4: 22, 5: 26, 6: 30, 7: 34, 8: 38, 9: 44,
+    10: 50, 11: 56, 12: 62, 13: 70, 14: 78, 15: 86, 16: 96,
+    17: 106, 18: 118, 19: 130, 20: 0,
+}
+MAX_LEVEL = 20
 
-# Reward applied on reaching each level (cumulative, applied once).
-LEVEL_REWARDS: dict[int, dict] = {
+# Milestone rewards layered on top of the +1 max-HP baseline every level.
+# Keys other than max_hp REPLACE the baseline +1 with their own max_hp where
+# given; the baseline is folded in by _build_level_rewards below.
+_LEVEL_MILESTONES: dict[int, dict] = {
     2: {"max_hp": 2, "note": "Level 2 — toughened up: +2 max HP."},
     3: {"unlock_four_runes": True, "note": "Level 3 — you can weave 4-rune casts."},
     4: {"rune_mastery_choice": True, "note": "Level 4 — choose a rune mastery."},
-    5: {"max_courage": 2, "boss_ready": True,
-        "note": "Level 5 — boss-ready power spike; ending branches unlocked."},
+    5: {"max_courage": 2, "note": "Level 5 — steadier nerves: +2 max courage."},
+    6: {"spell_power": 1, "note": "Level 6 — sharper intent: +1 spell power."},
+    7: {"potion_belt": 2, "note": "Level 7 — potion belt slot 2 unlocked (key 2)."},
+    8: {"crit": 10, "note": "Level 8 — you learn to find the soft spot: 10% crit."},
+    9: {"max_hp": 2, "note": "Level 9 — scarred and sturdier: +2 max HP."},
+    10: {"max_hp": 3, "spell_power": 1, "evolve_tier": 2,
+         "note": "Level 10 — you evolve into your champion form: +3 max HP, +1 spell power."},
+    11: {"max_courage": 1, "note": "Level 11 — +1 max courage."},
+    12: {"rune_mastery_choice": True, "note": "Level 12 — choose a second rune mastery."},
+    13: {"crit": 5, "note": "Level 13 — keener eye: +5% crit."},
+    14: {"max_hp": 2, "note": "Level 14 — +2 max HP."},
+    15: {"crit_knockback": True, "note": "Level 15 — your crits knock enemies back a tile."},
+    16: {"king_eligible": True,
+         "note": "Level 16 — you could wear the Goblin King's crown, if you found one."},
+    17: {"spell_power": 1, "note": "Level 17 — +1 spell power."},
+    18: {"crit": 5, "note": "Level 18 — +5% crit."},
+    19: {"max_hp": 2, "note": "Level 19 — +2 max HP."},
+    20: {"max_hp": 2, "spell_power": 1, "crit": 5,
+         "note": "Level 20 — Calendar Sovereign: +2 max HP, +1 spell power, +5% crit."},
 }
 
-XP_DEFEAT_ENEMY = 6
-XP_DEFEAT_BOSS_PHASE = 10
-XP_READ_STORY = 3
-XP_HELP_NPC = 4
-XP_UNLOCK = 2
+
+def _build_level_rewards() -> dict[int, dict]:
+    """Every level 2..MAX_LEVEL grants +1 max HP unless a milestone overrides it."""
+    out: dict[int, dict] = {}
+    for lvl in range(2, MAX_LEVEL + 1):
+        reward = {"max_hp": 1, "note": f"Level {lvl} — +1 max HP."}
+        reward.update(_LEVEL_MILESTONES.get(lvl, {}))
+        out[lvl] = reward
+    return out
+
+
+# Reward applied on reaching each level (cumulative, applied once).
+LEVEL_REWARDS: dict[int, dict] = _build_level_rewards()
+
+# Flat XP for non-combat events.
+XP_READ_STORY = 4
+XP_HELP_NPC = 6
+XP_UNLOCK = 3
+XP_DEFEAT_BOSS_PHASE = 30
+# Kept for back-compat / fallbacks; tiered kills use xp_for_kill() below.
+XP_DEFEAT_ENEMY = 8
+
+# Per-tier kill XP = base + per_dr * area difficulty rating (rpg_plan.md §1).
+_KILL_XP: dict[str, tuple[int, int]] = {
+    "minion": (4, 0),
+    "standard": (6, 2),
+    "elite": (14, 4),
+    "boss": (30, 0),
+}
+
+
+def xp_for_kill(tier: str | None, dr: int = 1, *, respawned: bool = False) -> int:
+    """Deterministic kill XP by enemy tier and area difficulty rating.
+
+    Respawned (non-unique) enemies grant half, floored, so grinding works but
+    never beats authored content.
+    """
+    base, per_dr = _KILL_XP.get(tier or "standard", _KILL_XP["standard"])
+    xp = base + per_dr * max(0, int(dr or 1))
+    if respawned:
+        xp = max(1, xp // 2)
+    return xp
 
 
 def xp_to_next(level: int) -> int:
@@ -590,11 +769,23 @@ def boss_phase_for(hp: int, max_hp: int) -> dict:
     return BOSS_PHASES[-1]
 
 
-# Goblin King evolution trigger (story_plan.md baseline trigger).
+# Goblin King evolution (rpg_plan.md §6): no longer automatic at boss phase 3.
+# The chosen goblin auto-evolves to its tier-2 champion form at level 10, and
+# only becomes the Goblin King by consuming the Cracked Crown at level 16+.
+KING_MIN_LEVEL = 16
+CHAMPION_LEVEL = 10
+CRACKED_CROWN = "Cracked Crown"
+
+
+def can_become_king(level: int, inventory, flags) -> bool:
+    return (int(level or 1) >= KING_MIN_LEVEL
+            and CRACKED_CROWN in set(inventory or ())
+            and "player_evolved" not in set(flags or ()))
+
+
+# Back-compat shim (unused by the client, kept for any external callers/tests).
 def can_evolve(level: int, flags, boss_phase: int) -> bool:
-    flagset = set(flags or ())
-    identity = bool(flagset & set(HELPER_FLAGS)) or bool(flagset & set(DEVOUR_FLAGS))
-    return boss_phase >= 3 and (level >= 5 or identity) and "player_evolved" not in flagset
+    return int(level or 1) >= KING_MIN_LEVEL and "player_evolved" not in set(flags or ())
 
 
 # ---------------------------------------------------------------------------

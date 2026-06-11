@@ -37,6 +37,7 @@ class Item:
     desc: str
     heal: int = 0  # potion: HP restored on use
     courage: int = 0  # potion: courage restored on use
+    shield: int = 0  # potion: shield turns granted on use
 
 
 ITEMS: dict[str, Item] = {
@@ -52,6 +53,15 @@ ITEMS: dict[str, Item] = {
     "fungus_spore": Item(
         "fungus_spore", "Fungus Spore", "material", "🍄",
         "A live spore from a Mirror Fungus. The Road Druid wants one."),
+    "ward_salve": Item(
+        "ward_salve", "Ward Salve", "potion", "🩹",
+        "Grants a shield that absorbs the next 2 blows.", shield=2),
+    "rune_grit": Item(
+        "rune_grit", "Rune Grit", "material", "⛏️",
+        "Abrasive rune-dust. The smith uses it to reforge weapons."),
+    "warped_cog": Item(
+        "warped_cog", "Warped Cog", "material", "⚙️",
+        "A cog that remembers a better hour. Needed for high-tier reforging."),
 }
 
 

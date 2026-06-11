@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import random
+import zlib
 from dataclasses import asdict, dataclass, field
 
 from . import beats, quests, story
@@ -57,6 +58,15 @@ class Entity:
     target_y: int = 0
     hint: str = ""  # short interaction hint shown to the player
     sprite_key: str = ""  # explicit client sprite (creature/deco), else type-mapped
+    # --- RPG depth (rpg_plan.md §2): monster tier system ---
+    tier: str = ""          # minion | standard | elite | boss ("" = non-combatant)
+    dr: int = 1             # area difficulty rating used for stat scaling
+    dmg: int = 0            # melee damage this enemy deals (client retaliation)
+    ability: str = ""       # charge | spit | summon (telegraphed special move)
+    affix: str = ""         # elite affix: shielded|vampiric|splitting|hexed|stonehide
+    unique: bool = True     # False = respawns after enough area transitions
+    spawn_x: int = 0        # respawn origin
+    spawn_y: int = 0
     quest: str = ""  # quest id this NPC gives (tags quest-giver NPCs for the client)
 
 
@@ -69,6 +79,120 @@ class Area:
     rows: list[str]
     entities: list[Entity]
     spawn: tuple[int, int]
+
+
+# --- Monster tier system (rpg_plan.md §2) ----------------------------------
+# Per-area difficulty rating drives enemy stat scaling.
+DR_BY_AREA = {
+    "overworld": 1, "caverns": 2, "library": 2, "bone_market": 2,
+    "clock_sewer": 3, "gate_approach": 4, "frost_pass": 4,
+    "ember_foundry": 5, "arena": 6,
+}
+# Hand-picked elites (tougher, gold-outlined, affixed, summon + enrage).
+ELITE_IDS = {
+    "mycologist", "mold_knight", "market_brute", "sewer_golem",
+    "debt_collector", "hailmonger", "slag_golem", "cinder_smith",
+    "pig_iron_golem",
+}
+# The three elites guarding the Foundry Coronation (Cracked Crown path, §6).
+FOUNDRY_GAUNTLET = ("slag_golem", "cinder_smith", "pig_iron_golem")
+_AFFIXES = ("shielded", "vampiric", "splitting", "hexed", "stonehide")
+# Minion packs per area: (sprite_key, weakness-rune) seeds, scattered on free floor.
+_MINION_KINDS = {
+    "overworld": ("goblin_red", ["bell", "coin"]),
+    "caverns": ("glowing_wisp", ["mirror", "eye"]),
+    "library": ("goblin_purple", ["mirror", "bell"]),
+    "bone_market": ("goblin_yellow", ["coin", "key"]),
+    "clock_sewer": ("water_elemental", ["jagged_line", "bone"]),
+    "gate_approach": ("red_warrior", ["bell", "coin"]),
+    "frost_pass": ("ice_golem", ["flame", "bell"]),
+    "ember_foundry": ("fire_elemental", ["wave", "closed_circle"]),
+}
+# How many minions to inject per area (none in arena — boss space stays clear).
+_MINION_COUNT = {
+    "overworld": 3, "caverns": 3, "library": 2, "bone_market": 2,
+    "clock_sewer": 3, "gate_approach": 2, "frost_pass": 3, "ember_foundry": 3,
+}
+
+
+def _tier_hp(tier: str, dr: int) -> int:
+    return {"minion": 3 + 2 * dr, "standard": 6 + 3 * dr,
+            "elite": 12 + 5 * dr}.get(tier, 6 + 3 * dr)
+
+
+def _tier_dmg(tier: str, dr: int) -> int:
+    if tier == "minion":
+        return 1
+    if tier == "elite":
+        return 2 + dr // 2
+    return 1 + dr // 2  # standard
+
+
+def _enemy_ability(area_id: str, name: str, tier: str) -> str:
+    if "Fungus" in name:
+        return "spit"
+    if area_id == "frost_pass" and tier != "elite":
+        return "spit"
+    if tier == "elite":
+        return "summon"
+    if area_id in ("clock_sewer", "ember_foundry", "gate_approach"):
+        return "charge"
+    return ""
+
+
+def _apply_monster_tiers(area: Area) -> None:
+    """Stamp tier/DR-scaled stats, abilities, affixes, and respawn data onto
+    every combat entity, then inject non-unique minion packs (rpg_plan.md §2)."""
+    dr = DR_BY_AREA.get(area.id, 1)
+    for e in list(area.entities):
+        if e.type not in ("enemy", "boss"):
+            continue
+        e.dr = dr
+        e.spawn_x, e.spawn_y = e.x, e.y
+        if e.type == "boss":
+            e.tier = "boss"
+            e.dmg = e.dmg or 4
+            continue
+        # The Queue Goblin is a scripted toll gate, not a scaling brawler.
+        if e.id == "toll_goblin":
+            e.tier = "standard"
+            e.dmg = 1
+            continue
+        e.tier = "elite" if e.id in ELITE_IDS else "standard"
+        e.hp = e.max_hp = _tier_hp(e.tier, dr)
+        e.dmg = _tier_dmg(e.tier, dr)
+        e.ability = _enemy_ability(area.id, e.name, e.tier)
+        if e.tier == "elite":
+            # Stable per-id affix so each elite has a consistent identity.
+            e.affix = _AFFIXES[(zlib.crc32(e.id.encode()) % len(_AFFIXES))]
+            if e.affix == "shielded":
+                e.hp = e.max_hp = e.max_hp + 4
+            elif e.affix == "stonehide":
+                extra = "wave" if "flame" not in e.resistance else "thread"
+                if extra not in e.resistance:
+                    e.resistance.append(extra)
+            e.name = e.affix.capitalize() + " " + e.name
+            e.hint = "an elite — telegraphed attacks, but worth real XP"
+    # Inject minion packs (non-unique, respawnable) on free floor tiles.
+    kind = _MINION_KINDS.get(area.id)
+    count = _MINION_COUNT.get(area.id, 0)
+    if kind and count:
+        sprite_key, weak = kind
+        free = _free_tiles(area, margin_from_spawn=3)
+        rng = random.Random(hash(("minions", area.id)) & 0xFFFF)
+        rng.shuffle(free)
+        for i in range(min(count, len(free))):
+            x, y = free[i]
+            ab = "spit" if area.id in ("caverns", "frost_pass") else ("charge" if i % 2 else "")
+            area.entities.append(Entity(
+                id=f"{area.id}_minion_{i}", type="enemy", name="Roadbug",
+                x=x, y=y, sprite=enemy_sprite("Mirror Fungus"), sprite_key=sprite_key,
+                hp=_tier_hp("minion", dr), max_hp=_tier_hp("minion", dr),
+                weakness=list(weak), resistance=[], mood="skittering",
+                tags=["hostile", "minion"], hint="a minion — quick XP",
+                tier="minion", dr=dr, dmg=1, ability=ab, unique=False,
+                spawn_x=x, spawn_y=y,
+            ))
 
 
 def _mob(eid, name, x, y, *, hp, weakness, resistance, sprite_key,
@@ -698,6 +822,12 @@ def _build_areas() -> dict[str, Area]:
                    state="locked", blocking=True, tags=["forge"], requires=["flame"],
                    loot=["forge-hot trophy", "minor powerup"],
                    hint="locked — light it with flame"),
+            # Optional early Cracked Crown: the Foundry Coronation vault, sealed
+            # behind a read-then-forge gate for players who clear the foundry (§6).
+            Entity("coronation_vault", "chest", "Coronation Crucible", 18, 20, sprite="👑",
+                   state="locked", blocking=True, tags=["forge", "crown"],
+                   requires=["eye", "flame"], loot=[story.CRACKED_CROWN],
+                   hint="locked — read it (eye) and fire it (flame) to claim the Cracked Crown"),
             Entity("foundry_shrine", "shrine", "Quenching Shrine", 16, 22, sprite="⛩️",
                    blocking=True, tags=["holy"], state="dormant",
                    hint="cast wave/closed_circle to quench and heal"),
@@ -758,6 +888,10 @@ def _build_areas() -> dict[str, Area]:
     _scatter_deco(arena, 14, 44)
     _scatter_deco(frost_pass, 50, 88)
     _scatter_deco(ember_foundry, 44, 99)
+    # 4) tier every combat entity and inject minion packs
+    for a in all_areas:
+        _apply_monster_tiers(a)
+        _relocate_invalid(a)   # keep any freshly-injected minions on valid floor
     return {a.id: a for a in all_areas}
 
 
@@ -1098,7 +1232,12 @@ def _combat_metadata(runes: list[str], player: dict) -> dict:
     class_bonus = 1 if gclass.affinity and any(r in gclass.affinity for r in runes) else 0
     mastered = [r for r in runes if mastery.get(r, 0) >= story.RUNE_MASTERY_THRESHOLD]
     mastery_bonus = 1 if mastered else 0
-    total = weapon_bonus + class_bonus + mastery_bonus
+    spell_power = max(0, int(player.get("spell_power", 0) or 0))
+    # Reforge level (flat, always-on) + trinket damage (rpg_plan.md §3,§4).
+    weapon_tier_bonus = story.weapon_tier_bonus(weapon.id, player.get("weapon_tiers"))
+    trinket_bonus = story.trinket_bonus(player.get("trinket"), "bonus_damage")
+    total = (weapon_bonus + weapon_tier_bonus + class_bonus + mastery_bonus
+             + spell_power + trinket_bonus)
     return {
         "weapon": {
             "id": weapon.id,
@@ -1118,6 +1257,9 @@ def _combat_metadata(runes: list[str], player: dict) -> dict:
             "bonus_damage": mastery_bonus,
             "chaos_relief": len(mastered),
         },
+        "spell_power": spell_power,
+        "weapon_tier": weapon_tier_bonus,
+        "trinket": trinket_bonus,
         "boss": {
             "pylon_bonus": 0,
             "king_bonus": 0,
@@ -1125,6 +1267,22 @@ def _combat_metadata(runes: list[str], player: dict) -> dict:
         },
         "total_bonus": total,
     }
+
+
+def _crit_chance(player: dict, runes: list[str]) -> int:
+    """Effective crit % (rpg_plan.md §5): unlocked at level 8, capped at 40.
+
+    Sources: level-granted crit (player.crit) + weapon reforge crit + trinket
+    crit + 10% when the cast contains a mastered rune."""
+    if int(player.get("level", 1)) < 8:
+        return 0
+    chance = int(player.get("crit", 0) or 0)
+    chance += story.weapon_tier_crit(player.get("weapon"), player.get("weapon_tiers"))
+    chance += story.trinket_bonus(player.get("trinket"), "crit")
+    mastery = player.get("rune_mastery") or {}
+    if any(mastery.get(r, 0) >= story.RUNE_MASTERY_THRESHOLD for r in runes):
+        chance += 10
+    return max(0, min(40, chance))
 
 
 def _class_king_bonus(runes: list[str], player: dict, target: dict) -> tuple[int, list[str]]:
@@ -1148,6 +1306,45 @@ def _class_king_bonus(runes: list[str], player: dict, target: dict) -> tuple[int
     elif cls == "barbarian" and any(r in runes for r in ("flame", "bone", "tooth")):
         bonus += 3 if target.get("type") == "boss" else 2
     return bonus, flags
+
+
+# Drop tables by tier (rpg_plan.md §3): (gold_lo, gold_hi, grit%, cog%, potion%, trinket%).
+_DROP_TABLE = {
+    "minion": (1, 2, 20, 0, 8, 0),
+    "standard": (2, 4, 35, 0, 12, 5),
+    "elite": (6, 10, 100, 60, 25, 30),
+}
+
+
+def _roll_drops(target: dict, rng: random.Random, area: str = "") -> list[dict]:
+    """Tier-aware loot for a felled enemy: gold, materials, a potion, a rare trinket."""
+    tier = target.get("tier") or "standard"
+    respawned = bool(target.get("respawned"))
+    glo, ghi, grit, cog, potion, trinket = _DROP_TABLE.get(tier, _DROP_TABLE["standard"])
+    acts: list[dict] = []
+    gold = rng.randint(glo, ghi)
+    if respawned:
+        gold = max(1, gold // 2)
+    acts.append({"type": "add_gold", "amount": gold})
+    # Trophies/spores from the existing hand-authored drop map.
+    for drop in quests.monster_drops(target.get("id", ""), target.get("name", "")):
+        acts.append({"type": "add_item", "item": drop, "qty": 1})
+    if respawned:
+        return acts  # respawn farming yields gold + trophies only, no rares
+    if rng.randint(1, 100) <= grit:
+        acts.append({"type": "add_item", "item": "rune_grit",
+                     "qty": 2 if tier == "elite" else 1})
+    if rng.randint(1, 100) <= cog:
+        acts.append({"type": "add_item", "item": "warped_cog", "qty": 1})
+    if rng.randint(1, 100) <= potion:
+        acts.append({"type": "add_item",
+                     "item": rng.choice(["health_potion", "courage_draught"]), "qty": 1})
+    if rng.randint(1, 100) <= trinket:
+        rarity = "epic" if tier == "elite" and rng.random() < 0.25 else "rare"
+        seed = rng.randint(1000, 999999)
+        acts.append({"type": "add_trinket",
+                     "trinket": story.roll_trinket(rarity, area, seed)})
+    return acts
 
 
 def _xp_actions(player: dict, gained: int) -> list[dict]:
@@ -1251,6 +1448,85 @@ def _shop_offers(npc_id: str, player: dict, pricing: dict | None = None) -> list
     return offers
 
 
+def _reforge_options(player: dict) -> list[dict]:
+    """Per-owned-weapon next-tier reforge offers for the shop's Reforge tab."""
+    tiers = player.get("weapon_tiers") or {}
+    items = player.get("items") or {}
+    gold = int(player.get("gold", 0) or 0)
+    level = int(player.get("level", 1))
+    have_grit = int(items.get("rune_grit", 0) or 0)
+    have_cog = int(items.get("warped_cog", 0) or 0)
+    out = []
+    for wid in (player.get("weapon_inventory") or []):
+        w = story.WEAPONS.get(wid)
+        if not w:
+            continue
+        cur = int(tiers.get(wid, 0) or 0)
+        spec = story.reforge_spec(cur + 1)
+        maxed = cur >= story.MAX_REFORGE
+        affordable = bool(spec) and not maxed and gold >= spec["gold"] and \
+            have_grit >= spec["rune_grit"] and have_cog >= spec["warped_cog"] and \
+            level >= spec["min_level"]
+        out.append({
+            "id": wid, "label": w.label, "tier": cur, "maxed": maxed,
+            "next": (cur + 1) if not maxed else cur,
+            "cost": spec if spec and not maxed else None,
+            "affordable": affordable,
+        })
+    return out
+
+
+def _resolve_reforge(player: dict, npc_id: str, name: str, weapon_id: str) -> dict:
+    """Spend gold + materials to raise a weapon's reforge tier (server-clamped)."""
+    gold = int(player.get("gold", 0) or 0)
+    items = player.get("items") or {}
+    tiers = player.get("weapon_tiers") or {}
+    base = {"npc_id": npc_id, "name": name, "gold": gold,
+            "offers": _shop_offers(npc_id, player), "world_actions": []}
+    if weapon_id not in story.WEAPONS or weapon_id not in (player.get("weapon_inventory") or []):
+        base["line"] = "Bring me a weapon you actually own and I'll improve it."
+        base["denied"] = True
+        return base
+    cur = int(tiers.get(weapon_id, 0) or 0)
+    if cur >= story.MAX_REFORGE:
+        base["line"] = f"The {story.WEAPONS[weapon_id].label} is already honed as far as it goes."
+        base["denied"] = True
+        return base
+    spec = story.reforge_spec(cur + 1)
+    if int(player.get("level", 1)) < spec["min_level"]:
+        base["line"] = f"That reforge needs a steadier hand — come back at level {spec['min_level']}."
+        base["denied"] = True
+        return base
+    need_grit, need_cog = spec["rune_grit"], spec["warped_cog"]
+    have_grit = int(items.get("rune_grit", 0) or 0)
+    have_cog = int(items.get("warped_cog", 0) or 0)
+    if gold < spec["gold"] or have_grit < need_grit or have_cog < need_cog:
+        missing = []
+        if gold < spec["gold"]:
+            missing.append(f"{spec['gold'] - gold} more gold")
+        if have_grit < need_grit:
+            missing.append(f"{need_grit - have_grit} more rune grit")
+        if have_cog < need_cog:
+            missing.append(f"{need_cog - have_cog} more warped cog")
+        base["line"] = "Not yet — you need " + ", ".join(missing) + "."
+        base["denied"] = True
+        return base
+    label = story.WEAPONS[weapon_id].label
+    actions: list[dict] = [{"type": "add_gold", "amount": -spec["gold"]}]
+    if need_grit:
+        actions.append({"type": "remove_item", "item": "rune_grit", "qty": need_grit})
+    if need_cog:
+        actions.append({"type": "remove_item", "item": "warped_cog", "qty": need_cog})
+    actions.append({"type": "reforge_weapon", "weapon": weapon_id, "tier": cur + 1,
+                    "message": f"{label} reforged to +{cur + 1}."})
+    base["world_actions"] = actions
+    base["line"] = (f"{label} +{cur + 1}. " +
+                    ("The metal remembers a better hour." if cur + 1 < story.MAX_REFORGE
+                     else "Honed to its peak — its true nature awakens."))
+    base["reforged"] = True
+    return base
+
+
 def resolve_shop(player: dict, npc_id: str, weapon_id: str = "",
                  quoted_price: int | None = None) -> dict:
     """Bone Market shop: list stock (LLM-priced) or buy a weapon for gold.
@@ -1286,7 +1562,12 @@ def resolve_shop(player: dict, npc_id: str, weapon_id: str = "",
             "line": voice.greeting if voice else "Browse. Carefully.",
             "pricing_source": "model" if priced_by_model else "fallback",
             "model": DIALOGUE_API_MODEL if priced_by_model else "",
+            "reforge": _reforge_options(player),
         }
+
+    # reforging: spend gold + materials to raise a weapon's tier (rpg_plan.md §4)
+    if weapon_id.startswith("reforge:"):
+        return _resolve_reforge(player, npc_id, name, weapon_id.split(":", 1)[1])
 
     # buying: no LLM in the loop — bands decide what a valid quote is
     base = {"npc_id": npc_id, "name": name, "gold": gold,
@@ -1539,6 +1820,22 @@ def resolve_world_cast(
             spell.enemy_hp_delta = delta
             if bonus:
                 spell.effect = f"{spell.effect} (+{bonus} from gear/affinity)"
+        # Damage variance + crits give every cast a little life (rpg_plan.md §5).
+        is_crit = False
+        if delta < 0:
+            mag = -delta + rng.choice([-1, 0, 0, 1])
+            mag = max(1, mag)
+            crit_chance = _crit_chance(player, runes)
+            is_crit = crit_chance > 0 and rng.randint(1, 100) <= crit_chance
+            if is_crit:
+                mag = (mag * 3 + 1) // 2  # ×1.5, rounded up
+                spell.effect = f"{spell.effect} 💥 CRIT!"
+            delta = -min(cur_hp, mag)
+            spell.enemy_hp_delta = delta
+        metadata["combat"]["crit"] = is_crit
+        # Knockback on crits (for L15+ players) or any heavy hit (≥6).
+        if delta < 0 and (-delta >= 6 or (is_crit and player.get("crit_knockback"))):
+            actions.append({"type": "knockback_entity", "target_id": tid})
         for st in king_statuses:
             if st not in spell.status_effects:
                 spell.status_effects.append(st)
@@ -1586,12 +1883,21 @@ def resolve_world_cast(
                                 "weakness": list(new_phase["weakness"]),
                                 "resistance": list(new_phase["resistance"]),
                                 "boss_reactions": boss_reactions})
+                # Surviving a phase boundary is worth a full phase's XP.
+                actions += _xp_actions(player, story.XP_DEFEAT_BOSS_PHASE)
                 if new_phase["phase"] >= 2:
                     actions += _flag_actions(["calendar_beast_phase_2"])
                     actions.append({"type": "spawn_entity", "entity": _spawn_entity(
                         "phase2_debt_echo", "enemy", "Debt Echo", 11, 11,
                         hp=5, weakness=["coin", "bell"], resistance=["broken_mark"],
                         sprite_key="red_warrior", mood="collecting repeated mistakes")})
+                    # The shattering Beast sheds the Cracked Crown — a level-16
+                    # goblin can crown itself mid-fight (rpg_plan.md §6).
+                    if story.CRACKED_CROWN not in inventory:
+                        actions.append({"type": "add_inventory", "item": story.CRACKED_CROWN})
+                        actions.append({"type": "add_journal_entry",
+                                        "text": "The Beast sheds a Cracked Crown. If you are "
+                                                "ready (level 16+), wear it to become the Goblin King."})
                 if new_phase["phase"] >= 3:
                     actions += _flag_actions(["calendar_beast_phase_3"])
                     actions.append({"type": "add_journal_entry",
@@ -1622,14 +1928,17 @@ def resolve_world_cast(
 
         if new_hp <= 0:
             actions.append({"type": "defeat_entity", "target_id": tid})
-            actions += _xp_actions(player, story.XP_DEFEAT_BOSS_PHASE if ttype == "boss"
-                                   else story.XP_DEFEAT_ENEMY)
-            # Enemies drop a coin or two so the player can afford tolls, plus
-            # trophies/materials that feed the quest economy.
+            if ttype == "boss":
+                kill_xp = story.XP_DEFEAT_BOSS_PHASE
+            else:
+                kill_xp = story.xp_for_kill(
+                    target.get("tier"), int(target.get("dr", 1) or 1),
+                    respawned=bool(target.get("respawned")))
+            actions += _xp_actions(player, kill_xp)
+            # Tier-aware loot: gold + materials + a chance of potions/trinkets,
+            # so kills feed the economy (rpg_plan.md §3).
             if ttype == "enemy":
-                actions.append({"type": "add_gold", "amount": rng.randint(1, 2)})
-                for drop in quests.monster_drops(tid, target.get("name", "")):
-                    actions.append({"type": "add_item", "item": drop, "qty": 1})
+                actions += _roll_drops(target, rng, area=str(player.get("area", "")))
             if tid == "mycologist" or "mycologist" in str(tid):
                 actions += _flag_actions(["mycologist_defeated"])
             if ttype == "boss":
