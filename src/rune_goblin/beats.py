@@ -52,6 +52,13 @@ class StoryBeat:
 _HELPERS = tuple(story.HELPER_FLAGS)
 _DEVOUR = tuple(story.DEVOUR_FLAGS)
 
+# Beats that deserve the client's full story-card treatment (the campaign's
+# load-bearing moments). Everything else stays in the toast/bark channel.
+MAJOR_BEATS = frozenset({
+    "opening_bell", "arena_enter", "gate_allies", "gate_debts",
+    "gate_mixed", "gate_clean", "meet_collector",
+})
+
 
 BEATS: tuple[StoryBeat, ...] = (
     # ------------------------------------------------------------------
@@ -326,7 +333,7 @@ def client_manifest() -> list[dict]:
         entry = {
             "id": b.id, "trigger": b.trigger, "area": b.area,
             "requires": list(b.requires), "requires_any": list(b.requires_any),
-            "forbids": list(b.forbids),
+            "forbids": list(b.forbids), "major": b.id in MAJOR_BEATS,
         }
         if b.trigger == "first_meet":
             entry["npc"] = b.npc

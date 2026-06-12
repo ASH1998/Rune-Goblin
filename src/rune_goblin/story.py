@@ -209,6 +209,17 @@ def weapon_tier_crit(weapon_id: str, tiers: dict | None) -> int:
     return spec["crit"] if spec else 0
 
 
+# Weapons also temper through use: kills with a weapon equipped earn reforge
+# tiers for free at these counts. The paid smith path stays the fast lane;
+# this is the slow lane for players who stick with one weapon.
+WEAPON_KILL_MILESTONES = (10, 25, 50)
+
+
+def weapon_tier_for_kills(count: int) -> int:
+    """Reforge tier earned purely by use: 10/25/50 kills -> +1/+2/+3."""
+    return sum(1 for m in WEAPON_KILL_MILESTONES if int(count or 0) >= m)
+
+
 # ---------------------------------------------------------------------------
 # Trinkets (rpg_plan.md §3): one equip slot, rolled by Python, named by the LLM
 # (M7) within a deterministic stat band. Stats never come from the model.
@@ -801,6 +812,9 @@ class NpcVoice:
     greeting: str
     reactions: dict[str, str] = field(default_factory=dict)
     journal: str = ""  # durable discovery line written on first meaningful talk
+    # Relationship callbacks for repeat meetings (story_plan.md): keyed by
+    # "trusted" (trust > 0), "wary" (trust < 0), "return" (neutral revisit).
+    callbacks: dict[str, str] = field(default_factory=dict)
 
 
 NPC_VOICES: dict[str, NpcVoice] = {
@@ -815,6 +829,11 @@ NPC_VOICES: dict[str, NpcVoice] = {
             "neutral": "If you broke time, stand in the left line. If you only "
                        "damaged it, right line.",
         },
+        callbacks={
+            "trusted": "The clerk! Still alive, still undertrained. Respect.",
+            "wary": "Oh great. The walking incident report. Stay in your line.",
+            "return": "Back again? The queue missed you. The queue is a liar.",
+        },
         journal="Queue Goblin guards the Toll Road. It hates bells and respects coins.",
     ),
     "tourist": NpcVoice(
@@ -825,6 +844,11 @@ NPC_VOICES: dict[str, NpcVoice] = {
             "fear": "I understand less than before, but much faster.",
             "neutral": "Please do not attack the map. It has already won twice.",
         },
+        callbacks={
+            "trusted": "It's you! The kind-magic one. The map only bit me twice today.",
+            "wary": "Oh. You. I will be over here, behind this rock, learning quickly.",
+            "return": "Still looking for Tuesday. The map now denies Tuesday exists.",
+        },
         journal="The Lost Tourist calms to wave/leaf and may bring a healing lunch later.",
     ),
     "watch_archer": NpcVoice(
@@ -834,6 +858,10 @@ NPC_VOICES: dict[str, NpcVoice] = {
             "insight": "Weakness matters. A small correct spell beats a dramatic wrong one.",
             "neutral": "When a boss changes stance, stop repeating yourself. The "
                        "calendar learns.",
+        },
+        callbacks={
+            "trusted": "Your stance improved. The dungeon is collecting less evidence on you.",
+            "return": "Back for more training? Good. Repetition is honest.",
         },
         journal="Blue Watch Archer: face a target, read its weakness, then exploit it.",
     ),
@@ -846,6 +874,10 @@ NPC_VOICES: dict[str, NpcVoice] = {
             "insight": "You want gear? Bring proof you can survive the road first.",
             "neutral": "Trophies for equipment. Potions for trophies. Simple economy, clerk.",
         },
+        callbacks={
+            "trusted": "The herd-thinner returns! Trophies out — the good gear is on the table.",
+            "return": "Trophies for gear, clerk. The economy has not changed since breakfast.",
+        },
         journal="Quartermaster Bramble trades monster trophies for weapons and potions.",
     ),
     "road_druid": NpcVoice(
@@ -856,6 +888,10 @@ NPC_VOICES: dict[str, NpcVoice] = {
                     "to be alive.",
             "neutral": "The sewer water remembers the clean version of itself. Help "
                        "it remember louder.",
+        },
+        callbacks={
+            "trusted": "The weeds part for you now. The garden talks about you, kindly.",
+            "return": "Still weeding the calendar? Good. Roots before flowers.",
         },
         journal="Road Druid points to leaf/wave repair routes and the Clock Sewer.",
     ),
@@ -874,6 +910,11 @@ NPC_VOICES: dict[str, NpcVoice] = {
             "kind": "Good. The colony will tell the Beast where its own fear lives.",
             "neutral": "The fungus is not hiding a shard. It is remembering one.",
         },
+        callbacks={
+            "trusted": "The colony hums when you pass. That is fungal applause.",
+            "wary": "The mirrors remember what you burned. So do I.",
+            "return": "Back under the glass? Walk soft; the spores are napping.",
+        },
         journal="Mirror Hermit: solve the fungus with mirror+eye, not fire.",
     ),
     "librarian": NpcVoice(
@@ -884,6 +925,11 @@ NPC_VOICES: dict[str, NpcVoice] = {
                        "the species was not finished.",
             "fear": "That was a century of notes and three perfectly dry jokes.",
             "neutral": "The Calendar Key is ink-locked. It opens for readers, not burglars.",
+        },
+        callbacks={
+            "trusted": "Ah, the reader returns. The books have stopped flinching.",
+            "wary": "The shelves remember the smoke. Borrowing privileges: revoked.",
+            "return": "Mind the damp. Chapter three is leaking again.",
         },
         journal="Mold Librarian: the Calendar Key is ink-locked — key + eye + wave.",
     ),
@@ -909,6 +955,11 @@ NPC_VOICES: dict[str, NpcVoice] = {
             "fear": "Excellent. Your future has approved the loan by screaming.",
             "neutral": "I sell weapons, refunds, and mistakes with handles.",
         },
+        callbacks={
+            "trusted": "My favorite solvent customer! Today's curses are half off, emotionally.",
+            "wary": "Ah, the debtor walks in like the interest is not watching.",
+            "return": "Back to browse? Everything is still for sale, including the browsing.",
+        },
         journal="Bone Market Merchant sells weapons; coins repay debt, curses deepen it.",
     ),
     "water_spirit": NpcVoice(
@@ -918,6 +969,10 @@ NPC_VOICES: dict[str, NpcVoice] = {
             "kind": "The water remembers the sky. So will I.",
             "neutral": "Wave moves water. Leaf reminds it why. Clean me and I carry "
                        "one kindness to the final room.",
+        },
+        callbacks={
+            "trusted": "You carried my clean water in your hands. I have not forgotten.",
+            "return": "The pipes still tick. I still remember the sky.",
         },
         journal="Water Spirit: restore clean flow with wave + leaf for a final ally.",
     ),
@@ -937,6 +992,10 @@ NPC_VOICES: dict[str, NpcVoice] = {
         reactions={
             "coin": "Fine. Consider the account emotionally closed.",
             "neutral": "Debt is just a monster that learned accounting.",
+        },
+        callbacks={
+            "wary": "The account grows teeth while you stall.",
+            "return": "Still owing. Compound interest is also a monster.",
         },
         journal="Debt Collector appears when forced shortcuts go unpaid.",
     ),
@@ -997,10 +1056,30 @@ def npc_intent(runes) -> str:
     return "neutral"
 
 
-def fallback_dialogue(npc_id: str, runes=()) -> dict:
+def canonical_npc_line(npc_id: str, runes=(), trust: int = 0, meets: int = 1) -> str:
+    """THE one correct line for this NPC in this moment.
+
+    Single source of truth shared by the deterministic fallback and the LLM
+    prompt (persona + steering), so the model is never shown two competing
+    "correct" lines. Spells route through intent reactions; spell-free repeat
+    visits route through the relationship callback (trusted / wary / return).
+    """
+    voice = NPC_VOICES.get(npc_id)
+    if voice is None:
+        return ""
+    line = voice.reactions.get(npc_intent(runes)) or voice.greeting
+    if not runes and meets > 1 and voice.callbacks:
+        key = "trusted" if trust > 0 else ("wary" if trust < 0 else "return")
+        line = voice.callbacks.get(key) or voice.callbacks.get("return") or line
+    return line
+
+
+def fallback_dialogue(npc_id: str, runes=(), trust: int = 0, meets: int = 1) -> dict:
     """Deterministic dialogue payload for an NPC + rune intent.
 
     Returns the same shape the LLM endpoint produces so callers are uniform.
+    On a repeat visit with no spell, the voice's relationship callback line
+    (trusted / wary / plain return) replaces the canned first greeting.
     """
     voice = NPC_VOICES.get(npc_id)
     if voice is None:
@@ -1008,8 +1087,7 @@ def fallback_dialogue(npc_id: str, runes=()) -> dict:
             "story_toast": "", "npc_line": "They blink at you, professionally.",
             "journal_entry": "", "suggested_story_flag": "", "mood_shift": "",
         }
-    intent = npc_intent(runes)
-    line = voice.reactions.get(intent) or voice.greeting
+    line = canonical_npc_line(npc_id, runes, trust=trust, meets=meets)
     return {
         "story_toast": "",
         "npc_line": f"{voice.name}: {line}",

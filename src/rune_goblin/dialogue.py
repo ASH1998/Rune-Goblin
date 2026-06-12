@@ -223,30 +223,32 @@ _INTENT_GLOSS = {
 }
 
 
-def _persona_block(npc_id: str, intent: str) -> str:
+def _persona_block(npc_id: str, intent: str, *, meets: int = 1,
+                   canonical: str = "") -> str:
     """Describe the character the model must voice, using the canonical tables.
 
     Pulls the deterministic voice from :data:`story.NPC_VOICES` so generated
-    lines match the character the player already knows. The intent-matched
-    reaction is the strongest steer (it usually carries the real quest hint);
-    one extra line shows tonal range.
+    lines match the character the player already knows. Exactly ONE line is
+    presented as correct for this moment (``canonical`` — the same line the
+    steering block and the deterministic fallback use); everything else is
+    clearly labelled as a different situation, so a small model is never
+    handed two competing answers to blend.
     """
     voice = story.NPC_VOICES.get(npc_id)
     if voice is None:
         return ""
-    lines = [
-        f"You are speaking AS this character: {voice.name}.",
-        f'{voice.name} usually opens with: "{voice.greeting}"',
-    ]
-    reaction = voice.reactions.get(intent)
-    if reaction:
-        lines.append(
-            f'When the player responds with {_INTENT_GLOSS.get(intent, intent)}, '
-            f'{voice.name} says something like: "{reaction}"'
-        )
-    others = [v for k, v in voice.reactions.items() if k != intent and v != reaction]
-    if others:
-        lines.append(f'{voice.name} might also say: "{others[0]}"')
+    canonical = canonical or story.canonical_npc_line(npc_id, meets=meets)
+    lines = [f"You are speaking AS this character: {voice.name}."]
+    if meets <= 1:
+        lines.append(f'{voice.name} greets strangers with: "{voice.greeting}"')
+    else:
+        lines.append(f"{voice.name} already knows the player and never "
+                     f"re-introduces themself.")
+    lines.append(f'In THIS moment, {voice.name} would say: "{canonical}"')
+    other = next((v for v in voice.reactions.values() if v != canonical), "")
+    if other:
+        lines.append(f'In a DIFFERENT situation (not now) {voice.name} sounds '
+                     f'like: "{other}" — use this only for tone of voice.')
     if voice.journal:
         lines.append(f"Fact {voice.name} can truthfully reveal: {voice.journal}")
     return "\n".join(lines)
@@ -284,6 +286,24 @@ def _target_brief(target: dict) -> str:
     return "".join(bits)
 
 
+def _relationship_brief(target: dict, player: dict) -> str:
+    """How well this NPC knows (and likes) the player, in plain English.
+
+    Lets the model write real callbacks: repeat visits skip introductions,
+    trusted NPCs warm up, mistreated NPCs stay guarded.
+    """
+    meets = int(player.get("meet_count", 1) or 1)
+    trust = int(player.get("npc_trust", 0) or 0)
+    name = target.get("name") or "They"
+    if meets <= 1:
+        return f"{name} is meeting the player for the FIRST time."
+    mood = ("trusts the player (the player has treated them well)" if trust > 0
+            else ("is wary of the player (the player scared or hurt them before)"
+                  if trust < 0 else "is neutral toward the player"))
+    return (f"This is conversation number {meets} between them; {name} {mood}. "
+            f"Speak like someone resuming an acquaintance.")
+
+
 def _action_brief(action: dict, intent: str) -> str:
     runes = action.get("runes") or [] if isinstance(action, dict) else []
     if runes:
@@ -309,24 +329,34 @@ def _user_payload(area, scene, target, player, action, persona, intent) -> str:
     # The canonical intent-matched reaction goes LAST: small models weight the
     # end of the prompt hardest, and this line carries the real meaning the
     # reply must keep (e.g. a coin PLEASES the Queue Goblin).
+    # The canonical line comes from the same selector the deterministic
+    # fallback uses, so persona, steering, and fallback all agree on the one
+    # correct answer for this moment.
     voice = story.NPC_VOICES.get(str(target.get("id", "")))
     steer = ""
     if voice is not None:
-        canonical = voice.reactions.get(intent) or voice.greeting
+        canonical = story.canonical_npc_line(
+            str(target.get("id", "")), action.get("runes") or [],
+            trust=int(player.get("npc_trust", 0) or 0),
+            meets=int(player.get("meet_count", 1) or 1))
         steer = (
-            f'A correct reaction for {voice.name} in this moment is: '
+            f'The correct reaction for {voice.name} in this moment is: '
             f'"{canonical}"\n'
             f"Your npc_line must KEEP THAT MEANING and attitude — do not "
             f"soften, invert, or contradict it. Write a fresh variation of it "
             f"in {voice.name}'s spoken words, first person, 1-2 short clear "
-            f"sentences.\n"
+            f"sentences. Every claim in your line must still be true to the "
+            f"correct reaction; if you cannot improve on it, repeat it "
+            f"verbatim rather than change what it says.\n"
         )
     return (
         f"{persona}\n\n"
         f"{_story_brief(player, area)}\n\n"
         f"{_target_brief(target)}\n"
+        f"{_relationship_brief(target, player)}\n"
         f"{_action_brief(action, intent)}\n"
-        f"Recent story events (for callbacks only): {recent_str}\n"
+        f"Recent story events: {recent_str} — only mention one if it clearly "
+        f"involves this character; otherwise ignore them.\n"
         f"{toast_rule}\n"
         f"{steer}"
         "Needed output fields: story_toast, npc_line, journal_entry, "
@@ -406,7 +436,11 @@ def generate_dialogue(
     npc_id = str(target.get("id", ""))
     runes = action.get("runes", []) if isinstance(action, dict) else []
     intent = story.npc_intent(runes)
-    persona = _persona_block(npc_id, intent)
+    meets = int(player.get("meet_count", 1) or 1)
+    trust = int(player.get("npc_trust", 0) or 0)
+    persona = _persona_block(
+        npc_id, intent, meets=meets,
+        canonical=story.canonical_npc_line(npc_id, runes, trust=trust, meets=meets))
     messages = [
         {"role": "system", "content": DIALOGUE_SYSTEM},
         {"role": "user", "content": _user_payload(
@@ -438,7 +472,10 @@ def generate_dialogue(
     #     except Exception as exc:  # noqa: BLE001
     #         print(f"[dialogue] local generation failed, using fallback: {exc}")
 
-    out = story.fallback_dialogue(npc_id, runes)
+    out = story.fallback_dialogue(
+        npc_id, runes,
+        trust=int(player.get("npc_trust", 0) or 0),
+        meets=int(player.get("meet_count", 1) or 1))
     out["source"] = "fallback"
     return out
 

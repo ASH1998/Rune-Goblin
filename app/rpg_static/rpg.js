@@ -31,6 +31,7 @@
   let devBoot = false;          // true when ?seed/?flags/?area/?mastery present
   let recentRunes = [];
   let enemyCooldown = {};
+  let xpFlashUntil = 0;       // HUD XP-bar pulse timer (set on every XP gain)
   let masteryChoiceOpen = false;
   let selecting = false;        // title-screen character select active
   let chosenClass = null;       // selected goblin class id
@@ -391,6 +392,8 @@
     P.potion_belt_slots = P.potion_belt_slots || 1;  // quick-use slots (L7 → 2)
     P.defeats = P.defeats || {};   // non-unique kills → respawn ledger
     P.weapon_tiers = P.weapon_tiers || {};   // weapon_id → reforge tier 0..3
+    P.weapon_kills = P.weapon_kills || {};   // weapon_id → kills while equipped (use-leveling)
+    P.npc_meets = P.npc_meets || {};         // npc_id → talk count (dialogue callbacks)
     P.trinket = P.trinket || null;           // single equipped trinket
   }
   // XP curve + per-level rewards mirror story.py (server is authoritative for
@@ -858,6 +861,53 @@
   }
 
   // ---- movement ----
+  // ---- ground gold (kill loot scatters as coin piles you walk over) ----
+  let coins = [];   // {x, y, amount, born} — transient, cleared on travel
+
+  function spawnCoins(x, y, amount) {
+    if (!amount || amount <= 0) return;
+    const spots = [[x, y]];
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const tx = x + dx, ty = y + dy;
+      if (ty >= 0 && tx >= 0 && ty < A.rows.length && tx < A.rows[0].length &&
+          WALK.has(A.rows[ty][tx]) && !(entityAt(tx, ty) || {}).blocking) spots.push([tx, ty]);
+    }
+    const piles = Math.max(1, Math.min(amount, 3, spots.length));
+    for (let i = 0; i < piles; i++) {
+      const amt = Math.floor(amount / piles) + (i < amount % piles ? 1 : 0);
+      if (amt > 0) coins.push({ x: spots[i][0], y: spots[i][1], amount: amt, born: now() });
+    }
+  }
+
+  function collectCoinsAt(x, y) {
+    let got = 0;
+    coins = coins.filter((c) => { if (c.x === x && c.y === y) { got += c.amount; return false; } return true; });
+    if (got > 0) {
+      P.gold = (P.gold || 0) + got;
+      addNum("+" + got + "g", "#ffd24a", x + 0.5, y - 0.3, 0);
+      playSfx("good", 1);
+      requestSave();
+    }
+  }
+
+  function drawCoins() {
+    for (const c of coins) {
+      const cx = sx(c.x) + TILE / 2;
+      const bob = Math.sin(now() / 250 + c.x * 3 + c.y) * 2;
+      const baseY = sy(c.y) + TILE * 0.85 + bob;
+      if (!drawUnitSprite("res_gold", cx, baseY, 0.55, 0)) {
+        ctx.fillStyle = "#ffd24a";
+        ctx.beginPath(); ctx.arc(cx, baseY - TILE * 0.18, TILE * 0.14, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = "#9a7a1a"; ctx.lineWidth = 1.5; ctx.stroke();
+      }
+      // sparkle so piles read as loot, not scenery
+      if (((now() / 400) | 0) % 3 === (c.x + c.y) % 3) {
+        ctx.fillStyle = "rgba(255,240,180,0.9)";
+        ctx.fillRect(cx + TILE * 0.14, baseY - TILE * 0.42, 2, 2);
+      }
+    }
+  }
+
   function tryMove(dir) {
     if (busy || over || drawing) return;
     facing = dir;
@@ -876,6 +926,7 @@
       updateTarget(); return;
     }
     P.x = nx; P.y = ny;
+    collectCoinsAt(nx, ny);
     if (e && !e.blocking) {
       if (e.type === "portal" && e.state !== "locked") travel(e);
       else if (e.type === "powerup") collect(e);
@@ -889,6 +940,7 @@
   function travel(portal) {
     P.area = portal.target_area;
     A = areas[P.area];
+    coins = [];                   // uncollected ground gold stays behind
     transitions += 1;             // drives respawn cadence (rpg_plan.md §2.3)
     applyConditionalSpawns(P.area);
     respawnEnemies(P.area);
@@ -1069,6 +1121,7 @@
              gold: P.gold, recent_runes: recentRunes.slice(), evolved: P.evolved,
              spell_power: P.spell_power || 0, crit: P.crit || 0, area: P.area,
              weapon_tiers: Object.assign({}, P.weapon_tiers || {}), trinket: P.trinket || null,
+             weapon_kills: Object.assign({}, P.weapon_kills || {}),
              items: Object.assign({}, P.items || {}), quests: Object.assign({}, P.quests || {}) };
   }
   function targetCtx(t) {
@@ -1138,12 +1191,13 @@
     if (s.player_hp_delta) P.hp = clamp(P.hp + s.player_hp_delta, 0, P.max_hp);
 
     let defeated = false;
+    let lastDefeated = null;   // kill loot in this batch scatters at the corpse
     (res.world_actions || []).forEach((a) => {
       const e = a.target_id ? byId(a.target_id) : null;
       switch (a.type) {
         case "set_entity_hp": if (e) e.hp = a.hp; break;
         case "defeat_entity": if (e) { e.state = "defeated"; e.blocking = false;
-          P.score += (e.type === "boss" ? 200 : 50); defeated = true;
+          P.score += (e.type === "boss" ? 200 : 50); defeated = true; lastDefeated = e;
           onEnemyDefeated(e);
           toast("<b>" + e.name + "</b> is defeated!"); } break;
         case "set_entity_state": if (e) e.state = a.state; break;
@@ -1160,8 +1214,23 @@
           P.quests[a.quest] = a.state || "active";
           if (a.log) addUnique(P.quest_log, a.log);
           break;
-        case "add_gold": P.gold = Math.max(0, (P.gold || 0) + (a.amount || 0)); break;
-        case "add_xp": applyProgressGain(a.amount || 0); break;
+        case "add_gold":
+          if (a.amount > 0 && lastDefeated) {
+            spawnCoins(lastDefeated.x, lastDefeated.y, a.amount);  // loot hits the floor
+          } else {
+            P.gold = Math.max(0, (P.gold || 0) + (a.amount || 0));
+            if (a.amount > 0) {
+              const gc = target ? tcOf(target) : pcOf();
+              addNum("+" + a.amount + "g", "#ffd24a", gc[0], gc[1] - 0.7, 250);
+            }
+          }
+          break;
+        case "add_xp": {
+          const xc = target ? tcOf(target) : pcOf();
+          if (a.amount > 0) addNum("+" + a.amount + " XP", "#6df5a0", xc[0], xc[1] - 1.0, 450);
+          applyProgressGain(a.amount || 0);
+          break;
+        }
         case "heal_player": P.hp = clamp(P.hp + a.amount, 0, P.max_hp); break;
         case "add_courage": P.courage = clamp(P.courage + a.amount, 0, P.max_courage); break;
         case "change_npc_trust":
@@ -1194,7 +1263,11 @@
           });
           break;
         case "set_progress":
-          if (a.level > P.level) { /* level shown by level_up */ }
+          if (a.gained > 0) {
+            const pc2 = target ? tcOf(target) : pcOf();
+            addNum("+" + a.gained + " XP", "#6df5a0", pc2[0], pc2[1] - 1.0, 450);
+            xpFlashUntil = now() + 900;
+          }
           P.level = a.level; P.xp = a.xp; P.xp_to_next = a.xp_to_next;
           break;
         case "level_up":
@@ -1217,6 +1290,10 @@
           break;
         case "add_trinket": gainTrinket(a.trinket); break;
         case "reforge_weapon": applyReforge(a); break;
+        case "set_weapon_kills":
+          P.weapon_kills = P.weapon_kills || {};
+          P.weapon_kills[a.weapon] = Math.max(P.weapon_kills[a.weapon] || 0, a.count || 0);
+          break;
         case "knockback_entity": if (e) knockbackEntity(e); break;
         case "evolve_player": applyEvolvePlayer(a); break;
         case "apply_status":
@@ -1307,6 +1384,11 @@
     if (r.unlock_four_runes) P.four_rune_unlocked = true;
     if (r.evolve_tier && typeof evolveToTier === "function") evolveToTier(r.evolve_tier);
     if (r.rune_mastery_choice) grantMasteryChoice();
+    // Level-up fanfare: holy burst + star shower on the hero, power sting, shake.
+    addAnim("holy", P.x + 0.5, P.y - 0.2, 1.6, 0);
+    addAnim("star", P.x + 0.5, P.y - 0.6, 1.5, 250);
+    playSfx("power", 2);
+    shakeAmt = Math.max(shakeAmt, 0.3);
     showBanner("⬆ LEVEL " + (r.level || P.level) + "<br><span style='font-size:11px'>" + (r.note || "") + "</span>");
     // A new rune unlocks each level — surface it and ungrey the palette.
     const newRune = RUNE_UNLOCK_ORDER.find((k) => runeUnlockLevel(k) === P.level);
@@ -1320,6 +1402,7 @@
 
   function applyProgressGain(amount) {
     if (!amount) return;
+    xpFlashUntil = now() + 900;   // brief XP-bar pulse so gains read on the HUD
     P.xp += amount;
     while (P.level < MAX_LEVEL && P.xp_to_next > 0 && P.xp >= P.xp_to_next) {
       P.xp -= P.xp_to_next;
@@ -1412,6 +1495,7 @@
           e.state = "defeated"; e.blocking = false; P.score += 50;
           onEnemyDefeated(e);
           toast("🔥 <b>" + e.name + "</b> succumbs to its wounds!");
+          claimDefeatLoot(e);   // burn kills pay out like cast kills
         }
       }
       for (const k of Object.keys(e.fx)) { e.fx[k] -= 1; if (e.fx[k] <= 0) delete e.fx[k]; }
@@ -1423,6 +1507,49 @@
       }
       for (const k of Object.keys(P.fx)) { P.fx[k] -= 1; if (P.fx[k] <= 0) delete P.fx[k]; }
     }
+  }
+
+  // Kills that resolve outside a cast (burn ticks) fetch their server-rolled
+  // loot bundle from /rg/defeat, then apply it at the corpse.
+  async function claimDefeatLoot(corpse) {
+    let acts;
+    try {
+      const d = await api("/rg/defeat", { player: playerCtx(), target: targetCtx(corpse) });
+      acts = d.world_actions || [];
+    } catch (err) { return; }   // request failed: the kill quietly yields nothing
+    (acts || []).forEach((a) => {
+      switch (a.type) {
+        case "add_gold":
+          if (a.amount > 0) spawnCoins(corpse.x, corpse.y, a.amount);
+          else P.gold = Math.max(0, (P.gold || 0) + (a.amount || 0));
+          break;
+        case "add_item":
+          addItem(a.item, a.qty == null ? 1 : a.qty);
+          if (a.qty !== 0 && (a.qty == null || a.qty > 0)) toast("🎒 +" + (a.qty || 1) + " <b>" + itemLabel(a.item) + "</b>.");
+          break;
+        case "add_trinket": gainTrinket(a.trinket); break;
+        case "set_weapon_kills":
+          P.weapon_kills = P.weapon_kills || {};
+          P.weapon_kills[a.weapon] = Math.max(P.weapon_kills[a.weapon] || 0, a.count || 0);
+          break;
+        case "reforge_weapon": applyReforge(a); break;
+        case "set_progress":
+          if (a.gained > 0) {
+            addNum("+" + a.gained + " XP", "#6df5a0", corpse.x + 0.5, corpse.y - 1.0, 300);
+            xpFlashUntil = now() + 900;
+          }
+          P.level = Math.max(P.level, a.level); P.xp = a.xp; P.xp_to_next = a.xp_to_next;
+          break;
+        case "level_up": applyLevelReward(a); break;
+        case "set_story_flag": addFlag(a.flag); break;
+        case "add_journal_entry":
+          addUnique(P.journal, a.text); addUnique(P.discoveries, a.text);
+          rememberStoryEvent("journal", a.text);
+          break;
+        default: break;
+      }
+    });
+    requestSave();
   }
 
   function retaliate(enemy, statuses) {
@@ -1467,6 +1594,22 @@
     dialogueOpen = false; $("rg-dialogue").className = "rg-dialogue";
   }
 
+  // ---- story card: full-screen panel for the campaign's major beats ----
+  let storyCardOpen = false;
+  function openStoryCard(d, ent) {
+    storyCardOpen = true;
+    $("rg-story").className = "rg-story open";
+    $("rg-story-portrait").textContent = ent ? dialoguePortrait(ent) : "📜";
+    $("rg-story-name").textContent = d.speaker || (ent ? ent.name : "The Broken Calendar");
+    // NPC beats lead with their voice; narrator beats lead with the story line.
+    $("rg-story-text").textContent = (ent && d.npc_line) || d.story_toast || d.npc_line || "…";
+    $("rg-story-sub").textContent =
+      (ent && d.npc_line && d.story_toast) ? d.story_toast : (d.journal_entry || "");
+  }
+  function closeStoryCard() {
+    storyCardOpen = false; $("rg-story").className = "rg-story";
+  }
+
   function applyDialoguePayload(npc, d) {
     if (!d) return;
     if (d.journal_entry) {
@@ -1487,6 +1630,8 @@
   async function openDialogue(npc, runes) {
     if (over || !npc) return;
     showDialogue(npc, "<i>…</i>", true);
+    P.npc_meets = P.npc_meets || {};
+    P.npc_meets[npc.id] = (P.npc_meets[npc.id] || 0) + 1;
     try {
       const d = await api("/rg/dialogue", {
         area: A.name, scene: "talk",
@@ -1494,6 +1639,7 @@
         player: { goblin_class: P.goblin_class, level: P.level, hp: P.hp,
           courage: P.courage, weapon: P.weapon, inventory: P.inventory.slice(),
           story_flags: P.story_flags.slice(), npc_trust: P.trust[npc.id] || 0,
+          meet_count: P.npc_meets[npc.id],
           recent_story_events: (P.recent_story_events || []).slice(-3) },
         action: { mode: runes && runes.length ? "cast" : "talk", runes: runes || [] },
       });
@@ -1522,8 +1668,13 @@
           if (a.message) { addUnique(P.journal, a.message); rememberStoryEvent("journal", a.message); }
           break;
         case "add_inventory": addInventory(a.item); break;
-        case "add_gold": P.gold = Math.max(0, (P.gold || 0) + (a.amount || 0)); break;
-        case "add_xp": applyProgressGain(a.amount || 0); leveled = true; break;
+        case "add_gold":
+          P.gold = Math.max(0, (P.gold || 0) + (a.amount || 0));
+          if (a.amount > 0) addNum("+" + a.amount + "g", "#ffd24a", P.x + 0.5, P.y - 0.5, 150);
+          break;
+        case "add_xp":
+          if (a.amount > 0) addNum("+" + a.amount + " XP", "#6df5a0", P.x + 0.5, P.y - 0.8, 0);
+          applyProgressGain(a.amount || 0); leveled = true; break;
         case "heal_player": P.hp = clamp(P.hp + (a.amount || 0), 0, P.max_hp); break;
         case "add_courage": P.courage = clamp(P.courage + (a.amount || 0), 0, P.max_courage); break;
         case "set_story_flag": addFlag(a.flag); break;
@@ -1651,12 +1802,16 @@
           recent_story_events: (P.recent_story_events || []).slice(-3) },
       });
       if (!d || d.skip) return;
-      if (d.story_toast) { toast(d.story_toast); rememberStoryEvent("story", d.story_toast); }
-      if (d.npc_line && ent) showBark(ent, d.npc_line);
+      if (d.story_toast) rememberStoryEvent("story", d.story_toast);
       if (d.journal_entry) {
         addUnique(P.journal, d.journal_entry); addUnique(P.discoveries, d.journal_entry);
         rememberStoryEvent("journal", d.journal_entry);
       }
+      // Major beats take over the screen as a story card; the rest stay in
+      // the ambient toast/bark channel.
+      if (b.major) { openStoryCard(d, ent); return; }
+      if (d.story_toast) toast(d.story_toast);
+      if (d.npc_line && ent) showBark(ent, d.npc_line);
     } catch (e) { console.warn("[story_beat] " + b.id + " failed:", e); }
   }
   function checkAreaBeats() {
@@ -2397,11 +2552,17 @@
     ctx.fillStyle = "#ffd24a"; ctx.fillText("CR " + P.courage + "/" + P.max_courage, hx, cy); hx += 120;
     ctx.fillStyle = (P.evolved ? "#ffd24a" : "#cdbfff");
     ctx.fillText("LV " + P.level + (P.evolved ? " 👑" : ""), hx, cy); hx += 95;
-    // XP bar
+    // XP bar (pulses bright for a moment whenever XP lands)
     const xpw = 90, xb = hx, frac = P.xp_to_next > 0 ? clamp(P.xp / P.xp_to_next, 0, 1) : 1;
+    const xpPulse = now() < xpFlashUntil ? 0.5 + 0.5 * Math.abs(Math.sin(now() / 90)) : 0;
     ctx.fillStyle = "#241a36"; ctx.fillRect(xb, cy - 5, xpw, 10);
-    ctx.fillStyle = "#6df5a0"; ctx.fillRect(xb, cy - 5, xpw * frac, 10);
+    ctx.fillStyle = xpPulse ? "#b6ffd2" : "#6df5a0"; ctx.fillRect(xb, cy - 5, xpw * frac, 10);
     ctx.strokeStyle = "#34254d"; ctx.strokeRect(xb, cy - 5, xpw, 10);
+    if (xpPulse) {
+      ctx.save(); ctx.globalAlpha = xpPulse * 0.8;
+      ctx.strokeStyle = "#6df5a0"; ctx.lineWidth = 2;
+      ctx.strokeRect(xb - 2, cy - 7, xpw + 4, 14); ctx.restore();
+    }
     hx += xpw + 16;
     const bagCount = Object.values(P.items || {}).reduce((a, b) => a + b, 0);
     ctx.fillStyle = "#9c8bc4"; ctx.fillText("BAG " + bagCount, hx, cy); hx += 95;
@@ -2559,6 +2720,7 @@
     drawTiles();
     drawCircles();
     drawTelegraphs();
+    drawCoins();
     // depth sort: lower y drawn first, player interleaved by row
     const ents = liveEntities().slice().sort((a, b) => a.y - b.y);
     let playerDrawn = false;
@@ -2762,6 +2924,10 @@
       ev.preventDefault(); return;
     }
     if (selecting) { return; }
+    if (storyCardOpen) {
+      if (k === " " || k === "enter" || k === "escape") { closeStoryCard(); ev.preventDefault(); }
+      return;
+    }
     if (drawing) { if (k === "escape") closeDraw(); return; }
     if (dialogueOpen) { if (k === "escape" || k === " " || k === "enter") { closeDialogue(); ev.preventDefault(); } return; }
     if (k === "j") { toggleJournal(); ev.preventDefault(); return; }
@@ -3117,6 +3283,7 @@
     if (goto) goto.onchange = () => { const id = goto.value; goto.value = ""; if (id) warpToArea(id); canvas.focus(); };
     const acts = $("rg-admin-actions");
     if (acts) acts.onchange = () => { const v = acts.value; acts.value = ""; if (v) adminAction(v); canvas.focus(); };
+    $("rg-story").addEventListener("click", closeStoryCard);
     canvas.addEventListener("click", (ev) => {
       gesture(); canvas.focus();
       // Clicking the HUD objective icons opens the Journal (full objective + quests).

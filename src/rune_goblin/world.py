@@ -590,7 +590,7 @@ def _build_areas() -> dict[str, Area]:
         rows=_field(28, 22),
         spawn=(14, 18),
         entities=[
-            _mob("calendar_beast", "Calendar Beast", 14, 4, hp=24, boss=True,
+            _mob("calendar_beast", "Calendar Beast", 14, 4, hp=72, boss=True,
                  weakness=["spiral", "eye"], resistance=["flame"],
                  sprite_key="adept_necromancer", mood="overbooked and furious"),
             Entity("portal_home_a", "portal", "Arena Exit", 2, 20, sprite="🚪",
@@ -1385,6 +1385,58 @@ def _flag_actions(flags) -> list[dict]:
     return [{"type": "set_story_flag", "flag": f} for f in story.filter_flags(flags)]
 
 
+def _weapon_temper_actions(player: dict) -> list[dict]:
+    """Count a kill on the equipped weapon and grant the next reforge tier for
+    free when a use milestone lands (10/25/50 kills)."""
+    weapon_id = str(player.get("weapon") or "")
+    if not weapon_id:
+        return []
+    kills = int((player.get("weapon_kills") or {}).get(weapon_id, 0)) + 1
+    acts: list[dict] = [{"type": "set_weapon_kills", "weapon": weapon_id, "count": kills}]
+    earned = story.weapon_tier_for_kills(kills)
+    cur_tier = int((player.get("weapon_tiers") or {}).get(weapon_id, 0))
+    if cur_tier < min(earned, story.MAX_REFORGE):
+        next_tier = cur_tier + 1
+        spec = story.reforge_spec(next_tier) or {}
+        if int(player.get("level", 1) or 1) >= int(spec.get("min_level", 1)):
+            label = story.weapon_or_default(weapon_id).label
+            acts.append({
+                "type": "reforge_weapon", "weapon": weapon_id, "tier": next_tier,
+                "message": (f"{kills} victories temper the {label} — "
+                            f"it reforges itself to +{next_tier}."),
+            })
+    return acts
+
+
+def _defeat_loot_actions(player: dict, target: dict, rng: random.Random) -> list[dict]:
+    """Kill XP, tier-aware drops, weapon tempering, and defeat flags for a
+    felled regular enemy. Shared by the cast path and /rg/defeat (burn ticks)."""
+    if int(target.get("xp") or 0) > 0:
+        # Authored per-entity override (e.g. the calm starter hub pests).
+        kill_xp = int(target["xp"])
+        if target.get("respawned"):
+            kill_xp = max(1, kill_xp // 2)
+    else:
+        kill_xp = story.xp_for_kill(
+            target.get("tier"), int(target.get("dr", 1) or 1),
+            respawned=bool(target.get("respawned")))
+    actions = _xp_actions(player, kill_xp)
+    actions += _roll_drops(target, rng, area=str(player.get("area", "")))
+    actions += _weapon_temper_actions(player)
+    if "mycologist" in str(target.get("id", "")):
+        actions += _flag_actions(["mycologist_defeated"])
+    return actions
+
+
+def resolve_enemy_defeat(player: dict, target: dict, seed: int | None = None) -> dict:
+    """Loot bundle for an enemy that died outside the cast path (burn ticks).
+    Bosses never die this way — the client clamps boss burn damage at 1 HP."""
+    if str(target.get("type") or "enemy") == "boss":
+        return {"world_actions": []}
+    rng = random.Random(seed)
+    return {"world_actions": _defeat_loot_actions(player, target, rng)}
+
+
 # NPC id + rune-intent -> durable story flag (story_plan.md trust flags).
 _NPC_FLAG: dict[tuple[str, str], str] = {
     ("tourist", "kind"): "tourist_helped",
@@ -1945,23 +1997,12 @@ def resolve_world_cast(
         if new_hp <= 0:
             actions.append({"type": "defeat_entity", "target_id": tid})
             if ttype == "boss":
-                kill_xp = story.XP_DEFEAT_BOSS_PHASE
-            elif int(target.get("xp") or 0) > 0:
-                # Authored per-entity override (e.g. the calm starter hub pests).
-                kill_xp = int(target["xp"])
-                if target.get("respawned"):
-                    kill_xp = max(1, kill_xp // 2)
+                actions += _xp_actions(player, story.XP_DEFEAT_BOSS_PHASE)
+                actions += _weapon_temper_actions(player)
             else:
-                kill_xp = story.xp_for_kill(
-                    target.get("tier"), int(target.get("dr", 1) or 1),
-                    respawned=bool(target.get("respawned")))
-            actions += _xp_actions(player, kill_xp)
-            # Tier-aware loot: gold + materials + a chance of potions/trinkets,
-            # so kills feed the economy (rpg_plan.md §3).
-            if ttype == "enemy":
-                actions += _roll_drops(target, rng, area=str(player.get("area", "")))
-            if tid == "mycologist" or "mycologist" in str(tid):
-                actions += _flag_actions(["mycologist_defeated"])
+                # XP + drops + weapon tempering + defeat flags (shared with
+                # /rg/defeat so burn-tick kills pay out identically).
+                actions += _defeat_loot_actions(player, target, rng)
             if ttype == "boss":
                 ending = story.compute_ending(
                     flags, final_runes=runes, weapon=player.get("weapon"),

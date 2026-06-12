@@ -77,10 +77,10 @@ def test_tier_levels_track_dr_and_tier():
     assert world._tier_level("minion", 1) == 1   # floored at 1
     assert world._tier_level("standard", 2) == 4
     assert world._tier_level("elite", 5) == 12
-    assert world._tier_level("boss", 6) == 15
+    assert world._tier_level("boss", 6) == 20  # final boss sits at the level cap
     # the arena boss carries the level the client renders above its head
     boss = next(e for e in world.AREAS["arena"].entities if e.type == "boss")
-    assert boss.level == 15
+    assert boss.level == 20
 
 
 def test_reforge_clamps_and_gates():

@@ -588,3 +588,63 @@ def test_boss_killing_blow_requires_drawn_spell():
 
     inked = resolve_world_cast(["leaf", "spiral"], _player(), boss, seed=31, drawn=True)
     assert [a for a in inked["world_actions"] if a["type"] == "win_game"]
+
+
+# ---- weapon use-leveling (kills temper the equipped weapon) ----
+
+def test_kill_counts_equipped_weapon():
+    tgt = {"id": "e", "type": "enemy", "name": "x", "hp": 1, "max_hp": 5,
+           "weakness": ["flame"], "resistance": []}
+    res = resolve_world_cast(["flame"], _player(weapon_kills={"clerk_wand": 3}),
+                             tgt, seed=5)
+    counts = [a for a in res["world_actions"] if a["type"] == "set_weapon_kills"]
+    assert counts and counts[0]["weapon"] == "clerk_wand" and counts[0]["count"] == 4
+    # no milestone crossed -> no free reforge
+    assert not [a for a in res["world_actions"] if a["type"] == "reforge_weapon"]
+
+
+def test_kill_milestone_grants_free_reforge():
+    tgt = {"id": "e", "type": "enemy", "name": "x", "hp": 1, "max_hp": 5,
+           "weakness": ["flame"], "resistance": []}
+    res = resolve_world_cast(["flame"], _player(weapon_kills={"clerk_wand": 9}),
+                             tgt, seed=6)
+    forges = [a for a in res["world_actions"] if a["type"] == "reforge_weapon"]
+    assert forges and forges[0]["weapon"] == "clerk_wand" and forges[0]["tier"] == 1
+
+
+def test_kill_milestone_respects_tier3_level_gate():
+    tgt = {"id": "e", "type": "enemy", "name": "x", "hp": 1, "max_hp": 5,
+           "weakness": ["flame"], "resistance": []}
+    low = resolve_world_cast(
+        ["flame"], _player(level=5, weapon_kills={"clerk_wand": 49},
+                           weapon_tiers={"clerk_wand": 2}), tgt, seed=7)
+    assert not [a for a in low["world_actions"] if a["type"] == "reforge_weapon"]
+    high = resolve_world_cast(
+        ["flame"], _player(level=12, weapon_kills={"clerk_wand": 49},
+                           weapon_tiers={"clerk_wand": 2}), tgt, seed=8)
+    forges = [a for a in high["world_actions"] if a["type"] == "reforge_weapon"]
+    assert forges and forges[0]["tier"] == 3
+
+
+def test_weapon_tier_for_kills_curve():
+    from rune_goblin import story
+    assert [story.weapon_tier_for_kills(n) for n in (0, 9, 10, 24, 25, 49, 50, 99)] == \
+        [0, 0, 1, 1, 2, 2, 3, 3]
+
+
+def test_resolve_enemy_defeat_pays_out_like_a_cast_kill():
+    from rune_goblin.world import resolve_enemy_defeat
+    tgt = {"id": "e", "type": "enemy", "name": "x", "hp": 0, "max_hp": 12,
+           "tier": "standard", "dr": 2}
+    res = resolve_enemy_defeat(_player(weapon_kills={"clerk_wand": 9}), tgt, seed=1)
+    types = [a["type"] for a in res["world_actions"]]
+    assert "set_progress" in types          # kill XP
+    assert "add_gold" in types              # drops rolled
+    assert "set_weapon_kills" in types      # weapon tempering counts
+    assert "reforge_weapon" in types        # 10th kill milestone
+
+
+def test_resolve_enemy_defeat_ignores_bosses():
+    from rune_goblin.world import resolve_enemy_defeat
+    res = resolve_enemy_defeat(_player(), {"id": "b", "type": "boss"}, seed=1)
+    assert res["world_actions"] == []

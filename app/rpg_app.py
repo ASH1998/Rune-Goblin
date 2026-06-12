@@ -46,7 +46,7 @@ PLAY_PAGE = """<!doctype html>
   <title>Rune Goblin RPG</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/rg/static/rpg.css?v=61">
+  <link rel="stylesheet" href="/rg/static/rpg.css?v=64">
 </head>
 <body>
   <div id="rg-root">
@@ -67,6 +67,16 @@ PLAY_PAGE = """<!doctype html>
           <div class="rg-dialogue-name" id="rg-dialogue-name">NPC</div>
           <div class="rg-dialogue-text" id="rg-dialogue-text">…</div>
           <div class="rg-dialogue-tip">Space/Esc to close · cast a rune at them to react</div>
+        </div>
+      </div>
+
+      <div class="rg-story" id="rg-story">
+        <div class="rg-story-card">
+          <div class="rg-story-portrait" id="rg-story-portrait">📜</div>
+          <div class="rg-story-name" id="rg-story-name">The Broken Calendar</div>
+          <div class="rg-story-text" id="rg-story-text">…</div>
+          <div class="rg-story-sub" id="rg-story-sub"></div>
+          <div class="rg-story-tip">Space ▸ continue</div>
         </div>
       </div>
 
@@ -121,7 +131,7 @@ PLAY_PAGE = """<!doctype html>
       <div class="rg-hint">WASD / Arrows move · 1–9 pick runes · Space cast · E draw · C clear · M minimap · step into portals to travel</div>
     </div>
   </div>
-  <script src="/rg/static/rpg.js?v=61"></script>
+  <script src="/rg/static/rpg.js?v=64"></script>
 </body>
 </html>
 """

@@ -283,3 +283,14 @@ def test_shop_buy_honors_quote_only_inside_band(monkeypatch):
     buy = resolve_shop(player, "market_merchant", "mirror_shield", quoted_price=1)
     paid = next(a["amount"] for a in buy["world_actions"] if a["type"] == "add_gold")
     assert paid == -anchor
+
+
+def test_client_manifest_marks_major_beats():
+    entries = {e["id"]: e for e in beats.client_manifest()}
+    assert entries["opening_bell"]["major"] is True
+    assert entries["arena_enter"]["major"] is True
+    assert entries["gate_allies"]["major"] is True
+    assert entries["meet_collector"]["major"] is True
+    # ambient mood beats stay in the toast channel
+    assert entries["caverns_enter"]["major"] is False
+    assert entries["meet_tourist"]["major"] is False

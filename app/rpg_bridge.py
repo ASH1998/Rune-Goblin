@@ -49,6 +49,12 @@ class QuestRequest(BaseModel):
     player: dict = Field(default_factory=dict)
 
 
+class DefeatRequest(BaseModel):
+    player: dict = Field(default_factory=dict)
+    target: dict = Field(default_factory=dict)
+    seed: int | None = None
+
+
 class BeatRequest(BaseModel):
     beat_id: str = ""
     area: str = ""
@@ -147,6 +153,13 @@ def register_routes(app: FastAPI) -> None:
     @app.get("/rg/world")
     def world(seed: int | None = None) -> dict:
         return build_world(seed=seed)
+
+    @app.post("/rg/defeat")
+    def defeat(req: DefeatRequest) -> dict:
+        """Loot bundle for kills that resolve outside a cast (burn ticks)."""
+        from rune_goblin.world import resolve_enemy_defeat
+
+        return resolve_enemy_defeat(req.player, req.target, seed=req.seed)
 
     @app.post("/rg/cast")
     def cast(req: CastRequest) -> dict:
