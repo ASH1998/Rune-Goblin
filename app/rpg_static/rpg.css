@@ -56,6 +56,29 @@ html, body {
 .rg-btn:active { transform:translatey(1px); }
 .rg-btn.primary { background:var(--accent); color:#160d24; font-weight:bold; }
 .rg-btn.ghost { background:transparent; }
+#rg-draw-open {
+  border:2px solid transparent; padding:7px 12px; color:#f8efff;
+  background:
+    linear-gradient(#2a1f3d, #2a1f3d) padding-box,
+    linear-gradient(90deg, #ff4d6d, #ffd24a, #6df5a0, #48c9ff, #b07cff, #ff4d6d) border-box;
+  background-size:100% 100%, 320% 100%;
+  box-shadow:0 0 0 1px rgba(255,255,255,0.08) inset, 0 0 14px rgba(176,124,255,0.5);
+  animation:rg-rainbow-border 2.4s linear infinite;
+}
+#rg-draw-open:hover {
+  background:
+    linear-gradient(#3a2c54, #3a2c54) padding-box,
+    linear-gradient(90deg, #ff4d6d, #ffd24a, #6df5a0, #48c9ff, #b07cff, #ff4d6d) border-box;
+  background-size:100% 100%, 320% 100%;
+  box-shadow:0 0 0 1px rgba(255,255,255,0.12) inset, 0 0 18px rgba(72,201,255,0.65);
+}
+@keyframes rg-rainbow-border {
+  from { background-position:0 0, 0% 50%; }
+  to { background-position:0 0, 320% 50%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #rg-draw-open { animation:none; }
+}
 .rg-admin-goto { background:#173b2a; color:var(--green); border-color:#2f6f4d; max-width:200px; }
 .rg-admin-goto:hover { background:#1d4d37; }
 .rg-sel { color:var(--accent); font-size:13px; min-width:110px; }

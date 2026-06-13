@@ -33,6 +33,7 @@
   let enemyCooldown = {};
   let xpFlashUntil = 0;       // HUD XP-bar pulse timer (set on every XP gain)
   let masteryChoiceOpen = false;
+  let pendingMasteryChoice = false; // mastery picker deferred until an open dialogue closes
   let selecting = false;        // title-screen character select active
   let chosenClass = null;       // selected goblin class id
   let journalOpen = false;
@@ -1414,6 +1415,12 @@
   }
 
   function grantMasteryChoice() {
+    // If a conversation is mid-flow (e.g. a quest turn-in that just paid XP and
+    // bumped the level), defer the picker until that dialogue is dismissed.
+    // Opening it now would set masteryChoiceOpen, then the caller's own
+    // showDialogue() would clobber the mastery buttons while the flag stays
+    // true — permanently blocking closeDialogue() and soft-locking the game.
+    if (dialogueOpen && !masteryChoiceOpen) { pendingMasteryChoice = true; return; }
     const cls = CLASSES.find((c) => c.id === P.goblin_class) || {};
     const counts = Object.entries(P.rune_mastery || {}).sort((a, b) => b[1] - a[1]).map((x) => x[0]);
     const pool = counts.concat(selected || [], cls.affinity || [], ["closed_circle", "eye", "wave", "key", "spiral"]);
@@ -1592,6 +1599,9 @@
   function closeDialogue() {
     if (masteryChoiceOpen) return;
     dialogueOpen = false; $("rg-dialogue").className = "rg-dialogue";
+    // A level-up that landed mid-conversation parked its mastery picker here —
+    // now that the dialogue is dismissed, present it.
+    if (pendingMasteryChoice) { pendingMasteryChoice = false; grantMasteryChoice(); }
   }
 
   // ---- story card: full-screen panel for the campaign's major beats ----
@@ -2567,13 +2577,30 @@
     const bagCount = Object.values(P.items || {}).reduce((a, b) => a + b, 0);
     ctx.fillStyle = "#9c8bc4"; ctx.fillText("BAG " + bagCount, hx, cy); hx += 95;
     ctx.fillStyle = "#ffd24a"; ctx.fillText("G " + (P.gold || 0), hx, cy); hx += 80;
-    if (P.spell_power) { ctx.fillStyle = "#ff9d5c"; ctx.fillText("SP " + P.spell_power, hx, cy); hx += 70; }
-    if (P.crit) { ctx.fillStyle = "#ffe27a"; ctx.fillText("✷" + P.crit + "%", hx, cy); hx += 70; }
-    ctx.textAlign = "right";
+    // Right-aligned area title (+ optional admin badge). Compute its left edge first
+    // so the optional SP/crit stats below can be gated on the space that's left.
     const areaLabel = A.name.toUpperCase();
+    const admin = !!(W && W.admin);
+    const rightBlockLeft = canvas.width - 14 - ctx.measureText(areaLabel).width
+      - (admin ? ctx.measureText("🔓 ADMIN").width + 18 : 0);
+    // Optional stats: only draw each if it fits before the area title (with padding).
+    const GAP = 16;
+    if (P.spell_power) {
+      const t = "SP " + P.spell_power;
+      if (hx + ctx.measureText(t).width <= rightBlockLeft - GAP) {
+        ctx.fillStyle = "#ff9d5c"; ctx.fillText(t, hx, cy); hx += 70;
+      }
+    }
+    if (P.crit) {
+      const t = "✷" + P.crit + "%";
+      if (hx + ctx.measureText(t).width <= rightBlockLeft - GAP) {
+        ctx.fillStyle = "#ffe27a"; ctx.fillText(t, hx, cy); hx += 70;
+      }
+    }
+    ctx.textAlign = "right";
     ctx.fillStyle = "#b07cff";
     ctx.fillText(areaLabel, canvas.width - 14, cy);
-    if (W && W.admin) {
+    if (admin) {
       ctx.fillStyle = "#6df5a0";
       ctx.fillText("🔓 ADMIN", canvas.width - 14 - ctx.measureText(areaLabel).width - 18, cy);
     }

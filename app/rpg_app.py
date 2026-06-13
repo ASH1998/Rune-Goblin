@@ -131,7 +131,7 @@ PLAY_PAGE = """<!doctype html>
       <div class="rg-hint">WASD / Arrows move · 1–9 pick runes · Space cast · E draw · C clear · M minimap · step into portals to travel</div>
     </div>
   </div>
-  <script src="/rg/static/rpg.js?v=64"></script>
+  <script src="/rg/static/rpg.js?v=66"></script>
 </body>
 </html>
 """
