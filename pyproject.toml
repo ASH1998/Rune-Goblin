@@ -1,6 +1,6 @@
 [project]
 name = "rune-goblin"
-version = "0.1.0"
+version = "1.0.0"
 description = "A fine-tuned spell-language dungeon game powered by MiniCPM5-1B."
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
