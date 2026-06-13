@@ -43,6 +43,8 @@
   let lastEnding = null;        // {ending,title,text} from win_game action
   let lastCastMetadata = null;  // structured /rg/cast metadata for HUD/debug
   let CLASSES = [], WEAPONS = {}, ITEMS = {}, QUESTS_META = {};
+  const SKETCH_BG = "#efe1bd";
+  const drawTool = { ink: "#17120b", fill: "#ffe7a8", size: 7, line: "round", mode: "draw" };
   let STORY_BEATS = [];         // proactive beat triggers from /rg/world
   let barks = [];               // live speech bubbles: {eid, area, text, until}
   const CLASS_SPRITE = {        // in-game sprite per class (Goblin Pack #1 hero sheets)
@@ -2916,13 +2918,65 @@
   function hideReading() { const c = $("rg-reading"); if (c) c.classList.remove("open"); }
 
   // ---- drawing overlay ----
+  function setCustomizeOpen(open) {
+    const tools = $("rg-draw-tools");
+    const btn = $("rg-draw-customize");
+    if (!tools || !btn) return;
+    tools.classList.toggle("open", open);
+    btn.setAttribute("aria-expanded", open ? "true" : "false");
+    btn.textContent = open ? "Hide customization" : "Customize";
+  }
   function openDraw() {
     if (over) return;
     drawing = true; $("rg-draw").classList.add("open");
+    setCustomizeOpen(false);
     clearSketch();
   }
   function closeDraw() { drawing = false; $("rg-draw").classList.remove("open"); }
-  function clearSketch() { sctx.fillStyle = "#efe1bd"; sctx.fillRect(0, 0, sketch.width, sketch.height); }
+  function clearSketch() { sctx.fillStyle = SKETCH_BG; sctx.fillRect(0, 0, sketch.width, sketch.height); }
+  function setActiveTool(nodes, active) {
+    nodes.forEach((node) => node.classList.toggle("on", node === active));
+  }
+  function hexToRgb(hex) {
+    return hex.match(/\w\w/g).map((n) => parseInt(n, 16));
+  }
+  function floodFill(x, y) {
+    const w = sketch.width, h = sketch.height;
+    const sx = Math.max(0, Math.min(w - 1, Math.round(x)));
+    const sy = Math.max(0, Math.min(h - 1, Math.round(y)));
+    const img = sctx.getImageData(0, 0, w, h);
+    const data = img.data;
+    const start = (sy * w + sx) * 4;
+    const target = [data[start], data[start + 1], data[start + 2], data[start + 3]];
+    const fill = hexToRgb(drawTool.fill);
+    if (Math.abs(target[0] - fill[0]) + Math.abs(target[1] - fill[1]) + Math.abs(target[2] - fill[2]) < 12) return;
+    const seen = new Uint8Array(w * h);
+    const stack = [[sx, sy]];
+    const tolerance = 28;
+    while (stack.length) {
+      const p = stack.pop();
+      const px = p[0], py = p[1], pi = py * w + px, di = pi * 4;
+      if (seen[pi]) continue;
+      seen[pi] = 1;
+      const delta = Math.abs(data[di] - target[0]) + Math.abs(data[di + 1] - target[1]) +
+        Math.abs(data[di + 2] - target[2]) + Math.abs(data[di + 3] - target[3]);
+      if (delta > tolerance) continue;
+      data[di] = fill[0]; data[di + 1] = fill[1]; data[di + 2] = fill[2]; data[di + 3] = 255;
+      if (px > 0) stack.push([px - 1, py]);
+      if (px < w - 1) stack.push([px + 1, py]);
+      if (py > 0) stack.push([px, py - 1]);
+      if (py < h - 1) stack.push([px, py + 1]);
+    }
+    sctx.putImageData(img, 0, 0);
+  }
+  function applyLineStyle() {
+    sctx.strokeStyle = drawTool.ink;
+    sctx.lineWidth = drawTool.size;
+    sctx.lineJoin = drawTool.line === "square" ? "miter" : "round";
+    sctx.lineCap = drawTool.line === "square" ? "butt" : "round";
+    sctx.globalAlpha = drawTool.line === "soft" ? 0.58 : 1;
+    sctx.setLineDash(drawTool.line === "dot" ? [Math.max(1, drawTool.size * 0.12), drawTool.size * 1.8] : []);
+  }
   function setupSketch() {
     sketch = $("rg-sketch"); sctx = sketch.getContext("2d");
     clearSketch();
@@ -2930,16 +2984,59 @@
     const pos = (ev) => { const r = sketch.getBoundingClientRect();
       const t = ev.touches ? ev.touches[0] : ev;
       return [(t.clientX - r.left) * sketch.width / r.width, (t.clientY - r.top) * sketch.height / r.height]; };
-    const start = (ev) => { down = true; [lx, ly] = pos(ev); ev.preventDefault(); };
+    const start = (ev) => {
+      [lx, ly] = pos(ev);
+      if (drawTool.mode === "fill") {
+        floodFill(lx, ly);
+        ev.preventDefault();
+        return;
+      }
+      down = true;
+      ev.preventDefault();
+    };
     const move = (ev) => { if (!down) return; const [x, y] = pos(ev);
-      sctx.strokeStyle = "#17120b"; sctx.lineWidth = 7; sctx.lineCap = "round";
+      applyLineStyle();
       sctx.beginPath(); sctx.moveTo(lx, ly); sctx.lineTo(x, y); sctx.stroke();
+      sctx.globalAlpha = 1; sctx.setLineDash([]);
       lx = x; ly = y; ev.preventDefault(); };
     const end = () => { down = false; };
     sketch.addEventListener("mousedown", start); sketch.addEventListener("mousemove", move);
     window.addEventListener("mouseup", end);
     sketch.addEventListener("touchstart", start); sketch.addEventListener("touchmove", move);
     sketch.addEventListener("touchend", end);
+    const customize = $("rg-draw-customize");
+    if (customize) {
+      customize.onclick = () => {
+        const tools = $("rg-draw-tools");
+        setCustomizeOpen(!(tools && tools.classList.contains("open")));
+      };
+    }
+    const inkButtons = [...document.querySelectorAll("[data-rg-ink]")];
+    inkButtons.forEach((btn) => {
+      btn.onclick = () => {
+        drawTool.ink = btn.dataset.rgInk;
+        drawTool.mode = "draw";
+        setActiveTool(inkButtons, btn);
+      };
+    });
+    const fillButtons = [...document.querySelectorAll("[data-rg-fill]")];
+    fillButtons.forEach((btn) => {
+      btn.onclick = () => {
+        drawTool.fill = btn.dataset.rgFill;
+        drawTool.mode = "fill";
+        setActiveTool(fillButtons, btn);
+      };
+    });
+    const lineButtons = [...document.querySelectorAll("[data-rg-line]")];
+    lineButtons.forEach((btn) => {
+      btn.onclick = () => {
+        drawTool.line = btn.dataset.rgLine;
+        drawTool.mode = "draw";
+        setActiveTool(lineButtons, btn);
+      };
+    });
+    const size = $("rg-line-size");
+    if (size) size.oninput = () => { drawTool.size = Number(size.value) || 7; };
   }
 
   // ---- input ----

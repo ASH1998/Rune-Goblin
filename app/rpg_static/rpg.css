@@ -128,8 +128,39 @@ html, body {
 .rg-draw.open { display:flex; }
 .rg-draw h3 { font-family:"Press Start 2P",monospace; color:var(--accent); font-size:13px; margin:0; }
 #rg-sketch { background:#efe1bd; border:3px solid #8e6e37; border-radius:8px; cursor:crosshair; touch-action:none; }
+.rg-customize {
+  padding:6px 11px; font-size:12px;
+}
+.rg-draw-tools {
+  width:min(540px, calc(100vw - 28px)); display:none; grid-template-columns:1fr 1fr;
+  gap:7px; padding:8px; border:1px solid rgba(176,124,255,.35); border-radius:8px;
+  background:rgba(18,12,30,.78);
+}
+.rg-draw-tools.open { display:grid; }
+.rg-tool-group { display:flex; align-items:center; flex-wrap:wrap; gap:6px; min-width:0; }
+.rg-tool-group span {
+  flex:0 0 auto; color:var(--muted); font-size:10px; text-transform:uppercase; letter-spacing:.04em;
+}
+.rg-swatch,
+.rg-fill,
+.rg-line-style {
+  width:26px; height:26px; border:1px solid var(--border); border-radius:6px;
+  background:#2a1f3d; color:var(--ink); cursor:pointer; font-size:11px;
+  display:inline-flex; align-items:center; justify-content:center;
+}
+.rg-swatch,
+.rg-fill { background:var(--swatch); box-shadow:0 0 0 1px rgba(0,0,0,.35) inset; }
+.rg-swatch.on,
+.rg-fill.on,
+.rg-line-style.on {
+  border-color:var(--accent); box-shadow:0 0 0 2px var(--accent), 0 0 0 1px rgba(0,0,0,.35) inset;
+}
+.rg-size-tool input { flex:1 1 150px; min-width:76px; accent-color:var(--accent); }
 .rg-draw .row { display:flex; gap:8px; }
 .rg-draw .tip { color:var(--muted); font-size:11px; max-width:340px; text-align:center; }
+@media (max-width: 520px) {
+  .rg-draw-tools { grid-template-columns:1fr; }
+}
 
 /* end screen */
 .rg-end {
