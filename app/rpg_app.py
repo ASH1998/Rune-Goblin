@@ -46,7 +46,7 @@ PLAY_PAGE = """<!doctype html>
   <title>Rune Goblin RPG</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/rg/static/rpg.css?v=64">
+  <link rel="stylesheet" href="/rg/static/rpg.css?v=66">
 </head>
 <body>
   <div id="rg-root">
@@ -95,6 +95,41 @@ PLAY_PAGE = """<!doctype html>
       <div class="rg-draw" id="rg-draw">
         <h3>Draw your spell</h3>
         <canvas id="rg-sketch" width="340" height="340"></canvas>
+        <button class="rg-btn rg-customize" id="rg-draw-customize" type="button" aria-expanded="false" aria-controls="rg-draw-tools">Customize</button>
+        <div class="rg-draw-tools" id="rg-draw-tools" aria-label="Drawing controls">
+          <div class="rg-tool-group">
+            <span>Ink</span>
+            <button class="rg-swatch on" type="button" data-rg-ink="#17120b" title="Black ink" style="--swatch:#17120b"></button>
+            <button class="rg-swatch" type="button" data-rg-ink="#7b2cff" title="Violet ink" style="--swatch:#7b2cff"></button>
+            <button class="rg-swatch" type="button" data-rg-ink="#008bd8" title="Blue ink" style="--swatch:#008bd8"></button>
+            <button class="rg-swatch" type="button" data-rg-ink="#14893c" title="Green ink" style="--swatch:#14893c"></button>
+            <button class="rg-swatch" type="button" data-rg-ink="#c23b22" title="Red ink" style="--swatch:#c23b22"></button>
+            <button class="rg-swatch" type="button" data-rg-ink="#ffb000" title="Gold ink" style="--swatch:#ffb000"></button>
+            <button class="rg-swatch" type="button" data-rg-ink="#ffffff" title="White ink" style="--swatch:#ffffff"></button>
+            <button class="rg-swatch" type="button" data-rg-ink="#ff5db1" title="Pink ink" style="--swatch:#ff5db1"></button>
+            <button class="rg-swatch" type="button" data-rg-ink="#00c7a8" title="Teal ink" style="--swatch:#00c7a8"></button>
+          </div>
+          <div class="rg-tool-group">
+            <span>Fill</span>
+            <button class="rg-fill on" type="button" data-rg-fill="#ffe7a8" title="Gold fill" style="--swatch:#ffe7a8"></button>
+            <button class="rg-fill" type="button" data-rg-fill="#b9f6ca" title="Green fill" style="--swatch:#b9f6ca"></button>
+            <button class="rg-fill" type="button" data-rg-fill="#a6ddff" title="Blue fill" style="--swatch:#a6ddff"></button>
+            <button class="rg-fill" type="button" data-rg-fill="#ffc1d9" title="Pink fill" style="--swatch:#ffc1d9"></button>
+            <button class="rg-fill" type="button" data-rg-fill="#d4c2ff" title="Violet fill" style="--swatch:#d4c2ff"></button>
+            <button class="rg-fill" type="button" data-rg-fill="#ffffff" title="White fill" style="--swatch:#ffffff"></button>
+          </div>
+          <div class="rg-tool-group rg-size-tool">
+            <span>Size</span>
+            <input id="rg-line-size" type="range" min="3" max="18" value="7" aria-label="Line size">
+          </div>
+          <div class="rg-tool-group">
+            <span>Line</span>
+            <button class="rg-line-style on" type="button" data-rg-line="round" title="Round line">●</button>
+            <button class="rg-line-style" type="button" data-rg-line="square" title="Square line">■</button>
+            <button class="rg-line-style" type="button" data-rg-line="dot" title="Dotted line">···</button>
+            <button class="rg-line-style" type="button" data-rg-line="soft" title="Soft marker">◌</button>
+          </div>
+        </div>
         <div class="row">
           <button class="rg-btn primary" id="rg-draw-cast">🔮 Cast Drawing</button>
           <button class="rg-btn" id="rg-draw-clear">Clear</button>
@@ -131,7 +166,7 @@ PLAY_PAGE = """<!doctype html>
       <div class="rg-hint">WASD / Arrows move · 1–9 pick runes · Space cast · E draw · C clear · M minimap · step into portals to travel</div>
     </div>
   </div>
-  <script src="/rg/static/rpg.js?v=64"></script>
+  <script src="/rg/static/rpg.js?v=68"></script>
 </body>
 </html>
 """

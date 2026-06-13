@@ -465,6 +465,43 @@ def test_toll_bell_passes_free_and_opens_tollmaster_route():
     assert "queue_goblin_paid" in flags and "tollmaster_route_open" in flags
 
 
+def _inventory_adds(res):
+    return [a["item"] for a in res["world_actions"] if a["type"] == "add_inventory"]
+
+
+def test_settling_toll_grants_debt_receipt_every_way():
+    # Paying (coin/bell, with or without gold) stamps the Bone Market key…
+    for runes, gold in ((["coin"], 3), (["coin"], 0), (["bell"], 0)):
+        res = resolve_world_cast(runes, _player(gold=gold), dict(TOLL_GOBLIN), seed=1)
+        assert "Debt Receipt" in _inventory_adds(res)
+        assert "add_journal_entry" in _types(res)
+    # …and so does beating him in a straight fight (level-1 path: the coin and
+    # bell runes are still locked then).
+    fight = dict(TOLL_GOBLIN, hp=1, weakness=["jagged_line"], resistance=[])
+    res = resolve_world_cast(["jagged_line"], _player(), fight, seed=2)
+    assert "defeat_entity" in _types(res)
+    assert "Debt Receipt" in _inventory_adds(res)
+    # Already holding one: never duplicated.
+    res = resolve_world_cast(["coin"], _player(gold=3, inventory=["Debt Receipt"]),
+                             dict(TOLL_GOBLIN), seed=1)
+    assert "Debt Receipt" not in _inventory_adds(res)
+
+
+def test_shrine_fully_heals_with_starting_rune_and_is_reusable():
+    shrine = {"id": "toll_shrine", "type": "shrine", "name": "Mile-Marker Shrine",
+              "state": "dormant"}
+    # closed_circle is in the level-1 starting trio -> full heal
+    res = resolve_world_cast(["closed_circle"], _player(hp=3, max_hp=12), shrine, seed=4)
+    heals = [a["amount"] for a in res["world_actions"] if a["type"] == "heal_player"]
+    assert heals == [9]  # back to full
+    # the shrine is never spent — it stays a reusable rest stop
+    assert "set_entity_state" not in _types(res)
+    # unattuned runes still patch a little
+    res2 = resolve_world_cast(["spiral"], _player(hp=3, max_hp=12), shrine, seed=4)
+    heals2 = [a["amount"] for a in res2["world_actions"] if a["type"] == "heal_player"]
+    assert heals2 == [2]
+
+
 def test_player_starts_with_spendable_coins():
     assert build_world()["player"]["gold"] >= 1
 
@@ -483,7 +520,9 @@ def test_world_exposes_items_and_quests_metadata():
     assert {"health_potion", "courage_draught", "monster_trophy", "fungus_spore"} <= item_ids
     quest_ids = {q["id"] for q in w["quests"]}
     assert {"road_patrol", "spore_sample", "quartermaster_kit"} <= quest_ids
-    assert w["player"]["items"] == {} and w["player"]["quests"] == {}
+    # one starter potion so the bag/heal loop is live before the first quest
+    assert w["player"]["items"] == {"health_potion": 1}
+    assert w["player"]["quests"] == {}
 
 
 def test_quest_giver_npcs_are_tagged():

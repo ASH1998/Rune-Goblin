@@ -419,7 +419,9 @@ def _build_areas() -> dict[str, Area]:
                  dialogue="I lost my map. Soothe me (wave) and I'll bless your courage.",
                  hint="cast wave/leaf to comfort"),
             _npc("toll_pixie", "Toll Pixie", 16, 3, sprite_key="fluttering_pixie",
-                 dialogue="The goblin hates bells and coins. Just saying.",
+                 dialogue="The gate goblin? Pay him or beat him — either way he stamps "
+                          "a Debt Receipt, and that opens the Bone Market Tunnel south "
+                          "of here. He hates bells and coins. Just saying.",
                  hint="a helpful hint about the gate goblin"),
             _npc("road_druid", "Road Druid", 41, 27, sprite_key="expert_druid",
                  dialogue="Two doors west and east. The Library hides a Calendar Key. "
@@ -444,7 +446,7 @@ def _build_areas() -> dict[str, Area]:
                    loot=["lucky coin"], hint="locked — pay with a coin rune"),
             Entity("toll_shrine", "shrine", "Mile-Marker Shrine", 24, 3, sprite="⛩️",
                    blocking=True, tags=["holy"], state="dormant",
-                   hint="cast leaf/closed_circle to bless yourself"),
+                   hint="rest stop — face it and cast closed circle (⭕) for a full heal, any time"),
             Entity("portal_caverns", "portal", "Cavern Mouth", 2, 14, sprite="🕳️",
                    blocking=False, target_area="caverns", target_x=3, target_y=2,
                    hint="step in → Mirror Fungus Caverns"),
@@ -454,7 +456,7 @@ def _build_areas() -> dict[str, Area]:
             Entity("portal_market", "portal", "Bone Market Tunnel", 24, 30, sprite="🕳️",
                    state="locked", blocking=True, target_area="bone_market", target_x=2, target_y=2,
                    requires=["Debt Receipt"], tags=["shop", "shortcut"],
-                   hint="sealed — needs Debt Receipt, coin+bell, or a forced cursed entrance"),
+                   hint="sealed — settle with the Queue Goblin at the toll gate for a Debt Receipt"),
             Entity("portal_frost", "portal", "Frostbite Trail", 5, 27, sprite="🌀",
                    blocking=False, target_area="frost_pass", target_x=3, target_y=3,
                    hint="step in → Frostbite Pass"),
@@ -515,7 +517,7 @@ def _build_areas() -> dict[str, Area]:
                    loot=["jar of teeth", "minor powerup"], hint="locked — flame or key"),
             Entity("cavern_shrine", "shrine", "Dripping Shrine", 13, 9, sprite="⛩️",
                    blocking=True, tags=["holy"], state="dormant",
-                   hint="cast leaf to heal at the shrine"),
+                   hint="cast closed circle (⭕) to fully heal at the shrine"),
             Entity("portal_home_c", "portal", "Cave Exit", 2, 29, sprite="🚪",
                    blocking=False, target_area="overworld", target_x=3, target_y=14,
                    hint="step out → Toll Road"),
@@ -1207,7 +1209,11 @@ def build_world(seed: int | None = None, admin: bool | None = None) -> dict:
             "gold": 3, "rune_mastery": {}, "story_flags": [], "ending_flags": [], "journal": [],
             "four_rune_unlocked": False,
             "inventory": ["wet candle"], "score": 0, "statuses": [],
-            "items": {}, "quests": {},
+            # One starter potion teaches the bag/potion loop before the first
+            # quest reward. (Healing/NPC guidance reaches the player through the
+            # shrine's bump-hint and the Journal's "talk to a quest-giver"
+            # empty-state, so the quest_log stays the single main objective.)
+            "items": {"health_potion": 1}, "quests": {},
             "quest_log": ["Find the Calendar Shard in the Mirror Fungus Caverns."],
             "discoveries": [], "recent_story_events": [], "trust": {},
             "beats_seen": [],
@@ -1425,6 +1431,16 @@ def _defeat_loot_actions(player: dict, target: dict, rng: random.Random) -> list
     actions += _weapon_temper_actions(player)
     if "mycologist" in str(target.get("id", "")):
         actions += _flag_actions(["mycologist_defeated"])
+    # Beating the Queue Goblin in a straight fight settles the toll too — the
+    # Debt Receipt (Bone Market key) must be reachable at level 1, when the
+    # coin/bell payment runes are still locked.
+    if str(target.get("id", "")) == "toll_goblin":
+        actions += _flag_actions(["queue_goblin_forced"])
+        if "Debt Receipt" not in (player.get("inventory") or []):
+            actions.append({"type": "add_inventory", "item": "Debt Receipt"})
+            actions.append({"type": "add_journal_entry",
+                            "text": "A Debt Receipt flutters from the Queue Goblin's "
+                                    "cup. It opens the Bone Market Tunnel on the south road."})
     return actions
 
 
@@ -1784,6 +1800,15 @@ def resolve_world_cast(
         # done and does NOT retaliate — paying the toll is a transaction, not a
         # fight. The spell's effect text carries the peaceful "gate opens" line.
         actions.append({"type": "defeat_entity", "target_id": tid})
+        # Settling the toll — by bell, coin or blood — earns the Debt Receipt
+        # that unseals the Bone Market Tunnel on the south road. Without this
+        # the receipt only existed via a forced cursed entry of that same
+        # portal, which was circular.
+        if "Debt Receipt" not in inventory:
+            actions.append({"type": "add_inventory", "item": "Debt Receipt"})
+            actions.append({"type": "add_journal_entry",
+                            "text": "The Queue Goblin stamps you a Debt Receipt. "
+                                    "It opens the Bone Market Tunnel on the south road."})
 
         if "bell" in runes:
             actions += _flag_actions(["queue_goblin_paid", "tollmaster_route_open"])
@@ -2091,23 +2116,38 @@ def resolve_world_cast(
                 status_effects=["door_unlocked"], chaos=5 if forced else 4,
             )
         else:
+            effect = f"It stays shut. It needs: {' + '.join(requires)}."
+            if tid == "portal_market":
+                effect += (" The Queue Goblin at the toll gate stamps one "
+                           "when you settle your toll — pay him or beat him.")
             spell = SpellResult(
                 spell_name="Polite Refusal", spell_type="unlock_emotion",
                 flavor=_flavor_world(runes, target, combo),
-                effect=f"It stays shut. It needs: {' + '.join(requires)}.", chaos=2,
+                effect=effect, chaos=2,
             )
         return {"spell": spell.model_dump(), "world_actions": actions, "target_id": tid, "runes": runes}
 
     # --- shrine ------------------------------------------------------------
+    # Shrines are reusable rest stops — the one reliable heal on every map.
+    # An attuned rune (closed_circle is in the level-1 starting three; leaf
+    # joins later) restores the player to full; anything else patches 2 HP.
     if ttype == "shrine":
-        heal = 4 if any(r in {"leaf", "closed_circle"} for r in runes) else 2
+        max_hp = int(player.get("max_hp", 10) or 10)
+        cur_hp = max(0, int(player.get("hp", max_hp) or 0))
+        attuned = any(r in {"leaf", "closed_circle"} for r in runes)
+        if attuned:
+            heal = max(0, max_hp - cur_hp)
+            effect = ("The shrine's warmth restores you to full health."
+                      if heal else "You are already whole. The shrine hums approvingly.")
+        else:
+            heal = 2
+            effect = "Warmth restores 2 HP. Cast a closed circle (⭕) here for a full heal."
         actions.append({"type": "heal_player", "amount": heal})
         actions.append({"type": "add_courage", "amount": 1})
-        actions.append({"type": "set_entity_state", "target_id": tid, "state": "spent"})
         spell = SpellResult(
             spell_name="Mile-Marker Blessing", spell_type="shrine",
             flavor=_flavor_world(runes, target, combo),
-            effect=f"Warmth restores {heal} HP and steadies your nerve.",
+            effect=effect,
             player_hp_delta=heal, status_effects=["player_blessed"], chaos=3,
         )
         return {"spell": spell.model_dump(), "world_actions": actions, "target_id": tid, "runes": runes}
