@@ -61,7 +61,7 @@ MODEL_REVISION = os.environ.get("RG_VISION_MODEL_REVISION", "main")
 VLLM_PORT = 8000
 MINUTES = 60  # seconds
 N_GPU = 1
-GPU_TYPE = "T4"
+GPU_TYPE = "L4" 
 # Recipe suggests starting at 8192 (model supports up to 256K). Plenty for a
 # single canvas image + state; the 1.3B model leaves the T4 with room to spare.
 MAX_MODEL_LEN = 8192
@@ -69,9 +69,13 @@ MAX_MODEL_LEN = 8192
 # The MiniCPMV4_6ForConditionalGeneration arch landed in vLLM 0.22.0 (PR #43213)
 # and needs transformers >= 5.7.0. Earlier vLLM (e.g. 0.11) raises
 # "Model architectures ['MiniCPMV4_6ForConditionalGeneration'] are not supported".
+# PIN EXACTLY 0.22.0: vLLM 0.23.0 regressed the MiniCPM-V-4.6 image processor
+# ("'MiniCPMV4_6ImageProcessor' object has no attribute 'version'"); 0.22.0 is
+# the version the recipe was validated against.
 # Ref: https://recipes.vllm.ai/openbmb/MiniCPM-V-4.6
-VLLM_VERSION = "vllm>=0.22.0"
+VLLM_VERSION = "vllm==0.22.0"
 TRANSFORMERS_VERSION = "transformers>=5.7.0"
+# TRANSFORMERS_VERSION = "transformers==5.5.0"
 
 # --- Image -----------------------------------------------------------------
 vllm_image = (
@@ -84,7 +88,16 @@ vllm_image = (
     .env(
         {
             "HF_HUB_ENABLE_HF_TRANSFER": "1",  # fast HF downloads
-            "VLLM_USE_V1": "1",
+            # FlashInfer JIT-compiles CUDA kernels at startup and needs `nvcc`,
+            # which this slim image does NOT ship — and the T4 (Turing/SM75) is
+            # below FlashInfer/FlashAttention-2's SM80+ target anyway. Disable the
+            # FlashInfer sampler and use the Turing-safe xFormers attention backend
+            # so the engine starts without a CUDA toolkit.
+            "VLLM_USE_FLASHINFER_SAMPLER": "0",
+            "VLLM_ATTENTION_BACKEND": "XFORMERS",
+
+            "HF_XET_HIGH_PERFORMANCE": "1",  # faster model transfers
+            "VLLM_LOG_STATS_INTERVAL": "1",  # more frequent metrics logging
         }
     )
 )
