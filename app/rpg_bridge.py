@@ -92,10 +92,12 @@ def register_routes(app: FastAPI) -> None:
     @app.get("/rg/ping")
     def ping() -> dict:
         from rune_goblin.dialogue import model_status
+        from rune_goblin.vision_inference import vision_model_status
 
         problems = validate_world()
         return {"ok": not problems, "msg": "rune goblin online",
-                "world_problems": problems, "dialogue_model": model_status()}
+                "world_problems": problems, "dialogue_model": model_status(),
+                "vision_model": vision_model_status()}
 
     @app.post("/rg/dialogue")
     def dialogue(req: DialogueRequest) -> dict:

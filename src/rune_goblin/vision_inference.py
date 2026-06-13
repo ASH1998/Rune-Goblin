@@ -33,6 +33,26 @@ VISION_SYSTEM_PROMPT = (
     "Spells should be weird, funny, balanced, and game-safe."
 )
 
+# Recipe: stop MiniCPM-V-4.6 from running away after the JSON closes.
+# Ref: https://recipes.vllm.ai/openbmb/MiniCPM-V-4.6
+VISION_STOP_TOKEN_IDS = [248044, 248046]
+
+
+def image_to_data_uri(image: Any) -> str:
+    """Encode a PIL image (or a path/file) as a PNG ``data:`` URI.
+
+    Shared by the GGUF and remote backends, both of which send the canvas as an
+    OpenAI-style ``image_url`` message.
+    """
+    if not hasattr(image, "save"):
+        from PIL import Image
+
+        image = Image.open(image)
+    buf = BytesIO()
+    image.convert("RGB").save(buf, format="PNG")
+    encoded = base64.b64encode(buf.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
+
 
 def format_vision_user_message(state: GameState, room_name: str | None = None) -> str:
     """Build the user text prompt used by the vision fine-tune."""
@@ -152,16 +172,6 @@ class GGUFVisionSpellModel:
             verbose=os.environ.get("RG_GGUF_VERBOSE", "0") == "1",
         )
 
-    def _image_data_uri(self, image: Any) -> str:
-        if not hasattr(image, "save"):
-            from PIL import Image
-
-            image = Image.open(image)
-        buf = BytesIO()
-        image.convert("RGB").save(buf, format="PNG")
-        encoded = base64.b64encode(buf.getvalue()).decode("ascii")
-        return f"data:image/png;base64,{encoded}"
-
     def _generate(self, image: Any, user_text: str) -> str:
         with _GEN_LOCK:
             response = self.model.create_chat_completion(
@@ -170,7 +180,7 @@ class GGUFVisionSpellModel:
                     {
                         "role": "user",
                         "content": [
-                            {"type": "image_url", "image_url": {"url": self._image_data_uri(image)}},
+                            {"type": "image_url", "image_url": {"url": image_to_data_uri(image)}},
                             {"type": "text", "text": user_text.replace("<image>", "").strip()},
                         ],
                     },
@@ -222,6 +232,91 @@ class GGUFVisionSpellModel:
         return fallback
 
 
+class RemoteVisionSpellModel:
+    """Call a hosted OpenAI-compatible vision endpoint (Modal vLLM).
+
+    Mirrors the dialogue remote-API pattern (:mod:`rune_goblin.dialogue`): same
+    message construction as :class:`GGUFVisionSpellModel` (system prompt + an
+    ``image_url`` data-URI + the state text), POSTed to ``RG_VISION_API_URL``
+    with Bearer auth and ``response_format=json_object``. Never raises — any
+    network/parse failure returns :data:`FALLBACK_VISION_SPELL` so the game,
+    like the local backends, never stalls.
+    """
+
+    def __init__(self, max_new_tokens: int = 512):
+        self.url = os.environ.get("RG_VISION_API_URL", "")
+        self.api_key = os.environ.get("RG_VISION_API_KEY", "")
+        self.model_name = os.environ.get("RG_VISION_API_MODEL", "ASHu2/goblinV1")
+        self.timeout = float(os.environ.get("RG_VISION_API_TIMEOUT", "60"))
+        self.temperature = float(os.environ.get("RG_VISION_TEMPERATURE", "0.2"))
+        self.max_new_tokens = max_new_tokens
+
+    def _generate(self, image: Any, user_text: str) -> str | None:
+        """POST one cast; return raw content or None on any failure."""
+        global _LAST_ERROR
+        import json
+        import urllib.request
+
+        body = json.dumps({
+            "model": self.model_name,
+            "messages": [
+                {"role": "system", "content": VISION_SYSTEM_PROMPT},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url",
+                         "image_url": {"url": image_to_data_uri(image)}},
+                        {"type": "text",
+                         "text": user_text.replace("<image>", "").strip()},
+                    ],
+                },
+            ],
+            "response_format": {"type": "json_object"},
+            "stop_token_ids": VISION_STOP_TOKEN_IDS,
+            "max_tokens": self.max_new_tokens,
+            "temperature": self.temperature,
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            self.url, data=body, method="POST",
+            headers={"Content-Type": "application/json",
+                     "Authorization": f"Bearer {self.api_key}"})
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            _LAST_ERROR = ""
+            return data["choices"][0]["message"]["content"]
+        except Exception as exc:  # noqa: BLE001 - never let a cast crash the game
+            _LAST_ERROR = f"{type(exc).__name__}: {exc}"
+            print(f"[vision_inference] remote API failed, using fallback: {_LAST_ERROR}")
+            return None
+
+    def cast(
+        self,
+        state: GameState,
+        image: Any,
+        room_name: str | None = None,
+    ) -> VisionSpellResult:
+        global _LAST_ERROR
+        prompt = format_vision_user_message(state, room_name)
+        raw = ""
+        for _ in range(2):
+            content = self._generate(image, prompt)
+            if content is None:
+                break  # network failure already recorded; go to fallback
+            raw = content
+            result = try_parse_vision_spell(raw)
+            if result is not None:
+                _LAST_ERROR = ""
+                result.spell = clamp_spell(result.spell, state)
+                return result
+        if raw and not _LAST_ERROR:
+            _LAST_ERROR = f"remote model returned invalid JSON: {raw[:500]}"
+        fallback = FALLBACK_VISION_SPELL.model_copy(deep=True)
+        fallback.visual_reading.notes = [_LAST_ERROR or "vision_api_unavailable"]
+        fallback.spell = clamp_spell(fallback.spell, state)
+        return fallback
+
+
 def reset_vision_model() -> None:
     """Drop the cached model so the next cast rebuilds it from scratch.
 
@@ -237,10 +332,25 @@ def default_vision_model_id() -> str:
     return "ASHu2/goblinV1"
 
 
+def _use_vision_api() -> bool:
+    return os.environ.get("RG_USE_VISION_API", "0") == "1"
+
+
 @lru_cache(maxsize=1)
-def get_vision_model(model_id: str | None = None) -> VisionSpellModel | None:
-    """Lazily construct the vision model; return ``None`` on local setup failure."""
+def get_vision_model(model_id: str | None = None):
+    """Lazily construct the vision model; return ``None`` on local setup failure.
+
+    Backend selection (configurable, mirrors ``RG_USE_DIALOGUE_API``):
+      * ``RG_USE_VISION_API=1`` → remote Modal endpoint (no local weights). This
+        path wins over ``RG_VISION_MODEL`` so the same checkout runs local or
+        remote purely from env.
+      * otherwise → local GGUF (``.gguf`` path) or HF transformers, exactly as
+        before. ``start.sh`` (CPU/GPU) is unaffected.
+    """
     global _LAST_ERROR
+    if _use_vision_api():
+        _LAST_ERROR = ""
+        return RemoteVisionSpellModel()
     model_id = model_id or os.environ.get("RG_VISION_MODEL", default_vision_model_id())
     if Path(model_id).exists():
         model_id = str(Path(model_id))
@@ -263,6 +373,21 @@ def get_vision_model(model_id: str | None = None) -> VisionSpellModel | None:
 
 def get_last_vision_error() -> str:
     return _LAST_ERROR
+
+
+def vision_model_status() -> dict:
+    """Diagnostics for the vision backend (surfaced via /rg/ping)."""
+    if _use_vision_api():
+        url = os.environ.get("RG_VISION_API_URL", "")
+        model = os.environ.get("RG_VISION_API_MODEL", "ASHu2/goblinV1")
+        backend = f"remote-api ({model} @ {url})"
+    else:
+        backend = f"local ({os.environ.get('RG_VISION_MODEL', default_vision_model_id())})"
+    return {
+        "enabled": os.environ.get("RG_USE_MODEL", "0") == "1",
+        "backend": backend,
+        "last_error": _LAST_ERROR,
+    }
 
 
 def cast_vision_spell(
