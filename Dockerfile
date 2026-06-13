@@ -7,6 +7,14 @@
 
 FROM python:3.12-slim
 
+# git is needed by HF "Dev Mode": when enabled, HF appends build steps
+# (openvscode-server + `git config --global ...`) after our COPYs, and the slim
+# base ships no git -> the build fails with "git: not found". Install it as root
+# before dropping to the unprivileged user. Harmless when Dev Mode is off.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
 # HF Spaces run containers as uid 1000.
 RUN useradd -m -u 1000 user
 USER user
