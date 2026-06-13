@@ -26,7 +26,8 @@ def test_world_validates_clean():
 
 def test_build_world_has_progression_and_content():
     w = build_world()
-    assert len(w["areas"]) == 7
+    assert len(w["areas"]) == 9
+    assert {"frost_pass", "ember_foundry"}.issubset(w["areas"])
     assert {c["id"] for c in w["classes"]} == {"warrior", "rogue", "poison", "hunter", "barbarian"}
     assert {x["id"] for x in w["weapons"]}.issuperset({"clerk_wand", "bone_blade"})
     p = w["player"]
@@ -34,6 +35,32 @@ def test_build_world_has_progression_and_content():
                 "recent_story_events"):
         assert key in p
     assert p["recent_story_events"] == []
+
+
+def test_admin_mode_unlocks_every_map():
+    normal = build_world()
+    admin = build_world(admin=True)
+
+    # default build is never admin and keeps gates locked
+    assert "admin" not in normal
+    assert any(
+        e.get("state") == "locked"
+        for area in normal["areas"].values()
+        for e in area["entities"]
+        if e["type"] in {"portal", "locked_door"}
+    )
+
+    # admin build flags itself and leaves no locked portals/doors anywhere
+    assert admin["admin"] is True
+    for area in admin["areas"].values():
+        for e in area["entities"]:
+            if e["type"] in {"portal", "locked_door"}:
+                assert e["state"] != "locked"
+                assert e["blocking"] is False
+                assert e["requires"] == []
+    # key story items are granted so inventory-gated content also opens
+    for item in ("Calendar Key", "Debt Receipt", "Thawed Ember"):
+        assert item in admin["player"]["inventory"]
 
 
 def test_seeded_world_variations_are_deterministic_and_noncritical():
@@ -221,10 +248,13 @@ def test_chest_calendar_key_sets_flag():
 def test_merchant_sells_weapon_for_coin():
     tgt = {"id": "market_merchant", "type": "npc", "name": "Bone Market Merchant",
            "loot": ["bone_blade"], "dialogue": "buy"}
-    res = resolve_world_cast(["coin"], _player(), tgt, seed=6)
+    # weapons cost gold now: a funded player buys, and gold is charged
+    res = resolve_world_cast(["coin"], _player(gold=5), tgt, seed=6)
     assert "add_weapon" in _types(res)
     flags = [a["flag"] for a in res["world_actions"] if a["type"] == "set_story_flag"]
     assert "weapon_bought" in flags
+    assert any(a["type"] == "add_gold" and a["amount"] < 0
+               for a in res["world_actions"])
 
 
 def test_bone_market_cursed_deal_grants_power_and_tracks_cost():
@@ -281,11 +311,12 @@ def test_boss_phase_banner_and_repaired_ending():
     assert phase
     assert len(phase[0]["boss_reactions"]) >= 2
 
-    # killing blow with repaired conditions
+    # killing blow with repaired conditions (must be hand-drawn to land)
     boss2 = {"id": "calendar_beast", "type": "boss", "name": "Calendar Beast",
              "hp": 1, "max_hp": 24, "weakness": ["leaf"], "resistance": []}
     flags = ["calendar_truth_read", "tourist_helped", "fungus_colony_spared"]
-    res2 = resolve_world_cast(["leaf", "spiral"], _player(story_flags=flags), boss2, seed=10)
+    res2 = resolve_world_cast(["leaf", "spiral"], _player(story_flags=flags), boss2,
+                              seed=10, drawn=True)
     win = [a for a in res2["world_actions"] if a["type"] == "win_game"]
     assert win and win[0]["ending"] == "repaired"
     assert "choices" in win[0]
@@ -434,6 +465,43 @@ def test_toll_bell_passes_free_and_opens_tollmaster_route():
     assert "queue_goblin_paid" in flags and "tollmaster_route_open" in flags
 
 
+def _inventory_adds(res):
+    return [a["item"] for a in res["world_actions"] if a["type"] == "add_inventory"]
+
+
+def test_settling_toll_grants_debt_receipt_every_way():
+    # Paying (coin/bell, with or without gold) stamps the Bone Market key…
+    for runes, gold in ((["coin"], 3), (["coin"], 0), (["bell"], 0)):
+        res = resolve_world_cast(runes, _player(gold=gold), dict(TOLL_GOBLIN), seed=1)
+        assert "Debt Receipt" in _inventory_adds(res)
+        assert "add_journal_entry" in _types(res)
+    # …and so does beating him in a straight fight (level-1 path: the coin and
+    # bell runes are still locked then).
+    fight = dict(TOLL_GOBLIN, hp=1, weakness=["jagged_line"], resistance=[])
+    res = resolve_world_cast(["jagged_line"], _player(), fight, seed=2)
+    assert "defeat_entity" in _types(res)
+    assert "Debt Receipt" in _inventory_adds(res)
+    # Already holding one: never duplicated.
+    res = resolve_world_cast(["coin"], _player(gold=3, inventory=["Debt Receipt"]),
+                             dict(TOLL_GOBLIN), seed=1)
+    assert "Debt Receipt" not in _inventory_adds(res)
+
+
+def test_shrine_fully_heals_with_starting_rune_and_is_reusable():
+    shrine = {"id": "toll_shrine", "type": "shrine", "name": "Mile-Marker Shrine",
+              "state": "dormant"}
+    # closed_circle is in the level-1 starting trio -> full heal
+    res = resolve_world_cast(["closed_circle"], _player(hp=3, max_hp=12), shrine, seed=4)
+    heals = [a["amount"] for a in res["world_actions"] if a["type"] == "heal_player"]
+    assert heals == [9]  # back to full
+    # the shrine is never spent — it stays a reusable rest stop
+    assert "set_entity_state" not in _types(res)
+    # unattuned runes still patch a little
+    res2 = resolve_world_cast(["spiral"], _player(hp=3, max_hp=12), shrine, seed=4)
+    heals2 = [a["amount"] for a in res2["world_actions"] if a["type"] == "heal_player"]
+    assert heals2 == [2]
+
+
 def test_player_starts_with_spendable_coins():
     assert build_world()["player"]["gold"] >= 1
 
@@ -452,7 +520,9 @@ def test_world_exposes_items_and_quests_metadata():
     assert {"health_potion", "courage_draught", "monster_trophy", "fungus_spore"} <= item_ids
     quest_ids = {q["id"] for q in w["quests"]}
     assert {"road_patrol", "spore_sample", "quartermaster_kit"} <= quest_ids
-    assert w["player"]["items"] == {} and w["player"]["quests"] == {}
+    # one starter potion so the bag/heal loop is live before the first quest
+    assert w["player"]["items"] == {"health_potion": 1}
+    assert w["player"]["quests"] == {}
 
 
 def test_quest_giver_npcs_are_tagged():
@@ -469,3 +539,151 @@ def test_enemy_defeat_drops_quest_items():
     res = resolve_world_cast(["bone"], _player(), tgt, seed=3)
     drops = [a["item"] for a in res["world_actions"] if a["type"] == "add_item"]
     assert "monster_trophy" in drops
+
+
+def test_rune_mastery_steadies_chaos():
+    tgt = {"id": "toll_wisp", "type": "enemy", "name": "Toll Wisp", "hp": 5, "max_hp": 5,
+           "weakness": ["flame"], "resistance": []}
+    raw = resolve_world_cast(["flame", "bone"], _player(), tgt, seed=4)
+    steady = resolve_world_cast(
+        ["flame", "bone"], _player(rune_mastery={"flame": 5, "bone": 5}), tgt, seed=4)
+
+    assert steady["metadata"]["combat"]["rune_mastery"]["chaos_relief"] == 2
+    assert steady["spell"]["chaos"] < raw["spell"]["chaos"]
+    assert steady["spell"]["chaos"] >= 1
+
+
+def test_gate_tourist_shares_healing_lunch_once():
+    tourist = {"id": "gate_tourist", "type": "npc", "name": "Lost Tourist",
+               "dialogue": "sandwiches"}
+    helped = _player(hp=4, story_flags=["tourist_helped"])
+    res = resolve_world_cast(["wave"], helped, tourist, seed=20)
+
+    assert res["spell"]["spell_name"] == "Healing Lunch"
+    heals = [a for a in res["world_actions"] if a["type"] == "heal_player"]
+    assert heals and heals[0]["amount"] == helped["max_hp"]
+    flags = [a["flag"] for a in res["world_actions"] if a["type"] == "set_story_flag"]
+    assert "tourist_lunch_shared" in flags and "boss_ally_tourist" in flags
+
+    # second visit: the lunch is a memory, not a refill
+    again = resolve_world_cast(
+        ["wave"], _player(story_flags=["tourist_helped", "tourist_lunch_shared"]),
+        tourist, seed=20)
+    assert again["spell"]["spell_name"] != "Healing Lunch"
+
+    # never helped the tourist -> no lunch
+    cold = resolve_world_cast(["wave"], _player(), tourist, seed=20)
+    assert cold["spell"]["spell_name"] != "Healing Lunch"
+
+
+def test_hunter_king_marks_boss_weak_point():
+    boss = {"id": "calendar_beast", "type": "boss", "name": "Calendar Beast",
+            "hp": 20, "max_hp": 24, "weakness": ["spiral", "eye"], "resistance": []}
+    hunter = _player(goblin_class="hunter", evolved=True)
+    res = resolve_world_cast(["eye"], hunter, boss, seed=21)
+
+    reveals = [a for a in res["world_actions"] if a["type"] == "reveal_weakness"]
+    assert reveals and reveals[0]["target_id"] == "calendar_beast"
+    assert reveals[0]["weakness"]
+    assert "weakness_revealed" in res["spell"]["status_effects"]
+
+    # un-evolved hunter gets no reveal
+    plain = resolve_world_cast(["eye"], _player(goblin_class="hunter"), boss, seed=21)
+    assert not [a for a in plain["world_actions"] if a["type"] == "reveal_weakness"]
+
+
+def test_boss_phase_action_carries_new_weakness():
+    boss = {"id": "calendar_beast", "type": "boss", "name": "Calendar Beast",
+            "hp": 17, "max_hp": 24, "weakness": ["spiral", "eye"], "resistance": []}
+    res = resolve_world_cast(["spiral", "eye"], _player(), boss, seed=9)
+    phase = [a for a in res["world_actions"] if a["type"] == "start_boss_phase"]
+    assert phase
+    assert phase[0]["target_id"] == "calendar_beast"
+    assert phase[0]["weakness"] and phase[0]["resistance"] is not None
+
+
+def test_drawn_cast_gets_damage_flourish():
+    tgt = {"id": "toll_wisp", "type": "enemy", "name": "Toll Wisp", "hp": 9, "max_hp": 9,
+           "weakness": ["flame"], "resistance": []}
+    plain = resolve_world_cast(["flame"], _player(), tgt, seed=30)
+    inked = resolve_world_cast(["flame"], _player(), tgt, seed=30, drawn=True)
+
+    assert inked["metadata"]["combat"]["drawn"]["bonus_damage"] == 2
+    assert inked["spell"]["enemy_hp_delta"] == plain["spell"]["enemy_hp_delta"] - 2
+    assert "drawn_flourish" in inked["spell"]["status_effects"]
+    assert "drawn" not in plain["metadata"]["combat"]
+
+
+def test_boss_killing_blow_requires_drawn_spell():
+    boss = {"id": "calendar_beast", "type": "boss", "name": "Calendar Beast",
+            "hp": 1, "max_hp": 24, "weakness": ["leaf"], "resistance": []}
+    undrawn = resolve_world_cast(["leaf", "spiral"], _player(), boss, seed=31)
+    hp_actions = [a for a in undrawn["world_actions"] if a["type"] == "set_entity_hp"]
+    assert hp_actions and hp_actions[0]["hp"] == 1  # clings on at 1 HP
+    assert "boss_warded_undrawn" in undrawn["spell"]["status_effects"]
+    assert not [a for a in undrawn["world_actions"] if a["type"] == "win_game"]
+    assert any("hand-drawn" in a.get("text", "")
+               for a in undrawn["world_actions"] if a["type"] == "add_journal_entry")
+
+    inked = resolve_world_cast(["leaf", "spiral"], _player(), boss, seed=31, drawn=True)
+    assert [a for a in inked["world_actions"] if a["type"] == "win_game"]
+
+
+# ---- weapon use-leveling (kills temper the equipped weapon) ----
+
+def test_kill_counts_equipped_weapon():
+    tgt = {"id": "e", "type": "enemy", "name": "x", "hp": 1, "max_hp": 5,
+           "weakness": ["flame"], "resistance": []}
+    res = resolve_world_cast(["flame"], _player(weapon_kills={"clerk_wand": 3}),
+                             tgt, seed=5)
+    counts = [a for a in res["world_actions"] if a["type"] == "set_weapon_kills"]
+    assert counts and counts[0]["weapon"] == "clerk_wand" and counts[0]["count"] == 4
+    # no milestone crossed -> no free reforge
+    assert not [a for a in res["world_actions"] if a["type"] == "reforge_weapon"]
+
+
+def test_kill_milestone_grants_free_reforge():
+    tgt = {"id": "e", "type": "enemy", "name": "x", "hp": 1, "max_hp": 5,
+           "weakness": ["flame"], "resistance": []}
+    res = resolve_world_cast(["flame"], _player(weapon_kills={"clerk_wand": 9}),
+                             tgt, seed=6)
+    forges = [a for a in res["world_actions"] if a["type"] == "reforge_weapon"]
+    assert forges and forges[0]["weapon"] == "clerk_wand" and forges[0]["tier"] == 1
+
+
+def test_kill_milestone_respects_tier3_level_gate():
+    tgt = {"id": "e", "type": "enemy", "name": "x", "hp": 1, "max_hp": 5,
+           "weakness": ["flame"], "resistance": []}
+    low = resolve_world_cast(
+        ["flame"], _player(level=5, weapon_kills={"clerk_wand": 49},
+                           weapon_tiers={"clerk_wand": 2}), tgt, seed=7)
+    assert not [a for a in low["world_actions"] if a["type"] == "reforge_weapon"]
+    high = resolve_world_cast(
+        ["flame"], _player(level=12, weapon_kills={"clerk_wand": 49},
+                           weapon_tiers={"clerk_wand": 2}), tgt, seed=8)
+    forges = [a for a in high["world_actions"] if a["type"] == "reforge_weapon"]
+    assert forges and forges[0]["tier"] == 3
+
+
+def test_weapon_tier_for_kills_curve():
+    from rune_goblin import story
+    assert [story.weapon_tier_for_kills(n) for n in (0, 9, 10, 24, 25, 49, 50, 99)] == \
+        [0, 0, 1, 1, 2, 2, 3, 3]
+
+
+def test_resolve_enemy_defeat_pays_out_like_a_cast_kill():
+    from rune_goblin.world import resolve_enemy_defeat
+    tgt = {"id": "e", "type": "enemy", "name": "x", "hp": 0, "max_hp": 12,
+           "tier": "standard", "dr": 2}
+    res = resolve_enemy_defeat(_player(weapon_kills={"clerk_wand": 9}), tgt, seed=1)
+    types = [a["type"] for a in res["world_actions"]]
+    assert "set_progress" in types          # kill XP
+    assert "add_gold" in types              # drops rolled
+    assert "set_weapon_kills" in types      # weapon tempering counts
+    assert "reforge_weapon" in types        # 10th kill milestone
+
+
+def test_resolve_enemy_defeat_ignores_bosses():
+    from rune_goblin.world import resolve_enemy_defeat
+    res = resolve_enemy_defeat(_player(), {"id": "b", "type": "boss"}, seed=1)
+    assert res["world_actions"] == []

@@ -32,6 +32,7 @@ import uvicorn  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
 from fastapi.responses import HTMLResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
+
 from app.rpg_bridge import register_routes  # noqa: E402
 
 STATIC_DIR = APP_DIR / "rpg_static"
@@ -45,7 +46,7 @@ PLAY_PAGE = """<!doctype html>
   <title>Rune Goblin RPG</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/rg/static/rpg.css?v=39">
+  <link rel="stylesheet" href="/rg/static/rpg.css?v=66">
 </head>
 <body>
   <div id="rg-root">
@@ -69,6 +70,16 @@ PLAY_PAGE = """<!doctype html>
         </div>
       </div>
 
+      <div class="rg-story" id="rg-story">
+        <div class="rg-story-card">
+          <div class="rg-story-portrait" id="rg-story-portrait">📜</div>
+          <div class="rg-story-name" id="rg-story-name">The Broken Calendar</div>
+          <div class="rg-story-text" id="rg-story-text">…</div>
+          <div class="rg-story-sub" id="rg-story-sub"></div>
+          <div class="rg-story-tip">Space ▸ continue</div>
+        </div>
+      </div>
+
       <div class="rg-journal" id="rg-journal">
         <h3>📓 Journal <span class="rg-journal-close" id="rg-journal-close">✕ (J)</span></h3>
         <div id="rg-journal-body"></div>
@@ -84,6 +95,41 @@ PLAY_PAGE = """<!doctype html>
       <div class="rg-draw" id="rg-draw">
         <h3>Draw your spell</h3>
         <canvas id="rg-sketch" width="340" height="340"></canvas>
+        <button class="rg-btn rg-customize" id="rg-draw-customize" type="button" aria-expanded="false" aria-controls="rg-draw-tools">Customize</button>
+        <div class="rg-draw-tools" id="rg-draw-tools" aria-label="Drawing controls">
+          <div class="rg-tool-group">
+            <span>Ink</span>
+            <button class="rg-swatch on" type="button" data-rg-ink="#17120b" title="Black ink" style="--swatch:#17120b"></button>
+            <button class="rg-swatch" type="button" data-rg-ink="#7b2cff" title="Violet ink" style="--swatch:#7b2cff"></button>
+            <button class="rg-swatch" type="button" data-rg-ink="#008bd8" title="Blue ink" style="--swatch:#008bd8"></button>
+            <button class="rg-swatch" type="button" data-rg-ink="#14893c" title="Green ink" style="--swatch:#14893c"></button>
+            <button class="rg-swatch" type="button" data-rg-ink="#c23b22" title="Red ink" style="--swatch:#c23b22"></button>
+            <button class="rg-swatch" type="button" data-rg-ink="#ffb000" title="Gold ink" style="--swatch:#ffb000"></button>
+            <button class="rg-swatch" type="button" data-rg-ink="#ffffff" title="White ink" style="--swatch:#ffffff"></button>
+            <button class="rg-swatch" type="button" data-rg-ink="#ff5db1" title="Pink ink" style="--swatch:#ff5db1"></button>
+            <button class="rg-swatch" type="button" data-rg-ink="#00c7a8" title="Teal ink" style="--swatch:#00c7a8"></button>
+          </div>
+          <div class="rg-tool-group">
+            <span>Fill</span>
+            <button class="rg-fill on" type="button" data-rg-fill="#ffe7a8" title="Gold fill" style="--swatch:#ffe7a8"></button>
+            <button class="rg-fill" type="button" data-rg-fill="#b9f6ca" title="Green fill" style="--swatch:#b9f6ca"></button>
+            <button class="rg-fill" type="button" data-rg-fill="#a6ddff" title="Blue fill" style="--swatch:#a6ddff"></button>
+            <button class="rg-fill" type="button" data-rg-fill="#ffc1d9" title="Pink fill" style="--swatch:#ffc1d9"></button>
+            <button class="rg-fill" type="button" data-rg-fill="#d4c2ff" title="Violet fill" style="--swatch:#d4c2ff"></button>
+            <button class="rg-fill" type="button" data-rg-fill="#ffffff" title="White fill" style="--swatch:#ffffff"></button>
+          </div>
+          <div class="rg-tool-group rg-size-tool">
+            <span>Size</span>
+            <input id="rg-line-size" type="range" min="3" max="18" value="7" aria-label="Line size">
+          </div>
+          <div class="rg-tool-group">
+            <span>Line</span>
+            <button class="rg-line-style on" type="button" data-rg-line="round" title="Round line">●</button>
+            <button class="rg-line-style" type="button" data-rg-line="square" title="Square line">■</button>
+            <button class="rg-line-style" type="button" data-rg-line="dot" title="Dotted line">···</button>
+            <button class="rg-line-style" type="button" data-rg-line="soft" title="Soft marker">◌</button>
+          </div>
+        </div>
         <div class="row">
           <button class="rg-btn primary" id="rg-draw-cast">🔮 Cast Drawing</button>
           <button class="rg-btn" id="rg-draw-clear">Clear</button>
@@ -112,13 +158,15 @@ PLAY_PAGE = """<!doctype html>
         <button class="rg-btn ghost" id="rg-reset">New Game</button>
         <button class="rg-btn ghost" id="rg-mute" title="music">🔊</button>
         <button class="rg-btn ghost" id="rg-full" title="fullscreen">⛶</button>
+        <select class="rg-btn rg-admin-goto" id="rg-admin-goto" title="admin: warp to map" style="display:none"></select>
+        <select class="rg-btn rg-admin-goto" id="rg-admin-actions" title="admin: cheats" style="display:none"></select>
         <span class="rg-target" id="rg-target"></span>
       </div>
       <div class="rg-toast" id="rg-toast">Use WASD / arrows to roam. Face something and cast a spell.</div>
-      <div class="rg-hint">WASD / Arrows move · 1–9 pick runes · Space cast · E draw · C clear · step into portals to travel</div>
+      <div class="rg-hint">WASD / Arrows move · 1–9 pick runes · Space cast · E draw · C clear · M minimap · step into portals to travel</div>
     </div>
   </div>
-  <script src="/rg/static/rpg.js?v=39"></script>
+  <script src="/rg/static/rpg.js?v=68"></script>
 </body>
 </html>
 """

@@ -13,7 +13,6 @@ POST /rg/cast   -> resolve a rune or drawing cast against the faced target
 from __future__ import annotations
 
 import base64
-import binascii
 import os
 from io import BytesIO
 
@@ -50,6 +49,38 @@ class QuestRequest(BaseModel):
     player: dict = Field(default_factory=dict)
 
 
+class DefeatRequest(BaseModel):
+    player: dict = Field(default_factory=dict)
+    target: dict = Field(default_factory=dict)
+    seed: int | None = None
+
+
+class BeatRequest(BaseModel):
+    beat_id: str = ""
+    area: str = ""
+    player: dict = Field(default_factory=dict)
+
+
+class ShopRequest(BaseModel):
+    npc_id: str = ""
+    weapon_id: str = ""  # empty = just list the stock
+    quoted_price: int | None = None  # the listed price the player clicked
+    player: dict = Field(default_factory=dict)
+
+
+class LootRequest(BaseModel):
+    item_spec: dict = Field(default_factory=dict)  # Python-rolled trinket
+    area: str = ""
+
+
+class TauntRequest(BaseModel):
+    enemy_name: str = ""
+    archetype: str = ""  # charge | spit | summon | boss | brute
+    event: str = "spotted"  # spotted | windup | enrage | player_low | defeated
+    area: str = ""
+    player: dict = Field(default_factory=dict)
+
+
 def _decode_image(data_url: str):
     from PIL import Image
 
@@ -76,6 +107,42 @@ def register_routes(app: FastAPI) -> None:
             player=req.player, action=req.action,
         )
 
+    @app.post("/rg/story_beat")
+    def story_beat(req: BeatRequest) -> dict:
+        """Proactive story beat (area enter / first meet) — LLM + fallback.
+
+        The client decides WHEN a beat fires (triggers ship in /rg/world);
+        this endpoint owns the TEXT and rechecks the beat's flag conditions.
+        """
+        from rune_goblin.dialogue import generate_beat
+
+        return generate_beat(beat_id=req.beat_id, area=req.area, player=req.player)
+
+    @app.post("/rg/shop")
+    def shop(req: ShopRequest) -> dict:
+        """Bone Market shop: LLM-priced stock inside engine bands, gold buys."""
+        from rune_goblin.world import resolve_shop
+
+        return resolve_shop(req.player, req.npc_id, req.weapon_id,
+                            quoted_price=req.quoted_price)
+
+    @app.post("/rg/loot")
+    def loot(req: LootRequest) -> dict:
+        """Christen a Python-rolled trinket (LLM names it; stats stay engine-owned)."""
+        from rune_goblin.dialogue import generate_loot_name
+
+        return generate_loot_name(item_spec=req.item_spec, area=req.area)
+
+    @app.post("/rg/taunt")
+    def taunt(req: TauntRequest) -> dict:
+        """One in-character combat line for an elite/boss (LLM + deterministic fallback)."""
+        from rune_goblin.dialogue import generate_taunt
+        from rune_goblin.story import flag_story
+
+        return generate_taunt(
+            enemy_name=req.enemy_name, archetype=req.archetype, event=req.event,
+            area=req.area, flag_story=flag_story(req.player.get("story_flags")))
+
     @app.post("/rg/quest")
     def quest(req: QuestRequest) -> dict:
         """Deterministic quest interaction (offer / progress / turn-in / exchange)."""
@@ -86,6 +153,13 @@ def register_routes(app: FastAPI) -> None:
     @app.get("/rg/world")
     def world(seed: int | None = None) -> dict:
         return build_world(seed=seed)
+
+    @app.post("/rg/defeat")
+    def defeat(req: DefeatRequest) -> dict:
+        """Loot bundle for kills that resolve outside a cast (burn ticks)."""
+        from rune_goblin.world import resolve_enemy_defeat
+
+        return resolve_enemy_defeat(req.player, req.target, seed=req.seed)
 
     @app.post("/rg/cast")
     def cast(req: CastRequest) -> dict:
@@ -115,12 +189,23 @@ def register_routes(app: FastAPI) -> None:
                 model_spell = result.spell
                 if visual.detected_runes:
                     runes = [r for r in visual.detected_runes if r][:4]
-            except (binascii.Error, ValueError, OSError) as exc:
+            except Exception as exc:  # noqa: BLE001 — any model failure must
+                # fall back to the deterministic engine; the game never stalls
+                # on a bad decode, a llama.cpp crash, or malformed model JSON.
                 visual = None
                 model_spell = None
                 print(f"[rpg_bridge] drawing decode/read failed: {exc}")
+                try:
+                    from rune_goblin.vision_inference import reset_vision_model
+                    reset_vision_model()  # rebuild fresh on the next drawing
+                except Exception:  # noqa: BLE001
+                    pass
 
-        out = resolve_world_cast(runes, req.player, req.target, seed=req.seed)
+        # A successfully-read drawing counts as a hand-drawn cast: it gets the
+        # drawn damage flourish and can land the boss's killing blow.
+        drawn = req.mode == "drawing" and visual is not None
+        out = resolve_world_cast(runes, req.player, req.target, seed=req.seed,
+                                 drawn=drawn)
 
         # For drawings, borrow the model's personality (name + flavor) over the
         # deterministic outcome, and surface what it read.

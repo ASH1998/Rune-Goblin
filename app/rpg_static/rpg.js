@@ -12,7 +12,13 @@
   let bootArea = "";            // optional smoke area from /play?area=...
   let bootMasteryChoice = false; // optional smoke hook from /play?mastery=1
   let areas = {};               // mutable per-area state (entities/rows)
-  let runesMeta = [];           // [{key,symbol,label,meanings}]
+  let adminMode = false;        // client-side god-mode (Shift+L+A) — all maps unlocked
+  let adminLockSnapshot = null; // saved lock states so the toggle is reversible
+  let lastAdminToggle = 0;      // debounce for the Shift+L+A chord
+  const keysDown = new Set();   // currently-held keys, for multi-key combos
+  const ADMIN_ITEMS = ["Calendar Key", "Calendar Shard", "Debt Receipt", "Thawed Ember"];
+  let runesMeta = [];           // [{key,symbol,label,meanings}] — server order
+  let paletteRunes = [];        // runesMeta reordered by unlock level (display order)
   let P = null;                 // player {area,x,y,hp,max_hp,courage,...}
   let A = null;                 // current area
   let selected = [];            // selected rune keys (quick-cast)
@@ -21,9 +27,13 @@
   let toastMsg = "";
   let vfx = [];                 // active visual effects
   let turnNo = 0;
+  let transitions = 0;          // area-transition counter (drives respawns)
+  let devBoot = false;          // true when ?seed/?flags/?area/?mastery present
   let recentRunes = [];
   let enemyCooldown = {};
+  let xpFlashUntil = 0;       // HUD XP-bar pulse timer (set on every XP gain)
   let masteryChoiceOpen = false;
+  let pendingMasteryChoice = false; // mastery picker deferred until an open dialogue closes
   let selecting = false;        // title-screen character select active
   let chosenClass = null;       // selected goblin class id
   let journalOpen = false;
@@ -33,6 +43,10 @@
   let lastEnding = null;        // {ending,title,text} from win_game action
   let lastCastMetadata = null;  // structured /rg/cast metadata for HUD/debug
   let CLASSES = [], WEAPONS = {}, ITEMS = {}, QUESTS_META = {};
+  const SKETCH_BG = "#efe1bd";
+  const drawTool = { ink: "#17120b", fill: "#ffe7a8", size: 7, line: "round", mode: "draw" };
+  let STORY_BEATS = [];         // proactive beat triggers from /rg/world
+  let barks = [];               // live speech bubbles: {eid, area, text, until}
   const CLASS_SPRITE = {        // in-game sprite per class (Goblin Pack #1 hero sheets)
     warrior: "hero_warrior", rogue: "hero_rogue", poison: "hero_poison",
     hunter: "hero_hunter", barbarian: "hero_barbarian",
@@ -40,6 +54,14 @@
   const CLASS_SPRITE_FALLBACK = {  // generic goblins if a hero sheet fails to load
     warrior: "goblin_red", rogue: "goblin_yellow", poison: "goblin_purple",
     hunter: "goblin_blue", barbarian: "goblin_red",
+  };
+  const CHAMPION_SPRITE = {     // tier-2 evolution forms (Tiny Swords unit sheets)
+    warrior: "champion_warrior", rogue: "champion_rogue", poison: "champion_poison",
+    hunter: "champion_hunter", barbarian: "champion_barbarian",
+  };
+  const CHAMPION_NAME = {
+    warrior: "Goblin Champion", rogue: "Goblin Reaver", poison: "Goblin Plaguewarden",
+    hunter: "Goblin Sharpeye", barbarian: "Goblin Ravager",
   };
   const KING_SPRITE = "hero_king";  // evolved Goblin King in-game sprite
 
@@ -50,13 +72,31 @@
   const DIRV = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
   const WALK = new Set([".", ","]);
 
+  // Per-biome look: wall palette + ground tile sprite + optional tint wash.
+  // ground: which baked tile to draw on walkable floor (grass | sand | snow | stone)
+  // tint:   translucent wash over the ground so reused tiles still read as new places
   const BIOME = {
-    toll_road: { floor: "#2e2415", alt: "#352a18", wall: "#6b5430", edge: "#46371d" },
-    cavern:    { floor: "#13232a", alt: "#163038", wall: "#2c4e58", edge: "#1d3b42" },
-    library:   { floor: "#1a2230", alt: "#202a3c", wall: "#34465e", edge: "#222f44" },
-    arena:     { floor: "#2a1230", alt: "#331640", wall: "#5a2a66", edge: "#3d1c47" },
+    toll_road: { floor: "#2e2415", alt: "#352a18", wall: "#6b5430", edge: "#46371d",
+                 ground: "grass", tint: null },
+    cavern:    { floor: "#13232a", alt: "#163038", wall: "#2c4e58", edge: "#1d3b42",
+                 ground: "stone", tint: "rgba(18,76,96,0.30)" },
+    library:   { floor: "#1a2230", alt: "#202a3c", wall: "#34465e", edge: "#222f44",
+                 ground: "stone", tint: "rgba(36,52,84,0.34)" },
+    arena:     { floor: "#2a1230", alt: "#331640", wall: "#5a2a66", edge: "#3d1c47",
+                 ground: "sand", tint: "rgba(90,28,92,0.30)" },
+    market:    { floor: "#2e1f12", alt: "#372615", wall: "#6b4a26", edge: "#46311a",
+                 ground: "sand", tint: "rgba(116,64,18,0.16)" },
+    sewer:     { floor: "#13241c", alt: "#162b21", wall: "#2c5842", edge: "#1d4230",
+                 ground: "stone", tint: "rgba(24,88,52,0.30)" },
+    gate:      { floor: "#241a2c", alt: "#2b2036", wall: "#544a6b", edge: "#372f47",
+                 ground: "grass", tint: "rgba(58,34,84,0.28)" },
+    ice:       { floor: "#1c2733", alt: "#22303f", wall: "#4a6a8a", edge: "#324a61",
+                 ground: "snow", tint: null },
+    forge:     { floor: "#2e1410", alt: "#371a12", wall: "#6b3a26", edge: "#46271a",
+                 ground: "stone", tint: "rgba(150,52,10,0.26)" },
   };
-  const DEFAULT_BIOME = { floor: "#1a1426", alt: "#211a30", wall: "#4a3a6b", edge: "#2a1f3d" };
+  const DEFAULT_BIOME = { floor: "#1a1426", alt: "#211a30", wall: "#4a3a6b", edge: "#2a1f3d",
+                          ground: "grass", tint: "rgba(20,20,30,0.25)" };
   const HAZARD = "#1f5e7a";
 
   // rune -> VFX school (colour + glyph), small client mirror of vfx.py
@@ -73,6 +113,9 @@
   const SPR_BASE = "/rg/static/sprites/";
   const SPRITES = {
     grass: { src: "grass.png", tile: true },
+    sand: { src: "sand.png", tile: true },
+    snow: { src: "snow.png", tile: true },
+    stone: { src: "stone.png", tile: true },
     water: { src: "water.png", tile: true },
     player: { src: "player.png", fw: 192, fh: 192, frames: 8, anim: true, scale: 1.6 },
     npc_pawn: { src: "npc_pawn.png", fw: 192, fh: 192, frames: 8, anim: true, scale: 1.4 },
@@ -91,6 +134,21 @@
     blue_archer: { src: "blue_archer.png", fw: 192, fh: 192, frames: 6, anim: true, scale: 1.25 },
     red_warrior: { src: "red_warrior.png", fw: 192, fh: 192, frames: 8, anim: true, scale: 1.35 },
   };
+  // Mega Boss (assets/BOSS): green-flame horned knight, 96x96 frames facing
+  // left, feet baseline ~7px above the frame bottom (the `foot` fraction).
+  // `mega_boss` is the plain sprite_key alias; the per-state sheets are picked
+  // by the boss animation state machine in drawEntity.
+  (() => {
+    const sheets = { idle: ["Idle", 5], walk: ["Walk", 5], run: ["Run", 5],
+      hurt: ["Hurt", 2], death: ["Death", 5], attack1: ["Attack1", 5],
+      attack2: ["Attack2", 5], attack3: ["Attack3", 5], attack4: ["Attack4", 5],
+      special: ["Special", 5], jump: ["Jump", 5] };
+    for (const [k, [file, frames]] of Object.entries(sheets)) {
+      SPRITES["mega_boss_" + k] = { src: "boss/" + file + ".png", fw: 96, fh: 96,
+        frames, anim: true, scale: 3.0, foot: 7 / 96 };
+    }
+    SPRITES.mega_boss = SPRITES.mega_boss_idle;
+  })();
   const STATIC = "/rg/static/";
   const VFXM = {};            // name -> {img, fw, fh, frames}
   const SFXB = {};            // name -> url for Audio
@@ -105,7 +163,13 @@
     // Goblin Pack hero frames include weapon swing padding. Keep their draw
     // boxes near one tile wide so they read as units beside houses and towers.
     hero_warrior: 1.65, hero_rogue: 1.45, hero_poison: 1.45,
-    hero_hunter: 1.4, hero_barbarian: 1.7, hero_king: 1.75, water_foam: 1.0, water_rocks: 1.0,
+    hero_hunter: 1.4, hero_barbarian: 1.7, hero_king: 2.3, water_foam: 1.0, water_rocks: 1.0,
+    // tier-2 champion sheets (Tiny Swords units; frames include attack padding)
+    champion_warrior: 2.28, champion_rogue: 2.64, champion_poison: 2.28,
+    champion_hunter: 2.28, champion_barbarian: 2.28,
+    // new Tiny Swords additions
+    flame: 1.0, tnt_goblin: 1.4, barrel_goblin: 1.35,
+    wood_tower_blue: 1.6, wood_tower_purple: 1.6, wood_tower_yellow: 1.6,
   };
   const DECO_SCALE = {
     tree: 2.6, bush: 0.95, rock: 0.8, rock2: 0.8,
@@ -114,24 +178,30 @@
     castle_blue: 2.35, castle_red: 2.35, castle_destroyed: 2.35, black_castle: 2.35,
     knight_tower_yellow: 1.7, purple_tower: 1.7,
     red_barracks: 2.0, yellow_monastery: 1.85, gold_mine: 1.6,
+    // new Tiny Swords additions
+    tree_snow: 2.6, tree_dead: 2.6, skull: 0.85,
+    house_red: 1.65, house_purple: 1.65, house_yellow: 1.65, house_destroyed: 1.65,
+    castle_yellow: 2.35, castle_purple: 2.35, tower_red: 1.7, tower_destroyed: 1.7,
+    goldmine_destroyed: 1.6, goldmine_inactive: 1.6,
+    res_gold: 0.9, res_wood: 0.9, res_meat: 0.9,
   };
   function loadSprites() {
     Object.values(SPRITES).forEach((s) => { const img = new Image(); img.src = SPR_BASE + s.src; s.img = img; });
   }
   async function loadManifest() {
     let m;
-    try { m = await fetch(STATIC + "manifest.json").then((r) => r.json()); }
+    try { m = await fetch(STATIC + "manifest.json", { cache: "no-store" }).then((r) => r.json()); }
     catch (e) { return; }
     for (const [k, v] of Object.entries(m.vfx || {})) {
-      const img = new Image(); img.src = STATIC + v.file;
+      const img = new Image(); img.src = STATIC + v.file + "?v=56";
       VFXM[k] = { img, fw: v.fw, fh: v.fh, frames: v.frames };
     }
     for (const [k, v] of Object.entries(m.creatures || {})) {
-      const img = new Image(); img.src = STATIC + v.file;
+      const img = new Image(); img.src = STATIC + v.file + "?v=56";
       SPRITES[k] = { img, fw: v.fw, fh: v.fh, frames: v.frames, anim: v.frames > 1, scale: CRE_SCALE[k] || 1.0 };
     }
     for (const [k, v] of Object.entries(m.deco || {})) {
-      const img = new Image(); img.src = STATIC + v.file;
+      const img = new Image(); img.src = STATIC + v.file + "?v=56";
       const tall = v.fh > v.fw, big = v.fw >= 192;
       SPRITES[k] = { img, fw: v.fw, fh: v.fh, frames: 1, anim: false,
         scale: DECO_SCALE[k] || (big ? 1.45 : tall ? 1.25 : 0.95) };
@@ -165,15 +235,18 @@
     return true;
   }
   // bottom-centred unit/object sprite at screen (cx, baseY)
-  function drawUnitSprite(name, cx, baseY, scale, frameIndex) {
+  function drawUnitSprite(name, cx, baseY, scale, frameIndex, flip) {
     const s = spr(name); if (!s) return false;
     const fw = s.fw || s.img.naturalWidth, fh = s.fh || s.img.naturalHeight;
     const fcount = s.frames || 1;
     const col = (s.anim && fcount > 1) ? (frameIndex % fcount) : 0;
     const dw = TILE * (scale || s.scale || 1.4);
     const dh = dw * (fh / fw);
+    const dy = baseY - dh + (s.foot ? dh * s.foot : 0);  // sink padded feet to the baseline
     ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(s.img, col * fw, 0, fw, fh, cx - dw / 2, baseY - dh, dw, dh);
+    if (flip) { ctx.save(); ctx.translate(cx * 2, 0); ctx.scale(-1, 1); }
+    ctx.drawImage(s.img, col * fw, 0, fw, fh, cx - dw / 2, dy, dw, dh);
+    if (flip) ctx.restore();
     return true;
   }
   const GOBLIN_BY_NAME = {
@@ -182,9 +255,53 @@
     "Stapler Hydra": "goblin_red", "Mold Knight": "goblin_yellow",
     "Calendar Beast": "goblin_purple",
   };
+  // ---- Mega Boss animation state machine -----------------------------------
+  // The boss has real per-state sheets (idle/hurt/death/attacks/special).
+  // One-shot states play once then fall back to idle; death holds its last
+  // frame (ash + sword on the ground) until the entity despawns.
+  const BOSS_ANIM = {
+    idle:    { fps: 8,  loop: true },
+    // walk/run are one-shots: the boss snap-moves a tile per player turn, so
+    // each step plays one stride cycle and settles back to idle
+    walk:    { fps: 10, loop: false },
+    run:     { fps: 12, loop: false },
+    hurt:    { fps: 8,  loop: false },
+    death:   { fps: 7,  loop: false, hold: true },
+    attack1: { fps: 9, loop: false },
+    attack2: { fps: 9, loop: false },
+    attack3: { fps: 9, loop: false },
+    attack4: { fps: 9, loop: false },
+    special: { fps: 9,  loop: false },
+    jump:    { fps: 9,  loop: false },
+  };
+  const bossAnim = {};    // entity id -> {name, start}
+  const bossHpSeen = {};  // entity id -> last seen hp (flinch on any damage source)
+  function setBossAnim(e, name) {
+    const cur = bossAnim[e.id];
+    if (cur && cur.name === "death") return;   // death is final
+    if (cur && cur.name === name && BOSS_ANIM[name].loop) return;
+    bossAnim[e.id] = { name, start: now() };
+  }
+  function bossAnimSheet(e) {
+    // Damage from any source (casts, burn ticks) makes the boss flinch.
+    const prev = bossHpSeen[e.id];
+    if (prev != null && e.hp < prev) setBossAnim(e, e.hp <= 0 ? "death" : "hurt");
+    bossHpSeen[e.id] = e.hp;
+    let st = bossAnim[e.id] || (bossAnim[e.id] = { name: "idle", start: now() });
+    let a = BOSS_ANIM[st.name];
+    const sheet = () => "mega_boss_" + st.name;
+    const s = SPRITES[sheet()], frames = (s && s.frames) || 5;
+    let fi = ((now() - st.start) * a.fps / 1000) | 0;
+    if (fi >= frames) {
+      if (a.loop) fi %= frames;
+      else if (a.hold) fi = frames - 1;
+      else { st = bossAnim[e.id] = { name: "idle", start: now() }; fi = 0; }
+    }
+    return { sheet: sheet(), fi };
+  }
   function entitySprite(e) {
     if (e.sprite_key && SPRITES[e.sprite_key]) return e.sprite_key;
-    if (e.type === "boss") return "goblin_purple";
+    if (e.type === "boss") return "mega_boss";
     if (e.type === "enemy") return GOBLIN_BY_NAME[e.name] || "goblin_red";
     if (e.type === "npc") return e.id === "librarian" ? "npc_monk" : "npc_pawn";
     if (e.type === "story_object") return e.sprite_key || "shrine_tower";
@@ -297,6 +414,7 @@
       .map((x) => x.trim()).filter(Boolean);
     bootArea = (params.get("area") || "").trim();
     bootMasteryChoice = params.get("mastery") === "1";
+    devBoot = worldSeed !== null || bootFlags.length > 0 || !!bootArea || bootMasteryChoice;
     return "/rg/world" + (worldSeed === null ? "" : ("?seed=" + encodeURIComponent(String(worldSeed))));
   }
 
@@ -317,7 +435,7 @@
     P.trust = P.trust || {};
     P.level = P.level || 1;
     P.xp = P.xp || 0;
-    P.xp_to_next = P.xp_to_next || 8;
+    P.xp_to_next = P.xp_to_next || 10;
     P.goblin_class = P.goblin_class || "warrior";
     P.weapon = P.weapon || "clerk_wand";
     P.weapon_inventory = P.weapon_inventory || [P.weapon];
@@ -329,6 +447,103 @@
     P.four_rune_unlocked = P.four_rune_unlocked || false;
     P.items = P.items || {};      // counted bag: { item_id: qty }
     P.quests = P.quests || {};    // { quest_id: "active" | "done" }
+    P.beats_seen = P.beats_seen || [];  // story beats already fired
+    // --- RPG depth stats (rpg_plan.md §1, §5, §6) ---
+    P.spell_power = P.spell_power || 0;      // flat damage added to every cast
+    P.crit = P.crit || 0;                    // crit chance %, unlocked at L8
+    P.crit_knockback = P.crit_knockback || false;
+    P.king_eligible = P.king_eligible || false;
+    P.evolution_tier = P.evolution_tier || 1;   // 1 base, 2 champion, 3 king
+    P.potion_belt_slots = P.potion_belt_slots || 1;  // quick-use slots (L7 → 2)
+    P.defeats = P.defeats || {};   // non-unique kills → respawn ledger
+    P.weapon_tiers = P.weapon_tiers || {};   // weapon_id → reforge tier 0..3
+    P.weapon_kills = P.weapon_kills || {};   // weapon_id → kills while equipped (use-leveling)
+    P.npc_meets = P.npc_meets || {};         // npc_id → talk count (dialogue callbacks)
+    P.trinket = P.trinket || null;           // single equipped trinket
+  }
+  // XP curve + per-level rewards mirror story.py (server is authoritative for
+  // combat XP; this drives client-applied quest XP and the local fallback).
+  const XP_TO_NEXT = {1:10,2:14,3:18,4:22,5:26,6:30,7:34,8:38,9:44,10:50,
+    11:56,12:62,13:70,14:78,15:86,16:96,17:106,18:118,19:130,20:0};
+  const MAX_LEVEL = 20;
+  const LEVEL_MILESTONES = {
+    2:{max_hp:2,note:"Level 2 — toughened up: +2 max HP."},
+    3:{unlock_four_runes:true,note:"Level 3 — you can weave 4-rune casts."},
+    4:{rune_mastery_choice:true,note:"Level 4 — choose a rune mastery."},
+    5:{max_courage:2,note:"Level 5 — steadier nerves: +2 max courage."},
+    6:{spell_power:1,note:"Level 6 — sharper intent: +1 spell power."},
+    7:{potion_belt:2,note:"Level 7 — potion belt slot 2 unlocked (key 2)."},
+    8:{crit:10,note:"Level 8 — you learn to find the soft spot: 10% crit."},
+    9:{max_hp:2,note:"Level 9 — scarred and sturdier: +2 max HP."},
+    10:{max_hp:3,spell_power:1,evolve_tier:2,note:"Level 10 — you evolve into your champion form: +3 max HP, +1 spell power."},
+    11:{max_courage:1,note:"Level 11 — +1 max courage."},
+    12:{rune_mastery_choice:true,note:"Level 12 — choose a second rune mastery."},
+    13:{crit:5,note:"Level 13 — keener eye: +5% crit."},
+    14:{max_hp:2,note:"Level 14 — +2 max HP."},
+    15:{crit_knockback:true,note:"Level 15 — your crits knock enemies back a tile."},
+    16:{king_eligible:true,note:"Level 16 — you could wear the Goblin King's crown, if you found one."},
+    17:{spell_power:1,note:"Level 17 — +1 spell power."},
+    18:{crit:5,note:"Level 18 — +5% crit."},
+    19:{max_hp:2,note:"Level 19 — +2 max HP."},
+    20:{max_hp:2,spell_power:1,crit:5,note:"Level 20 — Calendar Sovereign: +2 max HP, +1 spell power, +5% crit."},
+  };
+  function levelReward(lvl) {
+    const r = Object.assign({max_hp:1,note:"Level "+lvl+" — +1 max HP."},
+                            LEVEL_MILESTONES[lvl] || {});
+    r.level = lvl; return r;
+  }
+  function xpToNext(lvl) { return XP_TO_NEXT[lvl] || 0; }
+
+  // ---- save / load (rpg_plan.md §7) ----------------------------------------
+  // Single-slot localStorage persistence. We snapshot the full mutable world
+  // (`areas`) plus the player and run cursor; the static world payload `W`
+  // (runes/classes/weapons metadata) is always re-fetched from /rg/world on
+  // boot, so only run state lives in the save. SAVE_VERSION gates the schema:
+  // any change that would make an old snapshot incompatible bumps it, and a
+  // mismatch (or parse error) is retired gracefully back to a new game.
+  const SAVE_VERSION = 1;
+  const SAVE_KEY = "rg_save";
+  const SAVE_DEV_KEY = "rg_save_dev";   // smoke/test runs never touch the real slot
+  let saveTimer = null;
+  function saveKey() { return devBoot ? SAVE_DEV_KEY : SAVE_KEY; }
+  function storage() { try { return window.localStorage; } catch (e) { return null; } }
+
+  function serializeSave() {
+    return {
+      version: SAVE_VERSION,
+      ts: Date.now(),
+      seed: W ? W.world_seed : null,
+      player: P,
+      areas: areas,
+      turnNo: turnNo,
+      transitions: transitions,
+    };
+  }
+  function writeSave() {
+    const s = storage(); if (!s || !P || selecting || over) return;
+    try { s.setItem(saveKey(), JSON.stringify(serializeSave())); } catch (e) { /* quota / private mode */ }
+  }
+  // Debounced autosave — many actions fire in a burst during one cast.
+  function requestSave() {
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => { saveTimer = null; writeSave(); }, 250);
+  }
+  function readSave() {
+    const s = storage(); if (!s) return null;
+    let raw; try { raw = s.getItem(saveKey()); } catch (e) { return null; }
+    if (!raw) return null;
+    let data; try { data = JSON.parse(raw); } catch (e) { return null; }
+    if (!data || data.version !== SAVE_VERSION || !data.player || !data.areas) return null;
+    if (!data.areas[data.player.area]) return null;   // current area must exist
+    return data;
+  }
+  function hasSave() { return !devBoot && !!readSave(); }
+  function clearSave() { const s = storage(); if (s) { try { s.removeItem(saveKey()); } catch (e) {} } }
+  function saveSummary() {
+    const d = readSave(); if (!d) return "";
+    const cls = (CLASSES.find((c) => c.id === d.player.goblin_class) || {}).label || "Goblin";
+    const area = (areas[d.player.area] || {}).name || d.player.area;
+    return cls + " · Lv " + (d.player.level || 1) + " · " + area;
   }
   function hasFlag(f) { return (P.story_flags || []).includes(f); }
   function rememberStoryEvent(kind, text) {
@@ -360,14 +575,30 @@
     const meta = ITEMS[id];
     if (!meta || meta.kind !== "potion" || itemCount(id) <= 0) return;
     // Don't waste a potion that would do nothing (already topped up).
-    const wouldHelp = (meta.heal && P.hp < P.max_hp) || (meta.courage && P.courage < P.max_courage);
+    const wouldHelp = (meta.heal && P.hp < P.max_hp) || (meta.courage && P.courage < P.max_courage) || meta.shield;
     if (!wouldHelp) { toast("Already full — save the <b>" + meta.label + "</b> for later."); return; }
     let msg = "";
     if (meta.heal) { const before = P.hp; P.hp = clamp(P.hp + meta.heal, 0, P.max_hp); msg = "+" + (P.hp - before) + " HP"; }
     if (meta.courage) { const before = P.courage; P.courage = clamp(P.courage + meta.courage, 0, P.max_courage); msg += (msg ? ", " : "") + "+" + (P.courage - before) + " courage"; }
+    if (meta.shield) { P.fx = P.fx || {}; P.fx.shield = Math.max(P.fx.shield || 0, meta.shield); msg += (msg ? ", " : "") + "🛡 shield " + meta.shield; }
     removeItem(id, 1);
     toast("🧪 Used <b>" + meta.label + "</b> (" + (msg || "no effect") + ").");
     refreshPanels();
+    requestSave();
+  }
+  // Potion belt quick-use (rpg_plan.md §5). Slot 1 = healing (key H), slot 2 =
+  // ward/courage (key G), unlocked at L7. We use H/G rather than 1/2 because the
+  // number keys already pick runes in this build.
+  function quickUse(slot) {
+    if (busy || over || drawing || dialogueOpen || selecting) return;
+    let id = null;
+    if (slot === 1) { id = itemCount("health_potion") > 0 ? "health_potion" : null; }
+    else if (slot === 2) {
+      if ((P.potion_belt_slots || 1) < 2) { toast("Potion belt slot 2 unlocks at level 7."); return; }
+      id = itemCount("ward_salve") > 0 ? "ward_salve" : (itemCount("courage_draught") > 0 ? "courage_draught" : null);
+    }
+    if (!id) { toast("Belt slot " + slot + " is empty."); return; }
+    useItem(id);
   }
   function weaponLabel(id) { return (WEAPONS[id] && WEAPONS[id].label) || id; }
   function addUnique(arr, text) { if (text && !arr.includes(text)) arr.push(text); }
@@ -399,6 +630,22 @@
   }
   function maxRunes() { return P.four_rune_unlocked ? 4 : 3; }
 
+  // Runes unlock as the goblin levels: 3 at the start, then one more each
+  // level-up. The order is story-aware — puzzle-critical runes (eye, mirror,
+  // wave, key) come early so a low-level player is never gated out of the
+  // caverns/library/sewer content; pure combat/curse runes trail at the end.
+  const RUNE_UNLOCK_ORDER = [
+    "spiral", "jagged_line", "closed_circle",   // level 1 — the starting three
+    "eye", "mirror", "wave", "key", "flame", "leaf", "coin", "bell",
+    "thread", "bone", "three_dots", "tooth", "broken_mark",
+  ];
+  function runeUnlockLevel(key) {
+    const i = RUNE_UNLOCK_ORDER.indexOf(key);
+    if (i < 0) return 1;          // unknown rune: never gate it
+    return i < 3 ? 1 : i - 1;     // idx 3 -> L2, idx 4 -> L3, ... idx 15 -> L14
+  }
+  function isRuneUnlocked(key) { return (P.level || 1) >= runeUnlockLevel(key); }
+
   // ---- layout ----
   let shakeAmt = 0;
   function layout() {
@@ -428,6 +675,11 @@
   // Show/hide flag-gated entities (consequence enemies, returning allies).
   function applyConditionalSpawns(areaId) {
     const ar = areas[areaId]; if (!ar) return;
+    // Summoned shades are per-encounter only: clear any left over from a prior
+    // visit (and purge their respawn-ledger entries) so they never accumulate
+    // or respawn across area entries.
+    ar.entities = ar.entities.filter((e) => !e.summoned);
+    if (P.defeats) for (const k of Object.keys(P.defeats)) { if (k.indexOf("_spawn") >= 0) delete P.defeats[k]; }
     const set = (id, show, flagWhenShown) => {
       const e = ar.entities.find((x) => x.id === id);
       if (!e || e.state === "defeated") return;
@@ -465,33 +717,298 @@
     if (!WALK.has(A.rows[y][x]) || (x === P.x && y === P.y)) return false;
     return !liveEntities().some((o) => o !== e && o.blocking && o.x === x && o.y === y);
   }
+  // Base melee damage an enemy deals (server-stamped e.dmg), +1 while enraged.
+  function enemyHitDamage(e) {
+    let d = e.dmg || (e.type === "boss" ? 3 : 1);
+    if (e.fx && e.fx.enraged) d += 1;
+    return d;
+  }
+  // Elite affix riders that fire whenever the enemy lands a blow on the player.
+  function enemyOnHit(e) {
+    if (e.affix === "vampiric" && e.hp > 0 && e.hp < e.max_hp) {
+      e.hp = clamp(e.hp + 1, 0, e.max_hp);
+      addNum("+1", "#6df5a0", e.x + 0.5, e.y - 0.2, 0);
+    } else if (e.affix === "hexed" && P.courage > 0) {
+      P.courage = clamp(P.courage - 1, 0, P.max_courage);
+      addNum("-1✦", "#b07cff", P.x + 0.5, P.y + 0.2, 0);
+    }
+  }
   function enemyAttack(e, verb) {
     if (now() - (enemyCooldown[e.id] || 0) < 850) return;
     enemyCooldown[e.id] = now();
-    const dmg = e.type === "boss" ? 3 : 1;
+    const dmg = enemyHitDamage(e);
+    // the boss swings its greatsword (a random Attack1-4 sheet) on every blow,
+    // shield-absorbed or not
+    if (e.type === "boss") setBossAnim(e, "attack" + (1 + ((Math.random() * 4) | 0)));
+    if (P.fx && P.fx.shield > 0) { P.fx.shield -= 1; if (P.fx.shield <= 0) delete P.fx.shield; toast("Your shield absorbs <b>" + e.name + "</b>."); return; }
     P.hp = clamp(P.hp - dmg, 0, P.max_hp);
+    enemyOnHit(e);
+    if (e.type === "boss") bossSpellVfx(e, dmg);
     spawnHit();
     toast("<b>" + e.name + "</b> " + verb + " for " + dmg + ". Cast a weak rune.");
     if (P.hp <= 0 && !over) lose();
   }
+  // Combat taunts (rpg_plan.md §8): elites/bosses speak via /rg/taunt. The line
+  // renders as a speech bubble; a slow/failed request just stays silent. Each
+  // (enemy, event) fires at most once per run.
+  const tauntsSeen = new Set();
+  async function fireTaunt(enemy, event) {
+    if (!enemy || (enemy.tier !== "elite" && enemy.type !== "boss")) return;
+    const arche = enemy.type === "boss" ? "boss" : (enemy.ability || "brute");
+    const key = enemy.id + ":" + event;
+    if (tauntsSeen.has(key)) return;
+    tauntsSeen.add(key);
+    try {
+      const d = await api("/rg/taunt", { enemy_name: enemy.name, archetype: arche,
+        event: event, area: A ? A.name : "",
+        player: { story_flags: (P.story_flags || []).slice() } });
+      const live = byId(enemy.id);
+      if (d && d.line && live && (event === "defeated" || live.hp > 0)) showBark(enemy, d.line);
+    } catch (e) { /* fallback is silence; never blocks combat */ }
+  }
+  // Loot christening (rpg_plan.md §8): patch a rolled trinket's name/flavor in
+  // place once the model answers. The item is fully usable before this lands.
+  async function requestLootName(t) {
+    if (!t || !t.id) return;
+    try {
+      const d = await api("/rg/loot", { item_spec: t, area: A ? A.name : "" });
+      if (!d || !d.name) return;
+      [P.trinket, P.pending_trinket].forEach((x) => {
+        if (x && x.id === t.id) { x.name = d.name; if (d.flavor) x.flavor = d.flavor; }
+      });
+      refreshPanels(); requestSave();
+    } catch (e) { /* keep the deterministic fallback name */ }
+  }
+  // Knock the player back one tile away from a charging enemy (if walkable).
+  function knockbackPlayer(e) {
+    const dx = Math.sign(P.x - e.x), dy = Math.sign(P.y - e.y);
+    const nx = P.x + dx, ny = P.y + dy;
+    if (ny >= 0 && nx >= 0 && ny < A.rows.length && nx < A.rows[0].length &&
+        WALK.has(A.rows[ny][nx]) && !entityAt(nx, ny)) { P.x = nx; P.y = ny; }
+  }
+  // Knock an enemy one tile away from the player (crit / heavy hit).
+  function knockbackEntity(e) {
+    if (!e || e.type === "boss") return;   // bosses are immovable
+    const dx = Math.sign(e.x - P.x), dy = Math.sign(e.y - P.y);
+    const nx = e.x + (dx || 0), ny = e.y + (dy || 0);
+    if (ny >= 0 && nx >= 0 && ny < A.rows.length && nx < A.rows[0].length &&
+        WALK.has(A.rows[ny][nx]) && !entityAt(nx, ny) && !(nx === P.x && ny === P.y)) {
+      e.x = nx; e.y = ny;
+    }
+  }
+  // Tiles between an enemy and the player along a straight line (charge lane).
+  function chargeLane(e) {
+    if (e.x !== P.x && e.y !== P.y) return null;     // must be orthogonal
+    if (distToPlayer(e) > 4) return null;
+    const dx = Math.sign(P.x - e.x), dy = Math.sign(P.y - e.y);
+    const tiles = []; let x = e.x + dx, y = e.y + dy, n = 0;
+    while ((x !== P.x || y !== P.y) && n < 4) {
+      if (!WALK.has(A.rows[y][x])) return null;       // wall breaks the lane
+      tiles.push([x, y]); x += dx; y += dy; n += 1;
+    }
+    tiles.push([P.x, P.y]);
+    return { dx, dy, tiles };
+  }
+  function ownMinionsAlive(e) {
+    return liveEntities().filter((o) => o.tier === "minion" && o.hp > 0 &&
+      o.id.indexOf(e.id + "_spawn") === 0).length;
+  }
+  function spawnMinionNear(e, idx) {
+    for (const d of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1]]) {
+      const nx = e.x + d[0], ny = e.y + d[1];
+      if (ny < 0 || nx < 0 || ny >= A.rows.length || nx >= A.rows[0].length) continue;
+      if (!WALK.has(A.rows[ny][nx]) || entityAt(nx, ny)) continue;
+      A.entities.push({ id: e.id + "_spawn" + idx + "_" + turnNo, type: "enemy",
+        name: "Summoned Shade", sprite: "👾", sprite_key: e.sprite_key,
+        hp: 3 + 2 * (e.dr || 1), max_hp: 3 + 2 * (e.dr || 1),
+        weakness: (e.weakness || []).slice(0, 1), resistance: [], mood: "summoned",
+        tier: "minion", dr: e.dr || 1, dmg: 1, ability: "", unique: false,
+        summoned: true,   // per-encounter add: never respawns, cleared on area exit
+        state: "idle", blocking: true, x: nx, y: ny, spawn_x: nx, spawn_y: ny });
+      return true;
+    }
+    return false;
+  }
+  // Resolve a telegraphed windup that was set on this enemy a turn ago.
+  function resolveWindup(e) {
+    const w = e.windup; e.windup = null;
+    if (e.fx && (e.fx.stun > 0 || e.fx.calm > 0)) { toast("<b>" + e.name + "</b>'s " + w.kind + " is interrupted!"); return; }
+    if (w.kind === "charge") {
+      // dash up to the lane end, then strike if adjacent for double damage.
+      const last = w.tiles[w.tiles.length - 1];
+      const land = w.tiles.filter((t) => !entityAt(t[0], t[1]) || (t[0] === last[0] && t[1] === last[1]));
+      const dest = land.length ? land[land.length - 1] : [e.x, e.y];
+      if (WALK.has(A.rows[dest[1]][dest[0]]) && !entityAt(dest[0], dest[1])) { e.x = dest[0]; e.y = dest[1]; }
+      if (distToPlayer(e) <= 1) {
+        const dmg = enemyHitDamage(e) * 2;
+        P.hp = clamp(P.hp - dmg, 0, P.max_hp); enemyOnHit(e); spawnHit();
+        knockbackPlayer(e);
+        toast("<b>" + e.name + "</b> charges for " + dmg + " and knocks you back!");
+        if (P.hp <= 0 && !over) lose();
+      } else { toast("<b>" + e.name + "</b> charges past — you dodged!"); }
+    } else if (w.kind === "spit") {
+      if (P.x === w.target[0] && P.y === w.target[1]) {
+        const dmg = enemyHitDamage(e);
+        P.hp = clamp(P.hp - dmg, 0, P.max_hp); enemyOnHit(e); spawnHit();
+        toast("<b>" + e.name + "</b>'s spit hits for " + dmg + "!");
+        if (P.hp <= 0 && !over) lose();
+      } else { toast("<b>" + e.name + "</b> spits — splashes where you stood."); }
+    } else if (w.kind === "summon") {
+      const room = Math.max(0, 3 - ownMinionsAlive(e));   // hard cap of 3 live shades
+      let n = 0; for (let i = 0; i < Math.min(2, room); i++) { if (spawnMinionNear(e, i)) n++; }
+      if (n) toast("<b>" + e.name + "</b> summons " + n + " shade" + (n > 1 ? "s" : "") + "!");
+    }
+  }
+  // One boss action: the arena has a single boss and it owns the whole floor,
+  // so it stalks the player from any distance (walk sheet), double-stepping
+  // once enraged (run sheet), and strikes when adjacent. Within sight it
+  // alternates advancing with a standing spell-cast (attack sheet + projectile
+  // vfx) so it threatens from range too. Runs on every player step (enemyTurn)
+  // AND once per cast — a stationary rune-drawing duel still has the boss
+  // bearing down on you.
+  const bossRangedFlip = {};   // entity id -> alternation bit (cast, move, cast…)
+  function bossTurn(e) {
+    if (distToPlayer(e) <= 1) { enemyAttack(e, "presses in"); return; }
+    const enraged = e.fx && e.fx.enraged;
+    if (distToPlayer(e) <= 6 && (bossRangedFlip[e.id] = !bossRangedFlip[e.id])) {
+      enemyAttack(e, "hurls a calendar curse");
+      return;
+    }
+    const steps = enraged ? 2 : 1;
+    let moved = false;
+    for (let i = 0; i < steps && distToPlayer(e) > 1; i++) {
+      const step = stepToward(e, true);
+      if (!step) break;
+      e.x = step.nx; e.y = step.ny; moved = true;
+    }
+    if (moved) setBossAnim(e, enraged ? "run" : "walk");
+    if (distToPlayer(e) <= 1) enemyAttack(e, "lunges");
+  }
+  // Greedy one-tile step that closes the gap to the player. avoidPortals
+  // keeps blocking pursuers (the boss) from squatting on travel tiles.
+  function stepToward(e, avoidPortals) {
+    return ["up", "down", "left", "right"].map((dir) => {
+      const v = DIRV[dir], nx = e.x + v[0], ny = e.y + v[1];
+      return { nx, ny, d: Math.abs(nx - P.x) + Math.abs(ny - P.y) };
+    }).sort((a, b) => a.d - b.d).find((p) => canEnemyStep(e, p.nx, p.ny) &&
+      (!avoidPortals || !A.entities.some((o) => o.type === "portal" && o.x === p.nx && o.y === p.ny))) || null;
+  }
   function enemyTurn() {
     if (!A || over || busy) return;
     turnNo += 1;
+    if (turnNo % 25 === 0) requestSave();   // periodic autosave (rpg_plan.md §7)
     for (const e of liveEntities()) {
       if (!(e.type === "enemy" || e.type === "boss") || e.hp <= 0) continue;
+      // Elites/bosses bark when they first close to within sight.
+      if ((e.tier === "elite" || e.type === "boss") && distToPlayer(e) <= 4) fireTaunt(e, "spotted");
+      // Enrage: elites/bosses below 33% HP get angrier (and faster).
+      if ((e.tier === "elite" || e.type === "boss") && e.hp <= e.max_hp / 3) {
+        e.fx = e.fx || {};
+        if (!e.fx.enraged) { e.fx.enraged = 999; if (e.type === "boss") setBossAnim(e, "special");
+          toast("<b>" + e.name + "</b> ENRAGES!"); fireTaunt(e, "enrage"); }
+      }
+      // Resolve a pending telegraphed attack first.
+      if (e.windup) { resolveWindup(e); continue; }
       const d0 = distToPlayer(e);
+      // Initiate a telegraphed special if the situation fits.
+      if (e.ability === "charge" && d0 >= 2) {
+        const lane = chargeLane(e);
+        if (lane) { e.windup = { kind: "charge", dx: lane.dx, dy: lane.dy, tiles: lane.tiles }; toast("<b>" + e.name + "</b> winds up a charge — step off the line!"); continue; }
+      }
+      if (e.ability === "spit" && d0 >= 2 && d0 <= 4) {
+        e.windup = { kind: "spit", target: [P.x, P.y] }; toast("<b>" + e.name + "</b> takes aim — move!"); continue;
+      }
+      if (e.ability === "summon" && turnNo % 4 === 0 && ownMinionsAlive(e) < 3 && d0 <= 6) {
+        e.windup = { kind: "summon" }; toast("<b>" + e.name + "</b> begins a summon…"); continue;
+      }
+      if (e.type === "boss") { bossTurn(e); continue; }
       if (d0 <= 1) { enemyAttack(e, "presses in"); continue; }
-      if (e.type === "boss" || d0 > 6 || (d0 > 3 && (turnNo + e.id.length) % 3 !== 0)) continue;
-      const step = ["up", "down", "left", "right"].map((dir) => {
-        const v = DIRV[dir], nx = e.x + v[0], ny = e.y + v[1];
-        return { nx, ny, d: Math.abs(nx - P.x) + Math.abs(ny - P.y) };
-      }).sort((a, b) => a.d - b.d).find((p) => canEnemyStep(e, p.nx, p.ny));
+      const enraged = e.fx && e.fx.enraged;
+      if (d0 > 6 || (!enraged && d0 > 3 && (turnNo + e.id.length) % 3 !== 0)) continue;
+      const step = stepToward(e, false);
       if (step) { e.x = step.nx; e.y = step.ny; }
       if (distToPlayer(e) <= 1) enemyAttack(e, "lunges");
     }
   }
 
+  // Called whenever an enemy dies (cast, burn, or summon cleanup).
+  function onEnemyDefeated(e) {
+    if (e.tier === "elite" || e.type === "boss") fireTaunt(e, "defeated");
+    // Splitting affix: the elite bursts into two minions.
+    if (e.affix === "splitting") {
+      let n = 0; for (let i = 0; i < 2; i++) { if (spawnMinionNear(e, "split" + i)) n++; }
+      if (n) toast("<b>" + e.name + "</b> splits into " + n + " shards!");
+    }
+    // Record non-unique deaths so the area can repopulate them later. Summoned
+    // shades are excluded — they are per-encounter adds, not world population.
+    if (e.unique === false && !e.summoned) {
+      P.defeats = P.defeats || {};
+      P.defeats[e.id] = transitions;
+    }
+  }
+  // Respawn non-unique enemies whose death is ≥2 area-transitions old (§2.3).
+  function respawnEnemies(areaId) {
+    const ar = areas[areaId]; if (!ar || !P.defeats) return;
+    for (const e of ar.entities) {
+      if (e.unique !== false || e.summoned || e.state !== "defeated") continue;
+      const when = P.defeats[e.id];
+      if (when == null || transitions - when < 2) continue;
+      e.state = "idle"; e.blocking = true; e.hp = e.max_hp;
+      e.x = e.spawn_x != null ? e.spawn_x : e.x;
+      e.y = e.spawn_y != null ? e.spawn_y : e.y;
+      e.respawned = true;            // server halves XP/gold for these
+      delete P.defeats[e.id];
+    }
+  }
+
   // ---- movement ----
+  // ---- ground gold (kill loot scatters as coin piles you walk over) ----
+  let coins = [];   // {x, y, amount, born} — transient, cleared on travel
+
+  function spawnCoins(x, y, amount) {
+    if (!amount || amount <= 0) return;
+    const spots = [[x, y]];
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const tx = x + dx, ty = y + dy;
+      if (ty >= 0 && tx >= 0 && ty < A.rows.length && tx < A.rows[0].length &&
+          WALK.has(A.rows[ty][tx]) && !(entityAt(tx, ty) || {}).blocking) spots.push([tx, ty]);
+    }
+    const piles = Math.max(1, Math.min(amount, 3, spots.length));
+    for (let i = 0; i < piles; i++) {
+      const amt = Math.floor(amount / piles) + (i < amount % piles ? 1 : 0);
+      if (amt > 0) coins.push({ x: spots[i][0], y: spots[i][1], amount: amt, born: now() });
+    }
+  }
+
+  function collectCoinsAt(x, y) {
+    let got = 0;
+    coins = coins.filter((c) => { if (c.x === x && c.y === y) { got += c.amount; return false; } return true; });
+    if (got > 0) {
+      P.gold = (P.gold || 0) + got;
+      addNum("+" + got + "g", "#ffd24a", x + 0.5, y - 0.3, 0);
+      playSfx("good", 1);
+      requestSave();
+    }
+  }
+
+  function drawCoins() {
+    for (const c of coins) {
+      const cx = sx(c.x) + TILE / 2;
+      const bob = Math.sin(now() / 250 + c.x * 3 + c.y) * 2;
+      const baseY = sy(c.y) + TILE * 0.85 + bob;
+      if (!drawUnitSprite("res_gold", cx, baseY, 0.55, 0)) {
+        ctx.fillStyle = "#ffd24a";
+        ctx.beginPath(); ctx.arc(cx, baseY - TILE * 0.18, TILE * 0.14, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = "#9a7a1a"; ctx.lineWidth = 1.5; ctx.stroke();
+      }
+      // sparkle so piles read as loot, not scenery
+      if (((now() / 400) | 0) % 3 === (c.x + c.y) % 3) {
+        ctx.fillStyle = "rgba(255,240,180,0.9)";
+        ctx.fillRect(cx + TILE * 0.14, baseY - TILE * 0.42, 2, 2);
+      }
+    }
+  }
+
   function tryMove(dir) {
     if (busy || over || drawing) return;
     facing = dir;
@@ -502,11 +1019,15 @@
     const e = entityAt(nx, ny);
     if (e && e.blocking) {
       if (e.type === "deco") { updateTarget(); return; } // scenery just blocks
-      if (e.type === "npc") { openDialogue(e, []); updateTarget(); return; }
+      if (e.type === "npc") {
+        if (SHOP_NPCS.has(e.id)) shopTalk(e); else openDialogue(e, []);
+        updateTarget(); return;
+      }
       toast("<b>" + e.name + "</b> — " + (e.hint || (e.dialogue || "")));
       updateTarget(); return;
     }
     P.x = nx; P.y = ny;
+    collectCoinsAt(nx, ny);
     if (e && !e.blocking) {
       if (e.type === "portal" && e.state !== "locked") travel(e);
       else if (e.type === "powerup") collect(e);
@@ -514,18 +1035,143 @@
     }
     enemyTurn();
     updateTarget();
+    checkProximityBeats();
   }
 
   function travel(portal) {
     P.area = portal.target_area;
     A = areas[P.area];
+    coins = [];                   // uncollected ground gold stays behind
+    transitions += 1;             // drives respawn cadence (rpg_plan.md §2.3)
     applyConditionalSpawns(P.area);
+    respawnEnemies(P.area);
     layout();
     P.x = portal.target_x; P.y = portal.target_y;
     enemyCooldown = {};
     regionCue();
     if (P.area === "gate_approach") addFlag("arena_approach_reached");
     toast("You enter <b>" + A.name + "</b>. " + moodLine());
+    checkAreaBeats();
+    checkProximityBeats();
+    requestSave();                // autosave on area travel
+  }
+
+  // ---- admin mode (client toggle: Shift+L+A) ----
+  function applyAdminUnlock() {
+    adminLockSnapshot = [];
+    Object.values(areas).forEach((ar) => {
+      (ar.entities || []).forEach((e) => {
+        const gated = e.state === "locked" || (e.requires && e.requires.length);
+        if (!gated) return;
+        if (e.type === "portal" || e.type === "locked_door") {
+          adminLockSnapshot.push({ e, state: e.state, blocking: e.blocking, requires: (e.requires || []).slice() });
+          e.state = "open"; e.blocking = false; e.requires = [];
+        } else if (e.type === "chest") {
+          adminLockSnapshot.push({ e, state: e.state, blocking: e.blocking, requires: (e.requires || []).slice() });
+          e.requires = [];
+        }
+      });
+    });
+    if (P) ADMIN_ITEMS.forEach((it) => addInventory(it));
+  }
+  function restoreAdminLocks() {
+    if (!adminLockSnapshot) return;
+    adminLockSnapshot.forEach((s) => { s.e.state = s.state; s.e.blocking = s.blocking; s.e.requires = s.requires; });
+    adminLockSnapshot = null;
+  }
+  function buildAdminGoto() {
+    const sel = $("rg-admin-goto"); if (!sel) return;
+    const ids = areas ? Object.keys(areas) : [];
+    sel.innerHTML = "<option value=''>⇪ Warp to map…</option>" +
+      ids.map((id) => "<option value='" + id + "'>" + (areas[id].name || id) + "</option>").join("");
+    sel.value = "";
+  }
+  function showAdminGoto(on) {
+    const sel = $("rg-admin-goto"); if (sel) sel.style.display = on ? "" : "none";
+    const act = $("rg-admin-actions"); if (act) act.style.display = on ? "" : "none";
+  }
+  // Admin cheat menu: jump levels, force evolutions, grant gear/materials.
+  const ADMIN_ACTIONS = [
+    { v: "lvl1", label: "+1 Level" },
+    { v: "lvl5", label: "+5 Levels" },
+    { v: "lvlmax", label: "Level 20 (max)" },
+    { v: "champion", label: "Evolve → Champion (tier 2)" },
+    { v: "king", label: "Evolve → Goblin King (tier 3)" },
+    { v: "unevolve", label: "Reset evolution → base" },
+    { v: "weapons", label: "Grant ALL weapons" },
+    { v: "reforge", label: "Reforge equipped weapon +1" },
+    { v: "crown", label: "Give Cracked Crown" },
+    { v: "riches", label: "+100 gold + 20 of each material" },
+    { v: "potions", label: "+5 of every potion" },
+    { v: "heal", label: "Full heal + courage" },
+  ];
+  function buildAdminActions() {
+    const sel = $("rg-admin-actions"); if (!sel) return;
+    sel.innerHTML = "<option value=''>⚙ Admin cheats…</option>" +
+      ADMIN_ACTIONS.map((a) => "<option value='" + a.v + "'>" + a.label + "</option>").join("");
+    sel.value = "";
+  }
+  function adminAddLevels(n) {
+    for (let i = 0; i < n && P.level < MAX_LEVEL; i++) {
+      applyProgressGain(Math.max(1, (P.xp_to_next || 1) - (P.xp || 0)));
+    }
+  }
+  function adminAction(v) {
+    if (!P) return;
+    if (v === "lvl1") adminAddLevels(1);
+    else if (v === "lvl5") adminAddLevels(5);
+    else if (v === "lvlmax") adminAddLevels(MAX_LEVEL);
+    else if (v === "champion") { if (P.level < 10) adminAddLevels(10 - P.level); evolveToTier(2); }
+    else if (v === "king") {
+      if (P.level < KING_MIN_LEVEL) adminAddLevels(KING_MIN_LEVEL - P.level);
+      if (!(P.inventory || []).includes(CRACKED_CROWN)) P.inventory.push(CRACKED_CROWN);
+      if ((P.evolution_tier || 1) < 2) evolveToTier(2);
+      wearCrown();
+    } else if (v === "unevolve") {
+      P.evolved = false; P.evolution_tier = 1;
+      P.story_flags = (P.story_flags || []).filter((f) => f !== "player_evolved");
+      toast("Evolution reset to base goblin."); refreshPanels(); requestSave();
+    } else if (v === "weapons") {
+      Object.keys(WEAPONS).forEach((id) => { if (!P.weapon_inventory.includes(id)) P.weapon_inventory.push(id); });
+      toast("🗡️ Granted all weapons — open Bag (I) to equip."); refreshPanels(); requestSave();
+    } else if (v === "reforge") {
+      const t = Math.min(3, ((P.weapon_tiers || {})[P.weapon] || 0) + 1);
+      applyReforge({ weapon: P.weapon, tier: t, message: weaponLabel(P.weapon) + " reforged to +" + t + " (admin)." });
+    } else if (v === "crown") {
+      if (!(P.inventory || []).includes(CRACKED_CROWN)) P.inventory.push(CRACKED_CROWN);
+      toast("👑 Cracked Crown granted — wear it from the Bag at level " + KING_MIN_LEVEL + "+."); refreshPanels(); requestSave();
+    } else if (v === "riches") {
+      P.gold = (P.gold || 0) + 100;
+      ["rune_grit", "warped_cog"].forEach((m) => addItem(m, 20));
+      toast("💰 +100 gold and materials."); refreshPanels(); requestSave();
+    } else if (v === "potions") {
+      ["health_potion", "courage_draught", "ward_salve"].forEach((p) => addItem(p, 5));
+      toast("🧪 Potions stocked."); refreshPanels(); requestSave();
+    } else if (v === "heal") {
+      P.hp = P.max_hp; P.courage = P.max_courage; toast("Fully restored."); requestSave();
+    }
+  }
+  function warpToArea(id) {
+    if (!P || !areas[id]) return;
+    P.area = id; A = areas[id];
+    applyConditionalSpawns(id);
+    layout();
+    const sp = A.spawn; P.x = sp[0]; P.y = sp[1];
+    facing = "down"; selected = []; renderPalette();
+    enemyCooldown = {}; updateTarget(); regionCue();
+    toast("🔓 Warped to <b>" + A.name + "</b>. " + moodLine());
+    checkAreaBeats();
+    checkProximityBeats();
+  }
+  function setAdmin(on) {
+    if (on === adminMode) return;
+    adminMode = on;
+    if (W) W.admin = on;            // drives the HUD badge
+    if (on) { applyAdminUnlock(); buildAdminGoto(); buildAdminActions(); }
+    else { restoreAdminLocks(); }
+    showAdminGoto(on);
+    toast(on ? "🔓 <b>ADMIN MODE ON</b> — every map unlocked. Use the green dropdown to warp."
+             : "Admin mode off — locks restored.");
   }
 
   function collect(e) {
@@ -553,7 +1199,11 @@
     if (!el) return;
     if (t) {
       let extra = "";
-      if (t.type === "enemy" || t.type === "boss") extra = " · " + t.hp + "/" + t.max_hp + " HP · weak " + (t.weakness || []).join("/");
+      if (t.type === "enemy" || t.type === "boss") {
+        extra = " · " + t.hp + "/" + t.max_hp + " HP · weak " + (t.weakness || []).join("/");
+        const fxi = Object.keys(t.fx || {}).map((k) => FX_ICON[k]).filter(Boolean).join("");
+        if (fxi) extra += " " + fxi;
+      }
       else if (t.requires && t.requires.length && t.state === "locked") extra = " · needs " + t.requires.join("+");
       else if (t.requires && t.requires.length) extra = " · reads with " + t.requires.join("+");
       el.innerHTML = "🎯 " + t.name + extra;
@@ -570,6 +1220,9 @@
              weapon_inventory: (P.weapon_inventory || []).slice(),
              story_flags: (P.story_flags || []).slice(), rune_mastery: P.rune_mastery || {},
              gold: P.gold, recent_runes: recentRunes.slice(), evolved: P.evolved,
+             spell_power: P.spell_power || 0, crit: P.crit || 0, area: P.area,
+             weapon_tiers: Object.assign({}, P.weapon_tiers || {}), trinket: P.trinket || null,
+             weapon_kills: Object.assign({}, P.weapon_kills || {}),
              items: Object.assign({}, P.items || {}), quests: Object.assign({}, P.quests || {}) };
   }
   function targetCtx(t) {
@@ -577,7 +1230,7 @@
     return { id: t.id, type: t.type, name: t.name, hp: t.hp, max_hp: t.max_hp,
              weakness: t.weakness, resistance: t.resistance, state: t.state,
              requires: t.requires, tags: t.tags, mood: t.mood, loot: t.loot,
-             dialogue: t.dialogue };
+             dialogue: t.dialogue, tier: t.tier, dr: t.dr, xp: t.xp, respawned: t.respawned };
   }
 
   function metadataLine(meta) {
@@ -594,6 +1247,7 @@
 
   async function castRunes() {
     if (busy || over || drawing) return;
+    selected = selected.filter(isRuneUnlocked);   // guard: never cast a locked rune
     if (!selected.length) { toast("Pick at least one rune (click or press 1–9)."); return; }
     const target = facedTarget();
     busy = true; toast("Casting…");
@@ -613,6 +1267,7 @@
     const image = sketch.toDataURL("image/png");
     busy = true; toast("🔮 The goblin squints at your drawing…");
     closeDraw();
+    showReadingPending();
     try {
       const res = await api("/rg/cast", {
         mode: "drawing", image: image, player: playerCtx(),
@@ -623,8 +1278,9 @@
         const d = (res.visual_reading.detected_runes || []).join(", ") || "unreadable";
         extra = " <span style='color:#6df5a0'>(read: " + d + ")</span>";
       }
+      showReading(res);
       applyCast(res, target, extra);
-    } catch (e) { toast("Drawing cast failed: " + e); }
+    } catch (e) { hideReading(); toast("Drawing cast failed: " + e); }
     busy = false;
   }
 
@@ -636,12 +1292,20 @@
     if (s.player_hp_delta) P.hp = clamp(P.hp + s.player_hp_delta, 0, P.max_hp);
 
     let defeated = false;
+    let lastDefeated = null;   // kill loot in this batch scatters at the corpse
     (res.world_actions || []).forEach((a) => {
       const e = a.target_id ? byId(a.target_id) : null;
       switch (a.type) {
         case "set_entity_hp": if (e) e.hp = a.hp; break;
-        case "defeat_entity": if (e) { e.state = "defeated"; e.blocking = false;
-          P.score += (e.type === "boss" ? 200 : 50); defeated = true;
+        case "defeat_entity": if (e) { e.blocking = false;
+          P.score += (e.type === "boss" ? 200 : 50); defeated = true; lastDefeated = e;
+          onEnemyDefeated(e);
+          if (e.type === "boss") {
+            // let the death sheet play (dissolve to ash, sword left on the
+            // ground) before the entity despawns
+            e.hp = 0; setBossAnim(e, "death");
+            setTimeout(() => { e.state = "defeated"; }, 1000);
+          } else { e.state = "defeated"; }
           toast("<b>" + e.name + "</b> is defeated!"); } break;
         case "set_entity_state": if (e) e.state = a.state; break;
         case "set_entity_blocking": if (e) e.blocking = a.blocking; break;
@@ -657,8 +1321,23 @@
           P.quests[a.quest] = a.state || "active";
           if (a.log) addUnique(P.quest_log, a.log);
           break;
-        case "add_gold": P.gold = Math.max(0, (P.gold || 0) + (a.amount || 0)); break;
-        case "add_xp": applyProgressGain(a.amount || 0); break;
+        case "add_gold":
+          if (a.amount > 0 && lastDefeated) {
+            spawnCoins(lastDefeated.x, lastDefeated.y, a.amount);  // loot hits the floor
+          } else {
+            P.gold = Math.max(0, (P.gold || 0) + (a.amount || 0));
+            if (a.amount > 0) {
+              const gc = target ? tcOf(target) : pcOf();
+              addNum("+" + a.amount + "g", "#ffd24a", gc[0], gc[1] - 0.7, 250);
+            }
+          }
+          break;
+        case "add_xp": {
+          const xc = target ? tcOf(target) : pcOf();
+          if (a.amount > 0) addNum("+" + a.amount + " XP", "#6df5a0", xc[0], xc[1] - 1.0, 450);
+          applyProgressGain(a.amount || 0);
+          break;
+        }
         case "heal_player": P.hp = clamp(P.hp + a.amount, 0, P.max_hp); break;
         case "add_courage": P.courage = clamp(P.courage + a.amount, 0, P.max_courage); break;
         case "change_npc_trust":
@@ -687,19 +1366,19 @@
           (a.runes || []).forEach((r) => {
             const before = P.rune_mastery[r] || 0;
             P.rune_mastery[r] = before + 1;
-            if (P.rune_mastery[r] === 5) toast("✦ You have <b>mastered</b> the " + r.replace(/_/g, " ") + " rune (+1 damage with it).");
+            if (P.rune_mastery[r] === 5) toast("✦ You have <b>mastered</b> the " + r.replace(/_/g, " ") + " rune (+1 damage, steadier casts).");
           });
           break;
         case "set_progress":
-          if (a.level > P.level) { /* level shown by level_up */ }
+          if (a.gained > 0) {
+            const pc2 = target ? tcOf(target) : pcOf();
+            addNum("+" + a.gained + " XP", "#6df5a0", pc2[0], pc2[1] - 1.0, 450);
+            xpFlashUntil = now() + 900;
+          }
           P.level = a.level; P.xp = a.xp; P.xp_to_next = a.xp_to_next;
           break;
         case "level_up":
-          if (a.max_hp) { P.max_hp += a.max_hp; P.hp = clamp(P.hp + a.max_hp, 0, P.max_hp); }
-          if (a.max_courage) { P.max_courage += a.max_courage; P.courage = clamp(P.courage + a.max_courage, 0, P.max_courage); }
-          if (a.unlock_four_runes) P.four_rune_unlocked = true;
-          if (a.rune_mastery_choice) grantMasteryChoice();
-          showBanner("⬆ LEVEL " + a.level + "<br><span style='font-size:11px'>" + (a.note || "") + "</span>");
+          applyLevelReward(a);
           break;
         case "add_weapon":
           if (!P.weapon_inventory.includes(a.weapon)) P.weapon_inventory.push(a.weapon);
@@ -716,27 +1395,66 @@
         case "spawn_entity":
           if (a.entity && !byId(a.entity.id)) A.entities.push(a.entity);
           break;
+        case "add_trinket": gainTrinket(a.trinket); break;
+        case "reforge_weapon": applyReforge(a); break;
+        case "set_weapon_kills":
+          P.weapon_kills = P.weapon_kills || {};
+          P.weapon_kills[a.weapon] = Math.max(P.weapon_kills[a.weapon] || 0, a.count || 0);
+          break;
+        case "knockback_entity": if (e) knockbackEntity(e); break;
+        case "evolve_player": applyEvolvePlayer(a); break;
+        case "apply_status":
+          if (a.status && a.status.indexOf("player_") === 0) { P.fx = P.fx || {}; const k = (STATUS_FX[a.status] || {}).key || a.status.replace("player_", ""); P.fx[k] = Math.max(P.fx[k] || 0, a.turns || 1); }
+          else if (e) { e.fx = e.fx || {}; const k2 = (STATUS_FX[a.status] || {}).key || (a.status || "").replace("enemy_", ""); e.fx[k2] = Math.max(e.fx[k2] || 0, a.turns || 1); }
+          break;
         case "unlock_shortcut":
           if (a.target_id && e) { e.state = "open"; e.blocking = false; }
           if (a.message) { addUnique(P.discoveries, a.message); rememberStoryEvent("shortcut", a.message); }
           break;
+        case "reveal_weakness":
+          if (e) {
+            if (a.weakness) e.weakness = a.weakness;
+            if (a.resistance) e.resistance = a.resistance;
+            toast("🎯 <b>Weak point marked</b> — weak: " + (a.weakness || []).join("/") +
+              ((a.resistance || []).length ? " · resists: " + a.resistance.join("/") : ""));
+          }
+          break;
         case "start_boss_phase":
+          if (e) {
+            if (a.weakness) e.weakness = a.weakness;
+            if (a.resistance) e.resistance = a.resistance;
+            if (e.type === "boss") setBossAnim(e, "special");  // phase-up flare
+          }
           showBanner(a.banner || ("PHASE " + a.phase));
           setTimeout(() => {
             const reactions = (a.boss_reactions || []).map((line) => "<br><span style='color:#ffce6b'>" + line + "</span>").join("");
             toast("<b>Calendar Beast</b>: " + (a.line || "") + reactions);
           }, 700);
-          if (a.phase >= 3) setTimeout(() => { if (!over && canEvolveNow()) maybeEvolve(); }, 1400);
+          if (a.phase >= 3) setTimeout(() => { if (!over && canBecomeKing()) toast("👑 You carry the Cracked Crown and the strength to wear it — open Bag (I) and crown yourself!"); }, 1400);
           break;
         case "win_game": lastEnding = { ending: a.ending, title: a.title, text: a.text,
-          choices: a.choices || [], boss_reactions: a.boss_reactions || [] }; win(); break;
+          choices: a.choices || [], boss_reactions: a.boss_reactions || [] };
+          // the boss's death dissolve (~1s) plays out before the end screen
+          if (lastDefeated && lastDefeated.type === "boss") setTimeout(() => win(), 1500);
+          else win();
+          break;
         default: break;
       }
     });
     if (runes && runes.length) recentRunes = runes.slice();
     P.score += Math.max(0, -(s.enemy_hp_delta || 0)) * 10 + (s.chaos || 0);
 
-    spawnSpellVfx(s, target, runes);
+    // a cast is a "turn": old statuses tick first, then this cast's land
+    tickStatuses();
+    applyStatusEffects(s, target);
+
+    spawnSpellVfx(s, target, runes, res.mode === "drawing");
+    // Crit emphasis: star burst, heavy shake, gold "CRIT!" pop.
+    if (target && lastCastMetadata && lastCastMetadata.combat && lastCastMetadata.combat.crit) {
+      addAnim("star", target.x + 0.5, target.y - 0.4, 1.9, 120);
+      shakeAmt = Math.max(shakeAmt, 0.85);
+      addNum("CRIT!", "#ffe27a", target.x + 0.5, target.y - 0.95, 60);
+    }
 
     if (!over) {
       let line = "<b>" + (s.spell_name || "Spell") + "</b> — " + (s.effect || "");
@@ -756,27 +1474,73 @@
     if (!over && target && (target.type === "enemy" || target.type === "boss") && !defeated) {
       retaliate(target, s.status_effects || []);
     }
+    // A cast is the boss's turn too: unless it just struck back above, it
+    // advances on the player — standing still and casting doesn't park it.
+    if (!over) {
+      for (const b of liveEntities()) {
+        if (b.type !== "boss" || b.hp <= 0) continue;
+        if (target && b.id === target.id && !defeated) continue;  // already retaliated
+        bossTurn(b);
+      }
+    }
     // casting at a friendly NPC also surfaces a model-driven reply
     if (!over && target && target.type === "npc") openDialogue(target, runes);
     updateTarget();
     if (P.hp <= 0 && !over) lose();
+    requestSave();   // persist any state a cast changed (combat, flags, loot, phase)
+  }
+
+  // Apply one level's reward bundle (used by both the server level_up action
+  // and the client-side applyProgressGain fallback). Idempotent per level.
+  function applyLevelReward(r) {
+    if (!r) return;
+    if (r.level) P.level = Math.max(P.level, r.level);
+    if (r.max_hp) { P.max_hp += r.max_hp; P.hp = clamp(P.hp + r.max_hp, 0, P.max_hp); }
+    if (r.max_courage) { P.max_courage += r.max_courage; P.courage = clamp(P.courage + r.max_courage, 0, P.max_courage); }
+    if (r.spell_power) P.spell_power += r.spell_power;
+    if (r.crit) P.crit += r.crit;
+    if (r.crit_knockback) P.crit_knockback = true;
+    if (r.king_eligible) P.king_eligible = true;
+    if (r.potion_belt) P.potion_belt_slots = Math.max(P.potion_belt_slots, r.potion_belt);
+    if (r.unlock_four_runes) P.four_rune_unlocked = true;
+    if (r.evolve_tier && typeof evolveToTier === "function") evolveToTier(r.evolve_tier);
+    if (r.rune_mastery_choice) grantMasteryChoice();
+    // Level-up fanfare: holy burst + star shower on the hero, power sting, shake.
+    addAnim("holy", P.x + 0.5, P.y - 0.2, 1.6, 0);
+    addAnim("star", P.x + 0.5, P.y - 0.6, 1.5, 250);
+    playSfx("power", 2);
+    shakeAmt = Math.max(shakeAmt, 0.3);
+    showBanner("⬆ LEVEL " + (r.level || P.level) + "<br><span style='font-size:11px'>" + (r.note || "") + "</span>");
+    // A new rune unlocks each level — surface it and ungrey the palette.
+    const newRune = RUNE_UNLOCK_ORDER.find((k) => runeUnlockLevel(k) === P.level);
+    if (newRune) {
+      const meta = (runesMeta || []).find((x) => x.key === newRune);
+      if (meta) toast("✨ New rune unlocked: " + meta.label);
+    }
+    renderPalette();
+    if (typeof requestSave === "function") requestSave();
   }
 
   function applyProgressGain(amount) {
     if (!amount) return;
+    xpFlashUntil = now() + 900;   // brief XP-bar pulse so gains read on the HUD
     P.xp += amount;
-    while (P.xp_to_next > 0 && P.xp >= P.xp_to_next) {
+    while (P.level < MAX_LEVEL && P.xp_to_next > 0 && P.xp >= P.xp_to_next) {
       P.xp -= P.xp_to_next;
       P.level += 1;
-      if (P.level === 2) { P.max_hp += 2; P.hp = clamp(P.hp + 2, 0, P.max_hp); }
-      if (P.level === 3) P.four_rune_unlocked = true;
-      if (P.level === 4) grantMasteryChoice();
-      if (P.level >= 5) { P.max_courage += 2; P.courage = P.max_courage; P.xp_to_next = 0; break; }
-      P.xp_to_next = P.level === 2 ? 16 : (P.level === 3 ? 28 : (P.level === 4 ? 44 : 0));
+      applyLevelReward(levelReward(P.level));
+      P.xp_to_next = xpToNext(P.level);
     }
+    if (P.level >= MAX_LEVEL) P.xp_to_next = 0;
   }
 
   function grantMasteryChoice() {
+    // If a conversation is mid-flow (e.g. a quest turn-in that just paid XP and
+    // bumped the level), defer the picker until that dialogue is dismissed.
+    // Opening it now would set masteryChoiceOpen, then the caller's own
+    // showDialogue() would clobber the mastery buttons while the flag stays
+    // true — permanently blocking closeDialogue() and soft-locking the game.
+    if (dialogueOpen && !masteryChoiceOpen) { pendingMasteryChoice = true; return; }
     const cls = CLASSES.find((c) => c.id === P.goblin_class) || {};
     const counts = Object.entries(P.rune_mastery || {}).sort((a, b) => b[1] - a[1]).map((x) => x[0]);
     const pool = counts.concat(selected || [], cls.affinity || [], ["closed_circle", "eye", "wave", "key", "spiral"]);
@@ -801,6 +1565,7 @@
     closeDialogue();
     showBanner("✦ RUNE MASTERY<br><span style='font-size:11px'>" + runeLabel(key) + "</span>");
     toast("✦ You chose <b>" + runeLabel(key) + "</b> mastery.");
+    requestSave();
   }
 
   function openMasteryChoice(choices) {
@@ -817,17 +1582,125 @@
     });
   }
 
+  // ---- persistent status effects (client-owned ticking; 1 cast = 1 turn) ----
+  // Server statuses (from rune GLYPHS) map to durable effects with durations.
+  const STATUS_FX = {
+    enemy_burning: { key: "burn", turns: 2 },   // 1 dmg per turn
+    enemy_swarmed: { key: "burn", turns: 1 },
+    enemy_confused: { key: "stun", turns: 1 },  // skips retaliation
+    enemy_bound: { key: "stun", turns: 1 },
+    enemy_soothed: { key: "calm", turns: 1 },   // skips retaliation
+    enemy_feared: { key: "fear", turns: 2 },    // weaker retaliation
+    player_shielded: { key: "shield", turns: 2 },  // absorbs one hit
+    player_blessed: { key: "regen", turns: 2 },    // +1 HP per turn
+  };
+  const FX_ICON = { burn: "🔥", stun: "💫", calm: "🌊", fear: "😨", shield: "🛡", regen: "✨", enraged: "😡", slow: "🐌" };
+  const WINDUP_ICON = { charge: "⚡", spit: "🎯", summon: "✚" };
+
+  function applyStatusEffects(s, target) {
+    (s.status_effects || []).forEach((st) => {
+      const m = STATUS_FX[st];
+      if (!m) return;
+      if (st.startsWith("enemy_") && target && (target.type === "enemy" || target.type === "boss") && target.hp > 0) {
+        target.fx = target.fx || {};
+        target.fx[m.key] = Math.max(target.fx[m.key] || 0, m.turns);
+      } else if (st.startsWith("player_")) {
+        P.fx = P.fx || {};
+        P.fx[m.key] = Math.max(P.fx[m.key] || 0, m.turns);
+      }
+    });
+  }
+
+  function tickStatuses() {
+    for (const e of liveEntities()) {
+      if (!e.fx) continue;
+      if ((e.type === "enemy" || e.type === "boss") && e.fx.burn > 0 && e.hp > 0) {
+        // the boss's killing blow is server-owned (and must be hand-drawn)
+        e.hp = Math.max(e.type === "boss" ? 1 : 0, e.hp - 1);
+        addNum("-1", "#ff9d4a", e.x + 0.5, e.y - 0.2, 0);
+        if (e.hp <= 0) {
+          e.state = "defeated"; e.blocking = false; P.score += 50;
+          onEnemyDefeated(e);
+          toast("🔥 <b>" + e.name + "</b> succumbs to its wounds!");
+          claimDefeatLoot(e);   // burn kills pay out like cast kills
+        }
+      }
+      for (const k of Object.keys(e.fx)) { e.fx[k] -= 1; if (e.fx[k] <= 0) delete e.fx[k]; }
+    }
+    if (P.fx) {
+      if (P.fx.regen > 0 && P.hp < P.max_hp) {
+        P.hp = clamp(P.hp + 1, 0, P.max_hp);
+        addNum("+1", "#6df5a0", P.x + 0.5, P.y - 0.2, 0);
+      }
+      for (const k of Object.keys(P.fx)) { P.fx[k] -= 1; if (P.fx[k] <= 0) delete P.fx[k]; }
+    }
+  }
+
+  // Kills that resolve outside a cast (burn ticks) fetch their server-rolled
+  // loot bundle from /rg/defeat, then apply it at the corpse.
+  async function claimDefeatLoot(corpse) {
+    let acts;
+    try {
+      const d = await api("/rg/defeat", { player: playerCtx(), target: targetCtx(corpse) });
+      acts = d.world_actions || [];
+    } catch (err) { return; }   // request failed: the kill quietly yields nothing
+    (acts || []).forEach((a) => {
+      switch (a.type) {
+        case "add_gold":
+          if (a.amount > 0) spawnCoins(corpse.x, corpse.y, a.amount);
+          else P.gold = Math.max(0, (P.gold || 0) + (a.amount || 0));
+          break;
+        case "add_item":
+          addItem(a.item, a.qty == null ? 1 : a.qty);
+          if (a.qty !== 0 && (a.qty == null || a.qty > 0)) toast("🎒 +" + (a.qty || 1) + " <b>" + itemLabel(a.item) + "</b>.");
+          break;
+        case "add_trinket": gainTrinket(a.trinket); break;
+        case "set_weapon_kills":
+          P.weapon_kills = P.weapon_kills || {};
+          P.weapon_kills[a.weapon] = Math.max(P.weapon_kills[a.weapon] || 0, a.count || 0);
+          break;
+        case "reforge_weapon": applyReforge(a); break;
+        case "set_progress":
+          if (a.gained > 0) {
+            addNum("+" + a.gained + " XP", "#6df5a0", corpse.x + 0.5, corpse.y - 1.0, 300);
+            xpFlashUntil = now() + 900;
+          }
+          P.level = Math.max(P.level, a.level); P.xp = a.xp; P.xp_to_next = a.xp_to_next;
+          break;
+        case "level_up": applyLevelReward(a); break;
+        case "set_story_flag": addFlag(a.flag); break;
+        case "add_journal_entry":
+          addUnique(P.journal, a.text); addUnique(P.discoveries, a.text);
+          rememberStoryEvent("journal", a.text);
+          break;
+        default: break;
+      }
+    });
+    requestSave();
+  }
+
   function retaliate(enemy, statuses) {
-    const skip = ["enemy_confused", "enemy_soothed", "enemy_bound"].some((x) => statuses.includes(x));
+    const fx = enemy.fx || {};
+    const skip = ["enemy_confused", "enemy_soothed", "enemy_bound"].some((x) => statuses.includes(x)) ||
+      fx.stun > 0 || fx.calm > 0;
     if (skip) { setTimeout(() => toast(enemy.name + " fumbles its turn."), 650); return; }
-    let dmg = enemy.type === "boss" ? 3 : (P.area === "arena" ? 2 : 1);
-    if (statuses.includes("player_shielded")) {
+    let dmg = enemyHitDamage(enemy);
+    if (fx.fear > 0) dmg = Math.max(1, dmg - 1);
+    // The boss telegraphs its counter: the greatsword swing starts as a
+    // windup, then the blow lands with the spell vfx (even into a shield).
+    if (enemy.type === "boss") {
+      setTimeout(() => { if (enemy.hp > 0) setBossAnim(enemy, "attack" + (1 + ((Math.random() * 4) | 0))); }, 320);
+    }
+    if (statuses.includes("player_shielded") || (P.fx && P.fx.shield > 0)) {
+      if (P.fx && P.fx.shield > 0) { P.fx.shield -= 1; if (P.fx.shield <= 0) delete P.fx.shield; }
       setTimeout(() => toast("Your shield absorbs " + enemy.name + "'s blow."), 650); return;
     }
     setTimeout(() => {
       P.hp = clamp(P.hp - dmg, 0, P.max_hp);
+      enemyOnHit(enemy);
+      if (enemy.type === "boss") bossSpellVfx(enemy, dmg);
       spawnHit();
-      toast(enemy.name + " strikes back for " + dmg + "!");
+      toast(enemy.name + " strikes back for " + dmg + (fx.fear > 0 ? " (cowed by fear)" : "") + "!");
       if (P.hp <= 0 && !over) lose();
     }, 650);
   }
@@ -852,6 +1725,25 @@
   function closeDialogue() {
     if (masteryChoiceOpen) return;
     dialogueOpen = false; $("rg-dialogue").className = "rg-dialogue";
+    // A level-up that landed mid-conversation parked its mastery picker here —
+    // now that the dialogue is dismissed, present it.
+    if (pendingMasteryChoice) { pendingMasteryChoice = false; grantMasteryChoice(); }
+  }
+
+  // ---- story card: full-screen panel for the campaign's major beats ----
+  let storyCardOpen = false;
+  function openStoryCard(d, ent) {
+    storyCardOpen = true;
+    $("rg-story").className = "rg-story open";
+    $("rg-story-portrait").textContent = ent ? dialoguePortrait(ent) : "📜";
+    $("rg-story-name").textContent = d.speaker || (ent ? ent.name : "The Broken Calendar");
+    // NPC beats lead with their voice; narrator beats lead with the story line.
+    $("rg-story-text").textContent = (ent && d.npc_line) || d.story_toast || d.npc_line || "…";
+    $("rg-story-sub").textContent =
+      (ent && d.npc_line && d.story_toast) ? d.story_toast : (d.journal_entry || "");
+  }
+  function closeStoryCard() {
+    storyCardOpen = false; $("rg-story").className = "rg-story";
   }
 
   function applyDialoguePayload(npc, d) {
@@ -874,6 +1766,8 @@
   async function openDialogue(npc, runes) {
     if (over || !npc) return;
     showDialogue(npc, "<i>…</i>", true);
+    P.npc_meets = P.npc_meets || {};
+    P.npc_meets[npc.id] = (P.npc_meets[npc.id] || 0) + 1;
     try {
       const d = await api("/rg/dialogue", {
         area: A.name, scene: "talk",
@@ -881,6 +1775,7 @@
         player: { goblin_class: P.goblin_class, level: P.level, hp: P.hp,
           courage: P.courage, weapon: P.weapon, inventory: P.inventory.slice(),
           story_flags: P.story_flags.slice(), npc_trust: P.trust[npc.id] || 0,
+          meet_count: P.npc_meets[npc.id],
           recent_story_events: (P.recent_story_events || []).slice(-3) },
         action: { mode: runes && runes.length ? "cast" : "talk", runes: runes || [] },
       });
@@ -905,12 +1800,22 @@
           P.weapon = a.weapon;
           if (WEAPONS[a.weapon] && WEAPONS[a.weapon].story_flag) addFlag(WEAPONS[a.weapon].story_flag);
           break;
+        case "upgrade_weapon":
+          if (a.message) { addUnique(P.journal, a.message); rememberStoryEvent("journal", a.message); }
+          break;
         case "add_inventory": addInventory(a.item); break;
-        case "add_gold": P.gold = Math.max(0, (P.gold || 0) + (a.amount || 0)); break;
-        case "add_xp": applyProgressGain(a.amount || 0); leveled = true; break;
+        case "add_gold":
+          P.gold = Math.max(0, (P.gold || 0) + (a.amount || 0));
+          if (a.amount > 0) addNum("+" + a.amount + "g", "#ffd24a", P.x + 0.5, P.y - 0.5, 150);
+          break;
+        case "add_xp":
+          if (a.amount > 0) addNum("+" + a.amount + " XP", "#6df5a0", P.x + 0.5, P.y - 0.8, 0);
+          applyProgressGain(a.amount || 0); leveled = true; break;
         case "heal_player": P.hp = clamp(P.hp + (a.amount || 0), 0, P.max_hp); break;
         case "add_courage": P.courage = clamp(P.courage + (a.amount || 0), 0, P.max_courage); break;
         case "set_story_flag": addFlag(a.flag); break;
+        case "add_trinket": gainTrinket(a.trinket); break;
+        case "reforge_weapon": applyReforge(a); break;
         case "add_journal_entry":
           addUnique(P.journal, a.text); addUnique(P.discoveries, a.text);
           rememberStoryEvent("journal", a.text);
@@ -918,6 +1823,7 @@
         default: break;
       }
     });
+    requestSave();   // persist quest turn-ins, shop buys, gold/item changes
     return leveled;
   }
 
@@ -939,12 +1845,187 @@
     }
   }
 
+  // ---- Bone Market shop (deterministic, via /rg/shop) ----
+  const SHOP_NPCS = new Set(["market_merchant", "secret_merchant"]);
+  function shopHtml(d) {
+    const rows = (d.offers || []).map((o) => {
+      const buyable = !o.owned && (o.affordable || o.cursed);
+      let tag = o.owned ? "owned" : (o.cursed ? "free*" : o.price + "g");
+      return "<button class='rg-shop-buy" + (buyable ? "" : " off") + "' data-w='" + o.id + "'" +
+        " data-p='" + (o.price || 0) + "'" + (buyable ? "" : " disabled") + ">" +
+        "<span class='rg-shop-row'><b>" + o.label + "</b>" +
+        "<span class='rg-shop-price" + (o.cursed ? " cursed" : "") + "'>" + tag + "</span></span>" +
+        "<small>" + (o.pitch || o.identity || "") + "</small>" +
+        (o.haggle ? "<small class='rg-shop-haggle'>“" + o.haggle + "”</small>" : "") +
+        "</button>";
+    }).join("");
+    const cursedNote = (d.offers || []).some((o) => o.cursed && !o.owned)
+      ? " · <i>free* = paid in curse, not coins</i>" : "";
+    // Attribute live model-set prices (matches the dialogue panel's tag).
+    const srcTag = d.pricing_source === "model"
+      ? "<div class='rg-shop-model'>✶ prices haggled by " + (d.model || "the story model") + "</div>"
+      : "";
+    // Reforge tab: spend gold + materials to raise owned weapons' tiers.
+    const reforgeRows = (d.reforge || []).map((r) => {
+      if (r.maxed) return "<button class='rg-shop-buy off' disabled><span class='rg-shop-row'><b>" + r.label + " +3</b><span class='rg-shop-price'>maxed</span></span><small>honed to its peak</small></button>";
+      const c = r.cost || {};
+      const cost = [c.gold + "g", c.rune_grit ? c.rune_grit + "⛏️" : "", c.warped_cog ? c.warped_cog + "⚙️" : "", c.min_level > 1 ? "L" + c.min_level : ""].filter(Boolean).join(" ");
+      return "<button class='rg-shop-buy rg-shop-reforge" + (r.affordable ? "" : " off") + "' data-rf='" + r.id + "'" + (r.affordable ? "" : " disabled") + ">" +
+        "<span class='rg-shop-row'><b>" + r.label + " +" + r.next + "</b><span class='rg-shop-price'>" + cost + "</span></span>" +
+        "<small>+1 damage" + (r.next >= 2 ? ", +crit" : "") + (r.next >= 3 ? ", perk awakens" : "") + "</small></button>";
+    }).join("");
+    const reforgeSec = reforgeRows
+      ? "<div class='rg-shop-line' style='margin-top:8px'>⚒️ Reforge (gold + materials)</div><div class='rg-shop'>" + reforgeRows + "</div>"
+      : "";
+    return "<div class='rg-shop-line'>" + (d.line || "") + "</div>" +
+      "<div class='rg-shop-gold'>Your purse: <b>" + (P.gold || 0) + "g</b>" + cursedNote + "</div>" +
+      "<div class='rg-shop'>" + rows + "</div>" + reforgeSec + srcTag;
+  }
+  async function shopTalk(npc, weaponId, quotedPrice) {
+    if (over || !npc) return;
+    if (!weaponId) showDialogue(npc, "<i>…</i>", true);
+    try {
+      let d = await api("/rg/shop", { npc_id: npc.id, weapon_id: weaponId || "",
+        quoted_price: weaponId ? (quotedPrice || 0) : null, player: playerCtx() });
+      if (d.error) { openDialogue(npc, []); return; }
+      const bought = (d.world_actions || []).length > 0;
+      applyQuestActions(d.world_actions || []);
+      if (bought) {
+        refreshPanels();
+        // re-list with post-purchase gold/ownership, keep the merchant's line
+        const fresh = await api("/rg/shop", { npc_id: npc.id, weapon_id: "", player: playerCtx() });
+        if (!fresh.error) { fresh.line = d.line; d = fresh; }
+      }
+      showDialogue(npc, shopHtml(d), false);
+      document.querySelectorAll(".rg-shop-buy:not([disabled])").forEach((b) => {
+        b.onclick = (ev) => {
+          ev.stopPropagation();
+          if (b.dataset.rf) shopTalk(npc, "reforge:" + b.dataset.rf);
+          else shopTalk(npc, b.dataset.w, parseInt(b.dataset.p || "0", 10));
+          canvas.focus();
+        };
+      });
+    } catch (e) { openDialogue(npc, []); }
+  }
+
   function talk() {
     const t = facedTarget();
     if (!t || t.type !== "npc") { toast("Face an NPC, then press T to talk."); return; }
-    if (t.quest) questTalk(t);     // quest-giver -> deterministic quest flow
-    else openDialogue(t, []);      // everyone else -> live story dialogue
+    if (SHOP_NPCS.has(t.id)) shopTalk(t);  // merchants -> shop panel
+    else if (t.quest) questTalk(t);    // quest-giver -> deterministic quest flow
+    else openDialogue(t, []);          // everyone else -> live story dialogue
   }
+
+  // ---- proactive story beats (LLM-triggered via /rg/story_beat) ----
+  // Triggers ship with the world payload; the client fires each beat at most
+  // once (P.beats_seen) and the server owns the text (model + fallback).
+  function beatEligible(b) {
+    if ((P.beats_seen || []).includes(b.id)) return false;
+    if ((b.requires || []).some((f) => !hasFlag(f))) return false;
+    if ((b.requires_any || []).length && !b.requires_any.some(hasFlag)) return false;
+    if ((b.requires_any_2 || []).length && !b.requires_any_2.some(hasFlag)) return false;
+    if ((b.forbids || []).some(hasFlag)) return false;
+    return true;
+  }
+  async function fireBeat(b, ent) {
+    P.beats_seen.push(b.id);  // mark first so a slow request can't double-fire
+    try {
+      const d = await api("/rg/story_beat", {
+        beat_id: b.id, area: A.name,
+        player: { goblin_class: P.goblin_class, level: P.level, hp: P.hp,
+          courage: P.courage, weapon: P.weapon,
+          story_flags: (P.story_flags || []).slice(),
+          recent_story_events: (P.recent_story_events || []).slice(-3) },
+      });
+      if (!d || d.skip) return;
+      if (d.story_toast) rememberStoryEvent("story", d.story_toast);
+      if (d.journal_entry) {
+        addUnique(P.journal, d.journal_entry); addUnique(P.discoveries, d.journal_entry);
+        rememberStoryEvent("journal", d.journal_entry);
+      }
+      // Major beats take over the screen as a story card; the rest stay in
+      // the ambient toast/bark channel.
+      if (b.major) { openStoryCard(d, ent); return; }
+      if (d.story_toast) toast(d.story_toast);
+      if (d.npc_line && ent) showBark(ent, d.npc_line);
+    } catch (e) { console.warn("[story_beat] " + b.id + " failed:", e); }
+  }
+  function checkAreaBeats() {
+    if (!P || !A) return;
+    const b = (STORY_BEATS || []).find((x) =>
+      x.trigger === "area_enter" && x.area === P.area && beatEligible(x));
+    if (b) fireBeat(b, null);
+  }
+  function checkProximityBeats() {
+    if (!P || !A) return;
+    for (const b of STORY_BEATS || []) {
+      if (b.trigger !== "first_meet" || b.area !== P.area || !beatEligible(b)) continue;
+      const e = (A.entities || []).find((x) => x.id === b.npc &&
+        x.state !== "defeated" && x.state !== "hidden");
+      if (e && distToPlayer(e) <= (b.radius || 3)) fireBeat(b, e);
+    }
+  }
+
+  // ---- speech-bubble barks over entities ----
+  function showBark(ent, text) {
+    let clean = String(text).replace(/<[^>]*>/g, "");
+    const prefix = (ent.name || "") + ":";
+    if (clean.startsWith(prefix)) clean = clean.slice(prefix.length).trim();
+    barks = barks.filter((b) => b.eid !== ent.id);
+    barks.push({ eid: ent.id, area: P.area, text: clean.slice(0, 160), until: now() + 6200 });
+  }
+  function wrapBark(text, maxChars) {
+    const words = text.split(/\s+/), lines = [];
+    let line = "";
+    for (const w of words) {
+      if ((line + " " + w).trim().length > maxChars && line) { lines.push(line); line = w; }
+      else line = (line + " " + w).trim();
+      if (lines.length >= 3) break;
+    }
+    if (line && lines.length < 4) lines.push(line);
+    return lines;
+  }
+  function drawBarks() {
+    const t = now();
+    barks = barks.filter((b) => b.until > t);
+    for (const b of barks) {
+      if (b.area !== P.area) continue;
+      const e = (A.entities || []).find((x) => x.id === b.eid);
+      if (!e || e.state === "defeated") continue;
+      const lines = wrapBark(b.text, 28);
+      if (!lines.length) continue;
+      const fs = Math.max(10, Math.floor(TILE * 0.26));
+      ctx.font = fs + "px monospace";
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      const w = Math.max(...lines.map((l) => ctx.measureText(l).width)) + 16;
+      const lh = fs + 4, h = lines.length * lh + 10;
+      const cx = sx(e.x) + TILE / 2;
+      let bx = cx - w / 2, by = sy(e.y) - h - TILE * 0.45;
+      bx = clamp(bx, 4, canvas.width - w - 4);
+      by = Math.max(HUD_TOP + 4, by);
+      const fade = Math.min(1, (b.until - t) / 500);
+      ctx.save();
+      ctx.globalAlpha = 0.92 * fade;
+      ctx.fillStyle = "#13101d"; ctx.strokeStyle = "#b07cff"; ctx.lineWidth = 1.5;
+      if (ctx.roundRect) {
+        ctx.beginPath(); ctx.roundRect(bx, by, w, h, 7); ctx.fill(); ctx.stroke();
+      } else { ctx.fillRect(bx, by, w, h); ctx.strokeRect(bx, by, w, h); }
+      // tail
+      ctx.beginPath();
+      ctx.moveTo(cx - 5, by + h); ctx.lineTo(cx + 5, by + h); ctx.lineTo(cx, by + h + 7);
+      ctx.closePath(); ctx.fill();
+      ctx.fillStyle = "#e8e2f5";
+      lines.forEach((l, i) => ctx.fillText(l, bx + w / 2, by + 8 + lh * i + lh / 2 - 2));
+      ctx.restore();
+    }
+  }
+
+  // Dev/debug peephole (read-only): lets tooling inspect beat + bark state.
+  window.__rgDebug = {
+    barks: () => barks.slice(),
+    beatsSeen: () => (P && P.beats_seen ? P.beats_seen.slice() : []),
+    pos: () => (P ? { area: P.area, x: P.x, y: P.y } : null),
+  };
 
   // ---- banner (boss phase / evolution) ----
   let bannerTimer = null;
@@ -955,30 +2036,68 @@
     bannerTimer = setTimeout(() => { el.className = "rg-banner"; }, 2600);
   }
 
-  // ---- Goblin King evolution ----
-  const HELPER_FLAGS = ["tourist_helped", "fungus_colony_spared", "librarian_trust",
-    "clean_water_restored", "queue_goblin_paid"];
-  const DEVOUR_FLAGS = ["library_shelves_burned", "debt_deepened", "debt_accepted", "fungus_colony_burned"];
-  function canEvolveNow() {
-    if (P.evolved) return false;
-    const identity = HELPER_FLAGS.concat(DEVOUR_FLAGS).some(hasFlag);
-    return P.level >= 5 || identity;
+  // ---- evolution chain (rpg_plan.md §6): base → champion (L10) → King (crown, L16+) ----
+  const KING_MIN_LEVEL = 16, CRACKED_CROWN = "Cracked Crown";
+  // Tier-2 class perk applied on champion evolution.
+  const CHAMPION_PERK = {
+    rogue: () => { P.crit += 5; },           // +5% crit
+    warrior: () => {},                        // retaliation -1 handled in enemyOnHit-adjacent? cosmetic here
+    poison: () => {},                         // burn/poison +1 turn (status-side)
+    hunter: () => {},                         // reveal bonus (server king path)
+    barbarian: () => {},                      // knockback threshold (server heavy-hit)
+  };
+  // Auto champion form at level 10 (called from the level-up reward).
+  function evolveToTier(tier) {
+    tier = tier || 2;
+    if ((P.evolution_tier || 1) >= tier) return;
+    P.evolution_tier = tier;
+    if (tier === 2) {
+      const name = CHAMPION_NAME[P.goblin_class] || "Champion";
+      (CHAMPION_PERK[P.goblin_class] || (() => {}))();
+      P.spell_power = (P.spell_power || 0); // +1 already granted by the L10 reward bundle
+      addAnim && addAnim("holy", P.x + 0.5, P.y - 0.3, 2.0, 80);
+      shakeAmt = Math.max(shakeAmt || 0, 0.6);
+      showBanner("⬆ EVOLUTION<br><span style='font-size:11px'>You become the " + name + "</span>");
+      toast("✨ You evolve into the <b>" + name + "</b> — your champion form.");
+    }
+    refreshPanels(); requestSave();
   }
-  function maybeEvolve() {
-    if (P.evolved) return;
+  // Can the player crown themselves right now?
+  function canBecomeKing() {
+    return !P.evolved && P.level >= KING_MIN_LEVEL && (P.inventory || []).includes(CRACKED_CROWN);
+  }
+  // Wear the Cracked Crown → Goblin King (tier 3). Player-initiated from the bag.
+  function wearCrown() {
+    if (P.evolved) { toast("You are already the Goblin King."); return; }
+    if (!(P.inventory || []).includes(CRACKED_CROWN)) { toast("You have no Cracked Crown to wear."); return; }
+    if (P.level < KING_MIN_LEVEL) { toast("The crown weighs your résumé and finds it thin — return at level " + KING_MIN_LEVEL + "."); return; }
     const cls = CLASSES.find((c) => c.id === P.goblin_class) || {};
-    addFlag("player_evolved");
-    P.evolved = true;
-    P.courage = P.max_courage;          // refill courage
+    P.inventory = (P.inventory || []).filter((i) => i !== CRACKED_CROWN);
+    P.evolved = true; P.evolution_tier = 3; addFlag("player_evolved");
+    P.max_hp += 5; P.hp = clamp(P.hp + 5, 0, P.max_hp);
+    P.spell_power = (P.spell_power || 0) + 2;
+    P.crit = (P.crit || 0) + 10;
+    P.max_courage += 2; P.courage = P.max_courage;
     P.four_rune_unlocked = true;
-    P.rune_mastery[(cls.affinity || ["closed_circle"])[0]] = Math.max(5, P.rune_mastery[(cls.affinity || ["closed_circle"])[0]] || 0);
+    const aff = (cls.affinity || ["closed_circle"])[0];
+    P.rune_mastery[aff] = Math.max(5, P.rune_mastery[aff] || 0);
+    addAnim && addAnim("explosion_big", P.x + 0.5, P.y - 0.3, 2.4, 60);
+    addAnim && addAnim("star", P.x + 0.5, P.y - 0.5, 2.0, 220);
+    shakeAmt = Math.max(shakeAmt || 0, 1.0);
     showBanner("👑 GOBLIN KING<br><span style='font-size:11px'>" + (cls.king_line || "") + "</span>");
     toast("<b>You evolve into the Goblin King!</b> " + (cls.king_ability || ""));
+    refreshPanels(); requestSave();
+  }
+  // Server-driven evolution action (kept for completeness / future hooks).
+  function applyEvolvePlayer(a) {
+    if ((a.tier || 0) >= 3) wearCrown();
+    else evolveToTier(a.tier || 2);
   }
 
   // ---- win / lose ----
   function endScreen(cls, title, sub) {
     over = true;
+    clearSave();   // a finished run (win or loss) is not resumable
     const el = $("rg-end");
     el.className = "rg-end open " + cls;
     $("rg-end-title").textContent = title;
@@ -1022,10 +2141,11 @@
 
   // The drawn magic: complexity (layers, size, shake, secondary bursts) scales
   // with the spell's tier — derived from rune count, chaos, damage and curse.
-  function spawnSpellVfx(s, target, runes) {
+  // Hand-drawn casts (flashy) get a full tier bump plus their own fanfare.
+  function spawnSpellVfx(s, target, runes, flashy) {
     runes = runes || [];
     const el = elementOf(runes), cfg = ELEM_VFX[el] || ELEM_VFX.light;
-    const t = spellTier(s, runes);
+    const t = spellTier(s, runes) + (flashy ? 1 : 0);
     const dmg = -(s.enemy_hp_delta || 0), heal = Math.max(0, s.player_hp_delta || 0);
     const pc = pcOf(), tc = target ? tcOf(target) : pc;
     const travel = target ? 300 : 0;
@@ -1043,6 +2163,12 @@
       addAnim("tornado", tc[0], tc[1] - 0.3, 1.5, 90 + travel);
       shakeAmt = Math.max(shakeAmt, 0.7);
     }
+    if (flashy) {
+      addAnim("star", pc[0], pc[1] - 0.5, 1.4, 60);
+      if (target) addAnim("star", tc[0], tc[1] - 0.5, 1.4, 200 + travel);
+      addNum("✍ DRAWN", "#ffd24a", pc[0], pc[1] - 1.0, 40);
+      shakeAmt = Math.max(shakeAmt, 0.45);
+    }
     if (heal > 0) addAnim("holy", pc[0], pc[1] - 0.2, 1.1, 0);
     if ((s.status_effects || []).includes("player_shielded")) addAnim("barrier", pc[0], pc[1] - 0.2, 1.3, 0);
     if (dmg > 0) { addNum("-" + dmg, "#ff5d73", tc[0], tc[1] - 0.6, 110 + travel); shakeAmt = Math.max(shakeAmt, Math.min(0.55, 0.12 + dmg * 0.06)); }
@@ -1051,11 +2177,32 @@
   }
   function spawnHit() { vfx.push({ kind: "hit", start: now(), dur: 360 }); shakeAmt = Math.max(shakeAmt, 0.35); }
 
+  // Boss attacks land as full spell casts (reusing the player's spell sheets):
+  // magic circle under the boss, cast flash, projectile to the player, impact.
+  // Dark magic normally; fire once enraged so the last phase reads hotter.
+  function bossSpellVfx(e, dmg) {
+    const cfg = ELEM_VFX[e.fx && e.fx.enraged ? "fire" : "dark"];
+    const ec = tcOf(e), pc = pcOf();
+    const travel = 260;
+    addCircle(circleRow(["spiral", "eye"]), ec[0], ec[1] + 0.1, 2.6, 800);
+    addAnim(cfg.cast, ec[0], ec[1] - 0.3, 1.5, 0);
+    addProj(cfg.proj, ec, pc, travel, 100);
+    addAnim(cfg.impact, pc[0], pc[1] - 0.2, 1.4, 100 + travel);
+    addAnim("explosion", pc[0], pc[1] - 0.2, 1.1, 140 + travel);
+    addNum("-" + dmg, "#ff5d73", pc[0], pc[1] - 0.6, 100 + travel);
+    shakeAmt = Math.max(shakeAmt, 0.5);
+    playSfx(cfg.sound, 2);
+  }
+
   // ---- rendering ----
   function waterColor() {
     if (A.biome === "cavern") return ["#255968", "#326f7e", "#78c7d8"];
     if (A.biome === "library") return ["#273d63", "#36527d", "#8db3dd"];
     if (A.biome === "arena") return ["#4e275f", "#653579", "#d49cff"];
+    if (A.biome === "sewer") return ["#2a4a34", "#3a6347", "#8fd8a0"];   // murk
+    if (A.biome === "ice") return ["#5b8fb8", "#7fb3d6", "#e8f6ff"];     // glacial melt
+    if (A.biome === "forge") return ["#8a2406", "#c2540e", "#ffd24a"];   // lava
+    if (A.biome === "market") return ["#3f7a68", "#5aa389", "#c9f0d8"];  // oasis
     return ["#3f8791", "#60aeb6", "#b4ecec"];
   }
   function drawWater(px, py, x, y) {
@@ -1081,7 +2228,8 @@
   }
   function drawTiles() {
     const b = BIOME[A.biome] || DEFAULT_BIOME;
-    const haveGrass = !!spr("grass");
+    const groundName = spr(b.ground) ? b.ground : "grass";
+    const haveGround = !!spr(groundName);
     const x0 = clamp(Math.floor((0 - OX) / TILE), 0, COLS - 1);
     const x1 = clamp(Math.ceil((canvas.width - OX) / TILE), 0, COLS - 1);
     const y0 = clamp(Math.floor((HUD_TOP - OY) / TILE), 0, ROWS - 1);
@@ -1093,14 +2241,9 @@
         const px = sx(x), py = sy(y);
         if (ch === "~") {
           drawWater(px, py, x, y);
-        } else if (haveGrass && walk) {
-          drawTileSprite("grass", px, py);
-          if (A.biome !== "toll_road") {
-            ctx.fillStyle = A.biome === "cavern" ? "rgba(18,76,96,0.38)" :
-              A.biome === "library" ? "rgba(36,52,84,0.42)" :
-              A.biome === "arena" ? "rgba(90,28,92,0.42)" : "rgba(20,20,30,0.25)";
-            ctx.fillRect(px, py, TILE, TILE);
-          }
+        } else if (haveGround && walk) {
+          drawTileSprite(groundName, px, py);
+          if (b.tint) { ctx.fillStyle = b.tint; ctx.fillRect(px, py, TILE, TILE); }
           if (walk && ((x * 7 + y * 11 + (now() / 900 | 0)) % 17 === 0)) {
             ctx.fillStyle = "rgba(255,255,255,0.08)";
             ctx.fillRect(px + TILE * 0.18, py + TILE * 0.72, TILE * 0.26, 2);
@@ -1133,6 +2276,134 @@
     ctx.restore();
   }
 
+  // The final boss radiates a roiling Super Saiyan-style energy aura: a pulsing
+  // halo, rising violet flame tongues, a white-hot core, a ground burst ring,
+  // and upward sparks. All additive ("lighter") so the energy reads as glowing.
+  // Drawn behind the sprite; hotter and taller once the boss enters its last
+  // phase (hp <= 1/3) so the fight feels like it's escalating.
+  function drawBossAura(cx, baseY, e) {
+    const t = now() / 1000;
+    const cy = baseY - TILE * 0.5;            // visual center of the body
+    const enraged = e.hp <= e.max_hp / 3;     // final phase → bigger, hotter
+    const R = TILE * (enraged ? 1.45 : 1.2);
+    const flick = 0.85 + 0.15 * Math.sin(t * 9) * Math.sin(t * 5.3);
+
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter"; // energy stacks additively
+
+    // 1) outer halo
+    const halo = ctx.createRadialGradient(cx, cy, R * 0.1, cx, cy, R * flick);
+    halo.addColorStop(0, "rgba(200,140,255,0.5)");
+    halo.addColorStop(0.45, "rgba(140,60,255,0.36)");
+    halo.addColorStop(1, "rgba(90,20,200,0)");
+    ctx.fillStyle = halo;
+    ctx.beginPath(); ctx.arc(cx, cy, R * flick, 0, Math.PI * 2); ctx.fill();
+
+    // 2) rising flame tongues, each with its own flicker/sway phase
+    const N = enraged ? 11 : 8;
+    for (let i = 0; i < N; i++) {
+      const ph = i * 1.7;
+      const sway = Math.sin(t * 6 + ph) * TILE * 0.12;
+      const rise = 0.5 + 0.5 * Math.sin(t * 7 + ph);          // 0..1
+      const baseX = cx + (i / (N - 1) - 0.5) * TILE * 1.6;
+      const fh = TILE * (1.0 + 1.0 * rise) * (enraged ? 1.3 : 1);
+      const fw = TILE * 0.2;
+      const tipX = baseX + sway, tipY = cy - fh;
+      const g = ctx.createLinearGradient(baseX, baseY, tipX, tipY);
+      g.addColorStop(0, "rgba(130,50,255,0)");
+      g.addColorStop(0.25, "rgba(165,90,255,0.65)");
+      g.addColorStop(0.7, "rgba(120,40,245,0.5)");
+      g.addColorStop(1, "rgba(220,180,255,0)");
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.moveTo(baseX - fw, baseY);
+      ctx.quadraticCurveTo(baseX - fw * 0.4, cy - fh * 0.5, tipX, tipY);
+      ctx.quadraticCurveTo(baseX + fw * 0.4, cy - fh * 0.5, baseX + fw, baseY);
+      ctx.closePath(); ctx.fill();
+    }
+
+    // 3) white-hot inner core
+    const core = ctx.createRadialGradient(cx, cy + TILE * 0.1, 1, cx, cy + TILE * 0.1, R * 0.5);
+    core.addColorStop(0, "rgba(245,230,255," + (0.45 * flick).toFixed(3) + ")");
+    core.addColorStop(1, "rgba(190,140,255,0)");
+    ctx.fillStyle = core;
+    ctx.beginPath(); ctx.arc(cx, cy + TILE * 0.1, R * 0.5, 0, Math.PI * 2); ctx.fill();
+
+    // 4) ground burst ring at the feet
+    ctx.globalAlpha = 0.5 * flick;
+    ctx.strokeStyle = "rgba(200,150,255,0.85)"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.ellipse(cx, baseY - TILE * 0.06, R * 0.55, R * 0.16, 0, 0, Math.PI * 2); ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    // 5) upward energy sparks rising from the body
+    const sparks = enraged ? 9 : 6;
+    for (let i = 0; i < sparks; i++) {
+      const prog = (t * (0.6 + (i % 3) * 0.12) + i * 0.37) % 1;   // 0..1 loop
+      const px = cx + Math.sin(i * 2.3 + i) * TILE * 0.7;
+      const py = baseY - prog * TILE * 2.0;
+      ctx.fillStyle = "rgba(230,205,255," + ((1 - prog) * 0.8).toFixed(3) + ")";
+      ctx.beginPath(); ctx.arc(px, py, TILE * 0.05 * (1 - prog * 0.5), 0, Math.PI * 2); ctx.fill();
+    }
+
+    ctx.restore();
+  }
+
+  // Deterministic 0..1 hash so lightning bolts flicker without Math.random
+  // (re-rolled per time bucket — same frame, same bolts).
+  function boltRnd(seed, n) {
+    const x = Math.sin(seed * 127.1 + n * 311.7) * 43758.5453;
+    return x - Math.floor(x);
+  }
+
+  // Electric crackle drawn IN FRONT of a sprite: jagged arcs that wrap the
+  // body (Super Saiyan style), blinking in and out per time bucket. Colors and
+  // bolt count come from `o` so the boss (violet) and the Goblin King (green)
+  // can share the effect.
+  function drawCrackle(cx, baseY, o) {
+    const seed = ((now() / 90) | 0) + (o.seedOff || 0);  // re-roll ~11x/sec
+    const bolts = o.bolts || 4;
+    const cy = baseY - (o.lift || TILE * 0.55);          // vertical body center
+    const rx = o.rx || TILE * 0.62, ry = o.ry || TILE * 0.78;
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    ctx.lineJoin = "round"; ctx.lineCap = "round";
+    for (let b = 0; b < bolts; b++) {
+      if (boltRnd(seed, b * 7 + 1) < 0.3) continue;   // bolts blink
+      const a0 = boltRnd(seed, b * 7 + 2) * Math.PI * 2;
+      const a1 = a0 + 0.7 + boltRnd(seed, b * 7 + 3) * (o.long ? 1.6 : 1.1);
+      const segs = 5;
+      ctx.beginPath();
+      for (let s = 0; s <= segs; s++) {
+        const a = a0 + (a1 - a0) * (s / segs);
+        const jr = 1 + (boltRnd(seed, b * 31 + s + 5) - 0.5) * 0.5;
+        const x = cx + Math.cos(a) * rx * jr;
+        const y = cy + Math.sin(a) * ry * jr;
+        if (s) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+      }
+      // colored glow pass, then white-hot core pass over the same path
+      ctx.strokeStyle = o.glow; ctx.lineWidth = 2.6; ctx.stroke();
+      ctx.strokeStyle = "rgba(255,255,255,0.95)"; ctx.lineWidth = 1; ctx.stroke();
+      // small fork off the last segment
+      if (boltRnd(seed, b * 7 + 4) > 0.5) {
+        const fa = a1 + 0.3, fl = TILE * 0.3;
+        const fx0 = cx + Math.cos(a1) * rx, fy0 = cy + Math.sin(a1) * ry;
+        ctx.beginPath();
+        ctx.moveTo(fx0, fy0);
+        ctx.lineTo(fx0 + Math.cos(fa) * fl, fy0 + Math.sin(fa) * fl * 0.6);
+        ctx.strokeStyle = o.fork; ctx.lineWidth = 1.2; ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
+  function drawBossLightning(cx, baseY, e) {
+    const enraged = e.hp <= e.max_hp / 3;
+    drawCrackle(cx, baseY, {
+      bolts: enraged ? 6 : 4, long: enraged,
+      glow: "rgba(185,110,255,0.8)", fork: "rgba(215,170,255,0.85)",
+    });
+  }
+
   function drawEntity(e) {
     const cx = sx(e.x) + TILE / 2;
     const cy = sy(e.y) + TILE / 2, baseY = sy(e.y) + TILE * 0.98;
@@ -1145,17 +2416,35 @@
       ctx.fillStyle = "#050309";
       ctx.beginPath(); ctx.ellipse(cx, baseY - TILE * 0.1, TILE * 0.28, TILE * 0.08, 0, 0, Math.PI * 2); ctx.fill();
       ctx.restore();
+      // The final boss radiates a menacing energy aura behind its sprite.
+      if (e.type === "boss" && e.hp > 0) drawBossAura(cx, baseY, e);
+      // Elite enemies get a pulsing gold ring; enraged ones a red flare.
+      if (e.tier === "elite" && e.hp > 0) {
+        const enr = e.fx && e.fx.enraged;
+        ctx.save();
+        ctx.globalAlpha = 0.45 + 0.2 * Math.abs(Math.sin(now() / 260));
+        ctx.strokeStyle = enr ? "#ff3b3b" : "#ffd24a"; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.ellipse(cx, baseY - TILE * 0.1, TILE * 0.36, TILE * 0.12, 0, 0, Math.PI * 2); ctx.stroke();
+        ctx.restore();
+      }
       const name = entitySprite(e);
       const fi = (now() / 140) | 0;
       let drew = false;
       if (name && !(e.type === "chest" && e.state === "open")) {
-        drew = drawUnitSprite(name, cx, baseY, null, fi);
+        if (e.type === "boss" && spr("mega_boss_idle")) {
+          // state-machine sheets; flip so the boss always faces the player
+          const ba = bossAnimSheet(e);
+          drew = drawUnitSprite(ba.sheet, cx, baseY, null, ba.fi, P.x > e.x);
+        }
+        if (!drew) drew = drawUnitSprite(name, cx, baseY, null, fi);
       }
       if (!drew) {
         ctx.font = Math.floor(TILE * 0.7) + "px serif";
         ctx.textAlign = "center"; ctx.textBaseline = "middle";
         ctx.fillText(e.type === "chest" && e.state === "open" ? "📭" : e.sprite, cx, cy);
       }
+      // Electricity crackles OVER the boss body so the aura wraps the sprite.
+      if (e.type === "boss" && e.hp > 0) drawBossLightning(cx, baseY, e);
     }
     // lock badge
     if (e.state === "locked") {
@@ -1170,11 +2459,37 @@
       ctx.fillStyle = "#3a1020"; ctx.fillRect(bx, by, w, h);
       ctx.fillStyle = e.type === "boss" ? "#ffd24a" : "#ff5d73";
       ctx.fillRect(bx, by, w * clamp(e.hp / e.max_hp, 0, 1), h);
+      // Floating threat labels stack upward from just above the HP bar. A
+      // cursor keeps level / alert / status rows from colliding regardless of
+      // which are present.
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.lineJoin = "round";
+      let topY = sy(e.y) - 13;
+      // Level on every threat (rpg_plan.md §2 clarity tweak): outlined pixel
+      // text — no plate — so it reads as part of the HUD, not a debug box.
+      // Boss/elite glow gold; lesser foes get a softer cream.
+      if (e.level) {
+        const label = "Lv " + e.level;
+        ctx.font = "bold " + Math.floor(TILE * 0.22) + 'px "Press Start 2P", monospace';
+        ctx.lineWidth = 3; ctx.strokeStyle = "#170b12";
+        ctx.strokeText(label, cx, topY);
+        ctx.fillStyle = e.type === "boss" || e.tier === "elite" ? "#ffd24a" : "#ffd9a8";
+        ctx.fillText(label, cx, topY);
+        topY -= Math.floor(TILE * 0.30);
+      }
       if (distToPlayer(e) <= 4) {
-        ctx.fillStyle = "#ffd24a";
         ctx.font = "bold " + Math.floor(TILE * 0.24) + 'px "Press Start 2P", monospace';
-        ctx.textAlign = "center"; ctx.textBaseline = "middle";
-        ctx.fillText("!", cx, sy(e.y) - 13);
+        ctx.lineWidth = 3; ctx.strokeStyle = "#170b12";
+        ctx.strokeText("!", cx, topY);
+        ctx.fillStyle = "#ffd24a";
+        ctx.fillText("!", cx, topY);
+        topY -= Math.floor(TILE * 0.30);
+      }
+      let fxIcons = Object.keys(e.fx || {}).map((k) => FX_ICON[k]).filter(Boolean).join("");
+      if (e.windup) fxIcons = (WINDUP_ICON[e.windup.kind] || "❗") + fxIcons;
+      if (fxIcons) {
+        ctx.font = Math.floor(TILE * 0.32) + "px serif";
+        ctx.fillText(fxIcons, cx, topY);
       }
     }
     if (e.type === "npc" && P.trust && P.trust[e.id]) {
@@ -1185,26 +2500,96 @@
   }
 
   function playerSprite() {
-    if (P.evolved && spr(KING_SPRITE)) return KING_SPRITE;
+    const tier = P.evolution_tier || (P.evolved ? 3 : 1);
+    if (tier >= 3 && spr(KING_SPRITE)) return KING_SPRITE;
+    if (tier >= 2) { const ch = CHAMPION_SPRITE[P.goblin_class]; if (ch && spr(ch)) return ch; }
     const c = CLASS_SPRITE[P.goblin_class];
     if (c && spr(c)) return c;
     const fb = CLASS_SPRITE_FALLBACK[P.goblin_class];
     if (fb && spr(fb)) return fb;
     return spr("player") ? "player" : null;
   }
+  // ---- Goblin King aura: procedural DBZ-style ki corona --------------------
+  // No asset exists for this, so it renders one in code. The corona is drawn
+  // as nested zigzag polygons (deep green -> green -> pale core) on a tiny
+  // offscreen canvas, then blitted up with smoothing off -- so it lands on
+  // exactly the same chunky pixel grid as the art around it. Spike lengths
+  // step at ~9fps like a hand-animated sheet. Sharp tips lean outward at the
+  // rim (fountain shape) so the king stands INSIDE the energy, not on fire.
+  let auraSparks = [];   // {dx, y0, born, life} -- offsets relative to the player
+  let auraCanvas = null, auraCtx = null;
+  const AURA_TIPS = [-0.95, -0.74, -0.52, -0.31, -0.12, 0.06, 0.24, 0.45, 0.66, 0.88];
+  const AURA_LENS = [0.30, 0.52, 0.72, 0.60, 0.92, 1.00, 0.78, 0.88, 0.58, 0.36];
+  function drawKingAura(cx, baseY) {
+    const t = now();
+    // The king's body sits left of his frame center (sword padding on the
+    // right); nudge the aura onto the body. Mirrors when facing left.
+    cx += (facing === "left" ? 1 : -1) * TILE * 0.14;
+    const CW = 56, CH = 64;                 // low-res aura canvas (the "pixels")
+    if (!auraCanvas) {
+      auraCanvas = document.createElement("canvas");
+      auraCanvas.width = CW; auraCanvas.height = CH;
+      auraCtx = auraCanvas.getContext("2d");
+    }
+    const g = auraCtx;
+    g.clearRect(0, 0, CW, CH);
+    const frame = (t / 110) | 0;            // stepped ~9fps, reads as sprite frames
+    const baseYc = CH - 2, midX = CW / 2;
+    const poly = (scale) => {
+      const hf = 0.55 + 0.45 * scale;       // inner layers narrower too
+      const pts = [[midX - (CW * 0.5 - 1) * hf, baseYc]];
+      for (let i = 0; i < AURA_TIPS.length; i++) {
+        const p = AURA_TIPS[i];
+        // per-spike stepped flicker (two beats, no RNG -> stable between rows)
+        const j = Math.sin(frame * 1.7 + i * 2.3) * 0.5 + Math.sin(frame * 0.9 + i * 1.1) * 0.5;
+        const L = AURA_LENS[i] * (0.76 + 0.24 * Math.abs(j)) * scale;
+        const tipX = midX + (p + p * 0.22) * CW * 0.5 * hf;   // rim tips lean out
+        const tipY = baseYc - L * (CH - 6);
+        const vp = (i === 0) ? p - 0.1 : (AURA_TIPS[i - 1] + p) / 2;
+        const vL = Math.min(AURA_LENS[i], AURA_LENS[Math.max(0, i - 1)]) * 0.40 * scale;
+        pts.push([midX + vp * CW * 0.48 * hf, baseYc - vL * (CH - 6)]);
+        pts.push([tipX, tipY]);
+      }
+      pts.push([midX + (CW * 0.5 - 1) * hf, baseYc]);
+      return pts;
+    };
+    const fill = (pts, col) => {
+      g.fillStyle = col; g.beginPath();
+      g.moveTo(pts[0][0], pts[0][1]);
+      for (const q of pts) g.lineTo(q[0], q[1]);
+      g.closePath(); g.fill();
+    };
+    fill(poly(1.00), "#0d4d20");            // deep silhouette
+    fill(poly(0.72), "#2fe14f");            // ki body
+    fill(poly(0.45), "#b9ff9e");            // pale core
+    // blit up, pixelated, anchored at the feet
+    const dw = TILE * 2.3, dh = dw * (CH / CW);
+    ctx.save();
+    ctx.imageSmoothingEnabled = false;
+    ctx.globalAlpha = 0.88;
+    ctx.drawImage(auraCanvas, Math.round(cx - dw / 2), Math.round(baseY - dh + TILE * 0.10), dw, dh);
+    // rising ki motes (relative to the player so the aura travels with him)
+    const px = Math.max(2, Math.round(TILE / 12));
+    const q2 = (v) => Math.round(v / px) * px;
+    if (Math.random() < 0.45) {
+      auraSparks.push({ dx: (Math.random() - 0.5) * TILE * 1.4,
+        y0: Math.random() * TILE * 0.5, born: t, life: 480 + Math.random() * 360 });
+    }
+    auraSparks = auraSparks.filter((s) => t - s.born < s.life);
+    for (const s of auraSparks) {
+      const k = (t - s.born) / s.life;
+      ctx.globalAlpha = 0.85 * (1 - k);
+      ctx.fillStyle = k < 0.35 ? "#b9ff9e" : "#2fe14f";
+      ctx.fillRect(q2(cx + s.dx), q2(baseY - s.y0 - k * TILE * 1.7), px, px);
+    }
+    ctx.restore();
+  }
+
   function drawPlayer() {
     const cx = sx(P.x) + TILE / 2, cy = sy(P.y) + TILE / 2, baseY = sy(P.y) + TILE * 0.98;
     const fi = (now() / 140) | 0;
     const name = playerSprite();
-    // evolved Goblin King aura
-    if (P.evolved) {
-      ctx.save();
-      ctx.globalAlpha = 0.35 + 0.15 * Math.sin(now() / 220);
-      const g = ctx.createRadialGradient(cx, cy, 2, cx, cy, TILE * 0.7);
-      g.addColorStop(0, "rgba(255,210,74,0.8)"); g.addColorStop(1, "rgba(255,210,74,0)");
-      ctx.fillStyle = g; ctx.beginPath(); ctx.arc(cx, cy, TILE * 0.7, 0, Math.PI * 2); ctx.fill();
-      ctx.restore();
-    }
+    if (P.evolved) drawKingAura(cx, baseY);   // behind the sprite
     let drew = false;
     if (name) {
       ctx.save();
@@ -1212,16 +2597,21 @@
       drew = drawUnitSprite(name, cx, baseY, null, fi);  // hero scale from CRE_SCALE
       ctx.restore();
     }
-    if (P.evolved) {
-      ctx.font = Math.floor(TILE * 0.4) + "px serif";
-      ctx.textAlign = "center"; ctx.textBaseline = "middle";
-      ctx.fillText("👑", cx, sy(P.y) + TILE * 0.06);
-    }
     if (!drew) {
       ctx.font = Math.floor(TILE * 0.7) + "px serif";
       ctx.textAlign = "center"; ctx.textBaseline = "middle";
       ctx.fillText("🧙", cx, cy);
     }
+    // The Goblin King crackles with green lightning over the king aura; the
+    // tier-2 champion gets a lighter gold crackle with no aura behind it.
+    if (P.evolved) drawCrackle(cx, baseY, {
+      bolts: 4, seedOff: 17, lift: TILE * 1.0, rx: TILE * 0.7, ry: TILE * 1.0,
+      glow: "rgba(90,255,140,0.75)", fork: "rgba(170,255,200,0.85)",
+    });
+    else if ((P.evolution_tier || 1) === 2) drawCrackle(cx, baseY, {
+      bolts: 3, seedOff: 29, lift: TILE * 0.95, rx: TILE * 0.65, ry: TILE * 0.9,
+      glow: "rgba(255,210,74,0.7)", fork: "rgba(255,235,160,0.8)",
+    });
     // facing pip
     const v = DIRV[facing];
     ctx.fillStyle = "#ffd24a";
@@ -1303,21 +2693,57 @@
     ctx.fillStyle = "#ffd24a"; ctx.fillText("CR " + P.courage + "/" + P.max_courage, hx, cy); hx += 120;
     ctx.fillStyle = (P.evolved ? "#ffd24a" : "#cdbfff");
     ctx.fillText("LV " + P.level + (P.evolved ? " 👑" : ""), hx, cy); hx += 95;
-    // XP bar
+    // XP bar (pulses bright for a moment whenever XP lands)
     const xpw = 90, xb = hx, frac = P.xp_to_next > 0 ? clamp(P.xp / P.xp_to_next, 0, 1) : 1;
+    const xpPulse = now() < xpFlashUntil ? 0.5 + 0.5 * Math.abs(Math.sin(now() / 90)) : 0;
     ctx.fillStyle = "#241a36"; ctx.fillRect(xb, cy - 5, xpw, 10);
-    ctx.fillStyle = "#6df5a0"; ctx.fillRect(xb, cy - 5, xpw * frac, 10);
+    ctx.fillStyle = xpPulse ? "#b6ffd2" : "#6df5a0"; ctx.fillRect(xb, cy - 5, xpw * frac, 10);
     ctx.strokeStyle = "#34254d"; ctx.strokeRect(xb, cy - 5, xpw, 10);
+    if (xpPulse) {
+      ctx.save(); ctx.globalAlpha = xpPulse * 0.8;
+      ctx.strokeStyle = "#6df5a0"; ctx.lineWidth = 2;
+      ctx.strokeRect(xb - 2, cy - 7, xpw + 4, 14); ctx.restore();
+    }
     hx += xpw + 16;
     const bagCount = Object.values(P.items || {}).reduce((a, b) => a + b, 0);
     ctx.fillStyle = "#9c8bc4"; ctx.fillText("BAG " + bagCount, hx, cy); hx += 95;
-    ctx.fillStyle = "#ffd24a"; ctx.fillText("G " + (P.gold || 0), hx, cy);
-    ctx.textAlign = "right"; ctx.fillStyle = "#b07cff";
-    ctx.fillText(A.name.toUpperCase(), canvas.width - 14, cy);
+    ctx.fillStyle = "#ffd24a"; ctx.fillText("G " + (P.gold || 0), hx, cy); hx += 80;
+    // Right-aligned area title (+ optional admin badge). Compute its left edge first
+    // so the optional SP/crit stats below can be gated on the space that's left.
+    const areaLabel = A.name.toUpperCase();
+    const admin = !!(W && W.admin);
+    const rightBlockLeft = canvas.width - 14 - ctx.measureText(areaLabel).width
+      - (admin ? ctx.measureText("🔓 ADMIN").width + 18 : 0);
+    // Optional stats: only draw each if it fits before the area title (with padding).
+    const GAP = 16;
+    if (P.spell_power) {
+      const t = "SP " + P.spell_power;
+      if (hx + ctx.measureText(t).width <= rightBlockLeft - GAP) {
+        ctx.fillStyle = "#ff9d5c"; ctx.fillText(t, hx, cy); hx += 70;
+      }
+    }
+    if (P.crit) {
+      const t = "✷" + P.crit + "%";
+      if (hx + ctx.measureText(t).width <= rightBlockLeft - GAP) {
+        ctx.fillStyle = "#ffe27a"; ctx.fillText(t, hx, cy); hx += 70;
+      }
+    }
+    ctx.textAlign = "right";
+    ctx.fillStyle = "#b07cff";
+    ctx.fillText(areaLabel, canvas.width - 14, cy);
+    if (admin) {
+      ctx.fillStyle = "#6df5a0";
+      ctx.fillText("🔓 ADMIN", canvas.width - 14 - ctx.measureText(areaLabel).width - 18, cy);
+    }
     // bottom row: weapon (left) + objective icon track (right)
     ctx.textAlign = "left"; ctx.font = '10px "Press Start 2P", monospace';
     ctx.fillStyle = "#ffce6b";
     ctx.fillText("🗡 " + weaponLabel(P.weapon).toUpperCase(), 12, HUD_TOP - 14);
+    const pfx = Object.keys(P.fx || {}).map((k) => FX_ICON[k] + P.fx[k]).join(" ");
+    if (pfx) {
+      ctx.fillStyle = "#6df5a0";
+      ctx.fillText(pfx, 12 + ctx.measureText("🗡 " + weaponLabel(P.weapon).toUpperCase()).width + 16, HUD_TOP - 14);
+    }
     drawObjectiveIcons(HUD_TOP - 14);
     ctx.textAlign = "left";
   }
@@ -1352,6 +2778,91 @@
     ctx.globalAlpha = 1;
   }
 
+  // ---- circular minimap (translucent overlay, top-right; M toggles) ----
+  let minimapOn = true;
+  let miniCache = { areaId: null, canvas: null, scale: 1, r: 0 };
+  function miniRadius() { return clamp(Math.round(Math.min(canvas.width, canvas.height) * 0.13), 52, 88); }
+  function buildMiniTerrain(R) {
+    const rowsN = A.rows.length, colsN = A.rows[0].length;
+    const diag = Math.sqrt(colsN * colsN + rowsN * rowsN);
+    const scale = (R * 2 - 12) / diag;
+    const c = document.createElement("canvas");
+    c.width = Math.ceil(colsN * scale); c.height = Math.ceil(rowsN * scale);
+    const mc = c.getContext("2d");
+    const b = BIOME[A.biome] || DEFAULT_BIOME;
+    const waterMid = waterColor()[1];
+    for (let y = 0; y < rowsN; y++) {
+      for (let x = 0; x < colsN; x++) {
+        const ch = A.rows[y][x];
+        let col = null;
+        if (ch === "~") col = waterMid;
+        else if (WALK.has(ch)) col = b.alt;
+        else if (ch === "#") col = b.wall;
+        if (col) { mc.fillStyle = col; mc.fillRect(x * scale, y * scale, scale + 0.5, scale + 0.5); }
+      }
+    }
+    miniCache = { areaId: P.area, canvas: c, scale, r: R };
+  }
+  function drawMinimap() {
+    if (!minimapOn || !A) return;
+    const R = miniRadius();
+    if (miniCache.areaId !== P.area || miniCache.r !== R || !miniCache.canvas) buildMiniTerrain(R);
+    const cx = canvas.width - R - 14, cy = HUD_TOP + R + 12;
+    ctx.save();
+    ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.clip();
+    // translucent smoked-glass disc
+    ctx.globalAlpha = 0.62;
+    ctx.fillStyle = "#0c0816";
+    ctx.fillRect(cx - R, cy - R, R * 2, R * 2);
+    const mw = miniCache.canvas.width, mh = miniCache.canvas.height;
+    const ox = cx - mw / 2, oy = cy - mh / 2;
+    ctx.globalAlpha = 0.78;
+    ctx.drawImage(miniCache.canvas, ox, oy);
+    // live entity dots (skip clutter — only things worth walking toward)
+    const s = miniCache.scale;
+    const dot = (x, y, r, col) => { ctx.fillStyle = col; ctx.beginPath();
+      ctx.arc(ox + (x + 0.5) * s, oy + (y + 0.5) * s, r, 0, Math.PI * 2); ctx.fill(); };
+    ctx.globalAlpha = 0.95;
+    for (const e of liveEntities()) {
+      if (e.type === "boss") dot(e.x, e.y, 3.4, "#ff2d4d");
+      else if (e.type === "enemy") dot(e.x, e.y, 2.2, "#ff5d73");
+      else if (e.type === "npc") dot(e.x, e.y, 2.2, "#6df5a0");
+      else if (e.type === "portal") dot(e.x, e.y, 2.8, e.state === "locked" ? "#ff9d4a" : "#b07cff");
+      else if (e.type === "chest" && e.state !== "open") dot(e.x, e.y, 2.0, "#ffd24a");
+      else if (e.type === "shrine") dot(e.x, e.y, 2.0, "#7fd6ff");
+      else if (e.type === "powerup") dot(e.x, e.y, 2.0, "#ffffff");
+    }
+    // player: pulsing white dot
+    dot(P.x, P.y, 3.0 + Math.sin(now() / 280) * 0.7, "#ffffff");
+    ctx.restore();
+    // ring border + inner glow line
+    ctx.save();
+    ctx.globalAlpha = 0.85; ctx.strokeStyle = "#b07cff"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.stroke();
+    ctx.globalAlpha = 0.30; ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(cx, cy, R - 3, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  }
+
+  // Pulsing red overlay on tiles threatened by a telegraphed enemy attack.
+  function drawTelegraphs() {
+    if (!A) return;
+    const pulse = 0.28 + 0.18 * Math.abs(Math.sin(now() / 200));
+    ctx.save();
+    for (const e of liveEntities()) {
+      const w = e.windup; if (!w) continue;
+      let tiles = [];
+      if (w.kind === "charge") tiles = w.tiles || [];
+      else if (w.kind === "spit") tiles = [w.target];
+      else continue;
+      ctx.globalAlpha = pulse;
+      ctx.fillStyle = w.kind === "spit" ? "#5cc8ff" : "#ff4d4d";
+      for (const t of tiles) { ctx.fillRect(sx(t[0]) + 2, sy(t[1]) + 2, TILE - 4, TILE - 4); }
+    }
+    ctx.restore();
+  }
+
   function render() {
     if (paused) return;
     fitCanvas();
@@ -1366,6 +2877,8 @@
     ctx.fillStyle = "#0b0810"; ctx.fillRect(0, 0, canvas.width, canvas.height);
     drawTiles();
     drawCircles();
+    drawTelegraphs();
+    drawCoins();
     // depth sort: lower y drawn first, player interleaved by row
     const ents = liveEntities().slice().sort((a, b) => a.y - b.y);
     let playerDrawn = false;
@@ -1375,7 +2888,9 @@
     }
     if (!playerDrawn) drawPlayer();
     drawVfx();
+    drawBarks();
     drawHud();
+    drawMinimap();
     requestAnimationFrame(render);
   }
 
@@ -1386,12 +2901,61 @@
     if (sel) sel.innerHTML = selected.length
       ? selected.map((k) => "<img class='ricon' src='" + ICON(k) + "' alt=''>").join("<span class='plus'>+</span>")
       : "<span class='dim'>no runes</span>";
+    // Greying + lock badge are applied inline (not via stylesheet) so the
+    // locked state is always correct even if a cached rpg.css is in play.
     document.querySelectorAll(".rg-rune").forEach((b) => {
       b.classList.toggle("on", selected.includes(b.dataset.rune));
+      const locked = !isRuneUnlocked(b.dataset.rune);
+      b.classList.toggle("locked", locked);
+      b.style.cursor = locked ? "not-allowed" : "pointer";
+      const img = b.querySelector(".ricon");
+      if (img) { img.style.opacity = locked ? "0.18" : ""; img.style.filter = locked ? "grayscale(1)" : ""; }
+      const lk = b.querySelector(".rlock");   // drop any legacy lock badge
+      if (lk) lk.remove();
     });
   }
 
+  // ---- rune hover tooltip: a small box that follows the cursor and shows what
+  // the rune does (+ its unlock level when locked). All styles inline so it
+  // never depends on a cached stylesheet and never docks as a page section.
+  function runeTipEl() {
+    let t = $("rg-rune-tip");
+    if (!t) {
+      t = document.createElement("div");
+      t.id = "rg-rune-tip";
+      t.style.cssText =
+        "position:fixed;z-index:60;pointer-events:none;display:none;opacity:0;" +
+        "transform:translate(-50%,-100%);transition:opacity .08s;text-align:center;" +
+        "background:#160d24;border:1px solid #4a3a6a;border-radius:8px;padding:6px 9px;" +
+        "max-width:230px;font-size:12px;line-height:1.35;box-shadow:0 4px 14px rgba(0,0,0,.55);";
+      document.body.appendChild(t);
+    }
+    return t;
+  }
+  function showRuneTip(ev, r) {
+    const t = runeTipEl();
+    const locked = !isRuneUnlocked(r.key);
+    t.innerHTML =
+      "<b style='color:#c9a6ff;display:block;font-size:13px'>" + r.label + "</b>" +
+      "<span style='color:#9a8bb0;display:block'>" + (r.meanings || []).join(" · ") + "</span>" +
+      (locked ? "<span style='color:#ffd24a;display:block;margin-top:3px'>Unlocks at level " + runeUnlockLevel(r.key) + "</span>" : "");
+    t.style.display = "block";
+    positionRuneTip(ev);
+    requestAnimationFrame(() => { t.style.opacity = "1"; });
+  }
+  function positionRuneTip(ev) {
+    const t = $("rg-rune-tip"); if (!t) return;
+    t.style.left = ev.clientX + "px";
+    t.style.top = (ev.clientY - 12) + "px";
+  }
+  function hideRuneTip() { const t = $("rg-rune-tip"); if (t) { t.style.opacity = "0"; t.style.display = "none"; } }
+
   function toggleRune(k) {
+    if (!isRuneUnlocked(k)) {
+      const r = (runesMeta || []).find((x) => x.key === k) || {};
+      toast((r.label || "That rune") + " unlocks at level " + runeUnlockLevel(k) + ".");
+      return;
+    }
     const i = selected.indexOf(k);
     if (i >= 0) selected.splice(i, 1);
     else if (selected.length < maxRunes()) selected.push(k);
@@ -1402,25 +2966,146 @@
   function buildPalette() {
     const pal = $("rg-palette");
     pal.innerHTML = "";
-    runesMeta.forEach((r, i) => {
+    // Display runes in unlock order, so leveling fills the palette left-to-right
+    // (no gaps from a locked rune sitting between unlocked ones).
+    paletteRunes = runesMeta.slice().sort((a, b) => {
+      const ia = RUNE_UNLOCK_ORDER.indexOf(a.key), ib = RUNE_UNLOCK_ORDER.indexOf(b.key);
+      return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib);
+    });
+    paletteRunes.forEach((r, i) => {
       const b = document.createElement("button");
       b.className = "rg-rune"; b.dataset.rune = r.key;
-      b.title = r.label + " — " + (r.meanings || []).join(", ");
       b.innerHTML = (i < 9 ? "<span class='num'>" + (i + 1) + "</span>" : "")
         + "<img class='ricon' src='" + ICON(r.key) + "' alt='" + r.label + "'>";
       b.onclick = () => { toggleRune(r.key); canvas.focus(); };
+      b.onmouseenter = (ev) => showRuneTip(ev, r);
+      b.onmousemove = positionRuneTip;
+      b.onmouseleave = hideRuneTip;
       pal.appendChild(b);
     });
+    renderPalette();
   }
 
+  // ---- spell reading card: what the vision model read from your drawing ----
+  let readingTimer = null;
+  function escapeHtml(t) {
+    return String(t || "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+  function readingCard() {
+    let card = $("rg-reading");
+    if (!card) {
+      card = document.createElement("div");
+      card.id = "rg-reading"; card.className = "rg-reading";
+      card.onclick = hideReading;
+      document.getElementById("rg-stage").appendChild(card);
+    }
+    return card;
+  }
+  // Opens instantly when the drawing is sent, and stays up while the vision
+  // model thinks — the result then replaces it in place.
+  function showReadingPending() {
+    const card = readingCard();
+    card.innerHTML =
+      "<div class='rg-read-head'>👁 The goblin squints at your drawing…</div>" +
+      "<div class='rg-read-runes'><span class='rg-read-rune rg-read-wait'>" +
+      "<i></i><i></i><i></i></span></div>" +
+      "<div class='rg-read-note'>reading runes — first read can take a while</div>";
+    card.classList.add("open");
+    clearTimeout(readingTimer);
+  }
+  function showReading(res) {
+    const vr = res.visual_reading || {};
+    const s = res.spell || {};
+    const card = readingCard();
+    const det = vr.detected_runes || [];
+    const amb = (vr.ambiguous_runes || []).filter((r) => !det.includes(r));
+    const chip = (r, dim) => {
+      const known = (runesMeta || []).some((x) => x.key === r);
+      return "<span class='rg-read-rune" + (dim ? " dim" : "") + "'>" +
+        (known ? "<img src='" + ICON(r) + "' alt=''> " : "") +
+        escapeHtml(runeLabel(r)) + (dim ? " ?" : "") + "</span>";
+    };
+    const chips = det.map((r) => chip(r, false)).concat(amb.map((r) => chip(r, true))).join("");
+    const conf = typeof vr.confidence === "number" && vr.confidence > 0
+      ? "<div class='rg-read-conf' title='reading confidence'><i style='width:" +
+        Math.round(Math.min(1, vr.confidence) * 100) + "%'></i></div>" : "";
+    const note = (vr.notes && vr.notes[0]) || vr.drawing_style || "";
+    const head = res.visual_reading
+      ? "👁 The goblin read your drawing:"
+      : "👁 The goblin couldn't read it — the rule engine took over:";
+    card.innerHTML =
+      "<div class='rg-read-head'>" + head + "</div>" +
+      "<div class='rg-read-runes'>" + (chips ||
+        "<span class='rg-read-rune dim'>unreadable scribble</span>") + "</div>" +
+      "<div class='rg-read-spell'>“" + escapeHtml(s.spell_name || "Mystery Spell") + "”</div>" +
+      (note ? "<div class='rg-read-note'>" + escapeHtml(note) + "</div>" : "") +
+      conf;
+    card.classList.add("open");
+    clearTimeout(readingTimer);
+    readingTimer = setTimeout(hideReading, 5200);
+  }
+  function hideReading() { const c = $("rg-reading"); if (c) c.classList.remove("open"); }
+
   // ---- drawing overlay ----
+  function setCustomizeOpen(open) {
+    const tools = $("rg-draw-tools");
+    const btn = $("rg-draw-customize");
+    if (!tools || !btn) return;
+    tools.classList.toggle("open", open);
+    btn.setAttribute("aria-expanded", open ? "true" : "false");
+    btn.textContent = open ? "Hide customization" : "Customize";
+  }
   function openDraw() {
     if (over) return;
     drawing = true; $("rg-draw").classList.add("open");
+    setCustomizeOpen(false);
     clearSketch();
   }
   function closeDraw() { drawing = false; $("rg-draw").classList.remove("open"); }
-  function clearSketch() { sctx.fillStyle = "#efe1bd"; sctx.fillRect(0, 0, sketch.width, sketch.height); }
+  function clearSketch() { sctx.fillStyle = SKETCH_BG; sctx.fillRect(0, 0, sketch.width, sketch.height); }
+  function setActiveTool(nodes, active) {
+    nodes.forEach((node) => node.classList.toggle("on", node === active));
+  }
+  function hexToRgb(hex) {
+    return hex.match(/\w\w/g).map((n) => parseInt(n, 16));
+  }
+  function floodFill(x, y) {
+    const w = sketch.width, h = sketch.height;
+    const sx = Math.max(0, Math.min(w - 1, Math.round(x)));
+    const sy = Math.max(0, Math.min(h - 1, Math.round(y)));
+    const img = sctx.getImageData(0, 0, w, h);
+    const data = img.data;
+    const start = (sy * w + sx) * 4;
+    const target = [data[start], data[start + 1], data[start + 2], data[start + 3]];
+    const fill = hexToRgb(drawTool.fill);
+    if (Math.abs(target[0] - fill[0]) + Math.abs(target[1] - fill[1]) + Math.abs(target[2] - fill[2]) < 12) return;
+    const seen = new Uint8Array(w * h);
+    const stack = [[sx, sy]];
+    const tolerance = 28;
+    while (stack.length) {
+      const p = stack.pop();
+      const px = p[0], py = p[1], pi = py * w + px, di = pi * 4;
+      if (seen[pi]) continue;
+      seen[pi] = 1;
+      const delta = Math.abs(data[di] - target[0]) + Math.abs(data[di + 1] - target[1]) +
+        Math.abs(data[di + 2] - target[2]) + Math.abs(data[di + 3] - target[3]);
+      if (delta > tolerance) continue;
+      data[di] = fill[0]; data[di + 1] = fill[1]; data[di + 2] = fill[2]; data[di + 3] = 255;
+      if (px > 0) stack.push([px - 1, py]);
+      if (px < w - 1) stack.push([px + 1, py]);
+      if (py > 0) stack.push([px, py - 1]);
+      if (py < h - 1) stack.push([px, py + 1]);
+    }
+    sctx.putImageData(img, 0, 0);
+  }
+  function applyLineStyle() {
+    sctx.strokeStyle = drawTool.ink;
+    sctx.lineWidth = drawTool.size;
+    sctx.lineJoin = drawTool.line === "square" ? "miter" : "round";
+    sctx.lineCap = drawTool.line === "square" ? "butt" : "round";
+    sctx.globalAlpha = drawTool.line === "soft" ? 0.58 : 1;
+    sctx.setLineDash(drawTool.line === "dot" ? [Math.max(1, drawTool.size * 0.12), drawTool.size * 1.8] : []);
+  }
   function setupSketch() {
     sketch = $("rg-sketch"); sctx = sketch.getContext("2d");
     clearSketch();
@@ -1428,30 +3113,85 @@
     const pos = (ev) => { const r = sketch.getBoundingClientRect();
       const t = ev.touches ? ev.touches[0] : ev;
       return [(t.clientX - r.left) * sketch.width / r.width, (t.clientY - r.top) * sketch.height / r.height]; };
-    const start = (ev) => { down = true; [lx, ly] = pos(ev); ev.preventDefault(); };
+    const start = (ev) => {
+      [lx, ly] = pos(ev);
+      if (drawTool.mode === "fill") {
+        floodFill(lx, ly);
+        ev.preventDefault();
+        return;
+      }
+      down = true;
+      ev.preventDefault();
+    };
     const move = (ev) => { if (!down) return; const [x, y] = pos(ev);
-      sctx.strokeStyle = "#17120b"; sctx.lineWidth = 7; sctx.lineCap = "round";
+      applyLineStyle();
       sctx.beginPath(); sctx.moveTo(lx, ly); sctx.lineTo(x, y); sctx.stroke();
+      sctx.globalAlpha = 1; sctx.setLineDash([]);
       lx = x; ly = y; ev.preventDefault(); };
     const end = () => { down = false; };
     sketch.addEventListener("mousedown", start); sketch.addEventListener("mousemove", move);
     window.addEventListener("mouseup", end);
     sketch.addEventListener("touchstart", start); sketch.addEventListener("touchmove", move);
     sketch.addEventListener("touchend", end);
+    const customize = $("rg-draw-customize");
+    if (customize) {
+      customize.onclick = () => {
+        const tools = $("rg-draw-tools");
+        setCustomizeOpen(!(tools && tools.classList.contains("open")));
+      };
+    }
+    const inkButtons = [...document.querySelectorAll("[data-rg-ink]")];
+    inkButtons.forEach((btn) => {
+      btn.onclick = () => {
+        drawTool.ink = btn.dataset.rgInk;
+        drawTool.mode = "draw";
+        setActiveTool(inkButtons, btn);
+      };
+    });
+    const fillButtons = [...document.querySelectorAll("[data-rg-fill]")];
+    fillButtons.forEach((btn) => {
+      btn.onclick = () => {
+        drawTool.fill = btn.dataset.rgFill;
+        drawTool.mode = "fill";
+        setActiveTool(fillButtons, btn);
+      };
+    });
+    const lineButtons = [...document.querySelectorAll("[data-rg-line]")];
+    lineButtons.forEach((btn) => {
+      btn.onclick = () => {
+        drawTool.line = btn.dataset.rgLine;
+        drawTool.mode = "draw";
+        setActiveTool(lineButtons, btn);
+      };
+    });
+    const size = $("rg-line-size");
+    if (size) size.oninput = () => { drawTool.size = Number(size.value) || 7; };
   }
 
   // ---- input ----
   function onKey(ev) {
     const k = ev.key.toLowerCase();
+    // Shift+L+A (held together) toggles admin mode from anywhere, even normal play.
+    if (ev.shiftKey && keysDown.has("l") && keysDown.has("a") && !ev.repeat) {
+      if (now() - lastAdminToggle > 350) { lastAdminToggle = now(); setAdmin(!adminMode); }
+      ev.preventDefault(); return;
+    }
     if (selecting) { return; }
+    if (storyCardOpen) {
+      if (k === " " || k === "enter" || k === "escape") { closeStoryCard(); ev.preventDefault(); }
+      return;
+    }
     if (drawing) { if (k === "escape") closeDraw(); return; }
     if (dialogueOpen) { if (k === "escape" || k === " " || k === "enter") { closeDialogue(); ev.preventDefault(); } return; }
     if (k === "j") { toggleJournal(); ev.preventDefault(); return; }
     if (k === "i") { toggleInventory(); ev.preventDefault(); return; }
+    if (k === "m") { minimapOn = !minimapOn; ev.preventDefault(); return; }
     if (journalOpen && k === "escape") { toggleJournal(); return; }
     if (invOpen && k === "escape") { toggleInventory(); return; }
     if (over) return;
     if (k === "t") { talk(); ev.preventDefault(); return; }
+    if (k === "h") { quickUse(1); ev.preventDefault(); return; }
+    if (k === "g") { quickUse(2); ev.preventDefault(); return; }
     if (["arrowup", "w"].includes(k)) { tryMove("up"); ev.preventDefault(); }
     else if (["arrowdown", "s"].includes(k)) { tryMove("down"); ev.preventDefault(); }
     else if (["arrowleft", "a"].includes(k)) { tryMove("left"); ev.preventDefault(); }
@@ -1459,7 +3199,7 @@
     else if (k === " " || k === "enter") { castRunes(); ev.preventDefault(); }
     else if (k === "e") { openDraw(); ev.preventDefault(); }
     else if (k === "c") { selected = []; renderPalette(); }
-    else if (k >= "1" && k <= "9") { const idx = parseInt(k, 10) - 1; if (runesMeta[idx]) toggleRune(runesMeta[idx].key); }
+    else if (k >= "1" && k <= "9") { const idx = parseInt(k, 10) - 1; if (paletteRunes[idx]) toggleRune(paletteRunes[idx].key); }
   }
 
   // ---- character select ----
@@ -1491,6 +3231,19 @@
     $("rg-select").className = "rg-select open";
     $("rg-select-start").disabled = true;
     buildSelect();
+    buildContinue();
+  }
+  // Offer "Continue" above the roster when a resumable save exists.
+  function buildContinue() {
+    let btn = $("rg-continue");
+    if (!hasSave()) { if (btn) btn.remove(); return; }
+    if (!btn) {
+      btn = document.createElement("button");
+      btn.id = "rg-continue"; btn.className = "rg-btn primary rg-continue";
+      $("rg-heroes").before(btn);
+      btn.onclick = () => { continueGame(); canvas.focus(); };
+    }
+    btn.innerHTML = "▶ Continue — <span style='opacity:.8'>" + saveSummary() + "</span>";
   }
 
   // ---- boot ----
@@ -1501,6 +3254,8 @@
     WEAPONS = {}; (W.weapons || []).forEach((w) => { WEAPONS[w.id] = w; });
     ITEMS = {}; (W.items || []).forEach((i) => { ITEMS[i.id] = i; });
     QUESTS_META = {}; (W.quests || []).forEach((q) => { QUESTS_META[q.id] = q; });
+    STORY_BEATS = W.story_beats || [];
+    barks = [];
     areas = JSON.parse(JSON.stringify(W.areas));
     P = JSON.parse(JSON.stringify(W.player));
     ensurePlayerMeta();
@@ -1518,18 +3273,48 @@
       P.goblin_class = c.id; P.hp = c.hp; P.max_hp = c.hp;
       P.courage = c.courage; P.max_courage = Math.max(9, c.courage + 2);
     }
-    selecting = false; $("rg-select").className = "rg-select";
+    clearSave();                  // a fresh shift retires any prior run
     P.area = (bootArea && areas[bootArea]) ? bootArea : W.start_area;
     A = areas[P.area];
     applyConditionalSpawns(P.area);
     const sp = A.spawn; P.x = sp[0]; P.y = sp[1];
-    facing = "down"; selected = []; vfx = []; busy = false; turnNo = 0; enemyCooldown = {};
-    layout(); buildPalette(); renderPalette(); updateTarget(); regionCue();
+    turnNo = 0; transitions = 0;
+    enterWorld();
     const label = c ? c.label : "goblin";
     const seedLine = W.world_seed === null || W.world_seed === undefined ? "" :
       " Loop seed <b>" + W.world_seed + "</b>: " + ((W.variation || {}).label || "seeded loop") + ".";
     toast("You are the <b>" + label + "</b>. You broke the calendar. " + moodLine() + "." + seedLine + " — roam, talk (T), and cast.");
+    // Opening beat lands shortly after the class toast so both get read.
+    setTimeout(() => { if (!over && !selecting) { checkAreaBeats(); checkProximityBeats(); } }, 1800);
     if (bootMasteryChoice) setTimeout(() => grantMasteryChoice(), 250);
+    requestSave();
+  }
+
+  // Resume a saved run: restore state, then enter the world where we left off.
+  function continueGame() {
+    const data = readSave();
+    if (!data) { showSelect(); return; }
+    P = data.player; areas = data.areas;
+    turnNo = data.turnNo || 0; transitions = data.transitions || 0;
+    ensurePlayerMeta();
+    if (!areas[P.area]) { clearSave(); newGame(); return; }
+    A = areas[P.area];
+    applyConditionalSpawns(P.area);
+    enterWorld();
+    const cls = (CLASSES.find((x) => x.id === P.goblin_class) || {}).label || "goblin";
+    toast("Welcome back, <b>" + cls + "</b> — Lv " + P.level + " in " + A.name + ". The calendar is still broken.");
+  }
+
+  // Shared world-entry tail for both startGame and continueGame.
+  function enterWorld() {
+    selecting = false; $("rg-select").className = "rg-select";
+    facing = facing || "down"; selected = []; vfx = []; busy = false; enemyCooldown = {};
+    layout(); buildPalette(); renderPalette(); updateTarget(); regionCue();
+    // Reconcile admin mode against the world: honor the backend RG_ADMIN flag,
+    // and keep client admin on across a New Game.
+    const wantAdmin = adminMode || !!(W && W.admin);
+    adminMode = false; adminLockSnapshot = null;
+    if (wantAdmin) setAdmin(true); else showAdminGoto(false);
   }
 
   // ---- weapons ----
@@ -1541,6 +3326,58 @@
     P.weapon = id;
     toast("🗡️ Equipped <b>" + weaponLabel(id) + "</b>. " + ((WEAPONS[id] || {}).identity || ""));
     refreshPanels();
+    requestSave();
+  }
+  // ---- trinkets (one slot) + reforge (rpg_plan.md §3,§4) ----
+  function trinketMaxHp(t) { return t && t.stats ? (t.stats.max_hp || 0) : 0; }
+  function equipTrinket(t) {
+    if (!t) return;
+    if (P.trinket) P.max_hp = Math.max(1, P.max_hp - trinketMaxHp(P.trinket));  // revert old
+    P.trinket = t;
+    const mh = trinketMaxHp(t);
+    if (mh) { P.max_hp += mh; P.hp = clamp(P.hp + mh, 0, P.max_hp); }
+    refreshPanels(); requestSave();
+  }
+  function unequipTrinket() {
+    if (!P.trinket) return;
+    P.max_hp = Math.max(1, P.max_hp - trinketMaxHp(P.trinket));
+    P.hp = clamp(P.hp, 0, P.max_hp);
+    toast("Unequipped <b>" + P.trinket.name + "</b>.");
+    P.trinket = null; refreshPanels(); requestSave();
+  }
+  function trinketStatLine(t) {
+    const s = (t && t.stats) || {};
+    const lbl = { bonus_damage: "+dmg", crit: "% crit", max_hp: "max HP",
+      courage_relief: "courage", gold_find: "gold find", xp_bonus: "XP" };
+    return Object.keys(s).map((k) => "+" + s[k] + " " + (lbl[k] || k)).join(" · ");
+  }
+  // A freshly-dropped trinket: equip if the slot is empty, else offer in the bag.
+  function gainTrinket(t) {
+    if (!t) return;
+    P.pending_trinket = t;
+    const better = !P.trinket;
+    toast("✨ Loot: <b>" + t.name + "</b> <span style='opacity:.8'>(" + trinketStatLine(t) + ")</span>" +
+      (better ? " — equipped!" : " — open Bag (I) to equip."));
+    if (better) equipTrinket(t);
+    if (typeof requestLootName === "function") requestLootName(t);   // M7 christening
+    requestSave();
+  }
+  function applyReforge(a) {
+    if (!a.weapon) return;
+    P.weapon_tiers = P.weapon_tiers || {};
+    P.weapon_tiers[a.weapon] = Math.min(3, Math.max(P.weapon_tiers[a.weapon] || 0, a.tier || 0));
+    if (a.message) { addUnique(P.journal, a.message); rememberStoryEvent("journal", a.message); }
+    toast("⚒️ " + (a.message || "Weapon reforged."));
+    refreshPanels(); requestSave();
+  }
+  function weaponStats(w) {
+    const s = [];
+    if (w.bonus_damage) s.push("+" + w.bonus_damage + " dmg on " + (w.school || []).join("/"));
+    if (w.courage_relief) s.push("-" + w.courage_relief + " courage cost");
+    if (w.shield_chance) s.push("shield chance");
+    if (w.unlock_bonus) s.push("better unlocks");
+    if (w.xp_bonus) s.push("+" + w.xp_bonus + " XP per win");
+    return s.length ? "<br><span class='wstats'>" + s.join(" · ") + "</span>" : "";
   }
   function weaponsHtml() {
     const inv = P.weapon_inventory || [P.weapon];
@@ -1551,7 +3388,7 @@
       const sch = (w.school || []).length ? " <span class='flag'>(" + w.school.join("/") + ")</span>" : "";
       return "<button class='rg-wpn" + on + "' data-w='" + id + "'>" +
         "<img src='" + ic + "' alt=''> <b>" + w.label + (on ? " ✓" : "") + "</b>" + sch +
-        "<br><span class='wdesc'>" + w.identity + "</span></button>";
+        "<br><span class='wdesc'>" + w.identity + "</span>" + weaponStats(w) + "</button>";
     }).join("");
   }
 
@@ -1610,19 +3447,38 @@
   }
 
   // ---- inventory panel (separate from the journal) ----
+  function crownHtml() {
+    if (P.evolved || !(P.inventory || []).includes(CRACKED_CROWN)) return "";
+    const ready = P.level >= KING_MIN_LEVEL;
+    return "<div class='rg-bag'><div class='rg-item" + (ready ? " usable" : "") + "'" +
+      (ready ? " data-crown='1'" : "") + " title='Become the Goblin King'>" +
+      "<span class='rg-item-ic'>👑</span><span class='rg-item-lb'>Cracked Crown" +
+      (ready ? "" : " <span class='flag'>(needs Lv " + KING_MIN_LEVEL + ")</span>") + "</span>" +
+      (ready ? "<span class='rg-item-use'>Wear</span>" : "") + "</div></div>";
+  }
   function renderInventory() {
     const body = $("rg-inventory-body"); if (!body) return;
     const li = (arr) => arr.length ? "<ul>" + arr.map((x) => "<li>" + x + "</li>").join("") + "</ul>" : "<ul><li class='flag'>— nothing yet —</li></ul>";
+    const tierTag = (id) => { const t = (P.weapon_tiers || {})[id] || 0; return t ? " <span class='flag'>+" + t + "</span>" : ""; };
+    const cur = P.trinket;
+    const pend = P.pending_trinket && (!cur || P.pending_trinket.id !== cur.id) ? P.pending_trinket : null;
+    let trinketHtml = "";
+    if (cur) trinketHtml += "<div class='rg-item' title='" + trinketStatLine(cur) + "'><span class='rg-item-ic'>✨</span><span class='rg-item-lb'>" + cur.name + " <span class='flag'>(" + trinketStatLine(cur) + ")</span></span><span class='rg-item-use' data-trinket='off'>Unequip</span></div>";
+    if (pend) trinketHtml += "<div class='rg-item usable' title='" + trinketStatLine(pend) + "'><span class='rg-item-ic'>✨</span><span class='rg-item-lb'>" + pend.name + " <span class='flag'>(" + trinketStatLine(pend) + ")</span></span><span class='rg-item-use' data-trinket='on'>Equip</span></div>";
+    if (!cur && !pend) trinketHtml = "<ul><li class='flag'>— no trinket — defeat elites for rare drops —</li></ul>";
     body.innerHTML =
       "<div class='rg-jsec'><h4>Equipped weapon</h4><div class='rg-wpns'>" +
         "<button class='rg-wpn equipped'><img src='/rg/static/icons/" + (WEAPON_ICON[P.weapon] || "wpn_magic") +
-        ".png' alt=''> <b>" + weaponLabel(P.weapon) + "</b></button></div></div>" +
+        ".png' alt=''> <b>" + weaponLabel(P.weapon) + tierTag(P.weapon) + "</b></button></div></div>" +
       "<div class='rg-jsec'><h4>Weapons (click to equip)</h4><div class='rg-wpns'>" + weaponsHtml() + "</div></div>" +
+      "<div class='rg-jsec'><h4>Trinket (1 slot)</h4>" + trinketHtml + "</div>" +
       "<div class='rg-jsec'><h4>Bag (click a potion to use)</h4>" + bagHtml() + "</div>" +
-      "<div class='rg-jsec'><h4>Key items</h4>" + li(P.inventory || []) + "</div>" +
+      "<div class='rg-jsec'><h4>Key items</h4>" + li(P.inventory || []) + crownHtml() + "</div>" +
       "<div class='rg-jsec'><h4>Coins</h4><ul><li>🪙 " + (P.gold || 0) + " coins</li></ul></div>";
     body.querySelectorAll(".rg-wpn[data-w]").forEach((b) => { b.onclick = () => equipWeapon(b.dataset.w); });
     body.querySelectorAll(".rg-item[data-use]").forEach((b) => { b.onclick = () => useItem(b.dataset.use); });
+    body.querySelectorAll("[data-trinket]").forEach((b) => { b.onclick = () => { if (b.dataset.trinket === "on") equipTrinket(P.pending_trinket); else unequipTrinket(); }; });
+    const cb = body.querySelector("[data-crown]"); if (cb) cb.onclick = () => { wearCrown(); renderInventory(); };
   }
   function toggleInventory() {
     invOpen = !invOpen;
@@ -1673,7 +3529,14 @@
       else if (el.requestFullscreen) el.requestFullscreen().catch(() => {});
       canvas.focus();
     };
-    window.addEventListener("keydown", (e) => { gesture(); onKey(e); });
+    window.addEventListener("keydown", (e) => { keysDown.add(e.key.toLowerCase()); gesture(); onKey(e); });
+    window.addEventListener("keyup", (e) => { keysDown.delete(e.key.toLowerCase()); });
+    window.addEventListener("blur", () => keysDown.clear());
+    const goto = $("rg-admin-goto");
+    if (goto) goto.onchange = () => { const id = goto.value; goto.value = ""; if (id) warpToArea(id); canvas.focus(); };
+    const acts = $("rg-admin-actions");
+    if (acts) acts.onchange = () => { const v = acts.value; acts.value = ""; if (v) adminAction(v); canvas.focus(); };
+    $("rg-story").addEventListener("click", closeStoryCard);
     canvas.addEventListener("click", (ev) => {
       gesture(); canvas.focus();
       // Clicking the HUD objective icons opens the Journal (full objective + quests).
@@ -1823,6 +3686,18 @@
       smoke: debugSmoke,
       start: (cls) => startGame(cls || "warrior"),
       selecting: () => selecting,
+      addxp: (n) => { applyProgressGain(n || 0); return { level: P.level, xp: P.xp, xp_to_next: P.xp_to_next, spell_power: P.spell_power, crit: P.crit, evolution_tier: P.evolution_tier }; },
+      save: () => { writeSave(); return !!readSave(); },
+      hasSave: () => hasSave(),
+      saveBlob: () => readSave(),
+      cont: () => continueGame(),
+      transitions: () => transitions,
+      gainTrinket: (t) => { gainTrinket(t); return P.trinket; },
+      reforge: (a) => { applyReforge(a); return P.weapon_tiers; },
+      gear: () => ({ weapon: P.weapon, weapon_tiers: P.weapon_tiers, trinket: P.trinket, max_hp: P.max_hp, gold: P.gold, items: P.items }),
+      champion: () => { evolveToTier(2); return { tier: P.evolution_tier, sprite: playerSprite() }; },
+      giveCrown: () => { P.inventory.push("Cracked Crown"); return P.inventory.slice(); },
+      crown: () => { wearCrown(); return { tier: P.evolution_tier, evolved: P.evolved, sprite: playerSprite(), max_hp: P.max_hp, crit: P.crit }; },
       prog: () => ({ level: P.level, xp: P.xp, xp_to_next: P.xp_to_next, weapon: P.weapon,
         gold: P.gold, evolved: P.evolved, flags: (P.story_flags || []).slice(),
         recent_story_events: (P.recent_story_events || []).slice(-3),

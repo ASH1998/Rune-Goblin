@@ -18,6 +18,7 @@ XP, inventory, flags or endings.
 
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass, field
 
 # ---------------------------------------------------------------------------
@@ -121,6 +122,8 @@ class Weapon:
     xp_bonus: int = 0
     npc_reaction: str = ""
     story_flag: str = ""  # flag set when first acquired/used
+    price: int = 0  # gold cost at the Bone Market (0 = not sold / cursed deal)
+    pitch: str = ""  # merchant sales line shown in the shop
 
 
 WEAPONS: dict[str, Weapon] = {
@@ -132,31 +135,36 @@ WEAPONS: dict[str, Weapon] = {
         "bell_staff", "Bell Staff", "Summons help, annoys goblins, interrupts bosses.",
         ("bell", "coin"), bonus_damage=1, xp_bonus=1,
         npc_reaction="Please stop ringing public infrastructure.",
-        story_flag="tollmaster_route_open",
+        story_flag="tollmaster_route_open", price=4,
+        pitch="Rings once for help, twice for trouble, three times for lawyers.",
     ),
     "mirror_shield": Weapon(
         "mirror_shield", "Mirror Shield", "Defensive, reflective, patient.",
         ("mirror", "eye", "closed_circle"), shield_chance=True, courage_relief=1,
         npc_reaction="That shield shows people the version they were avoiding.",
-        story_flag="calendar_repair_possible",
+        story_flag="calendar_repair_possible", price=4,
+        pitch="For people who want enemies to participate in their own defeat.",
     ),
     "bone_blade": Weapon(
         "bone_blade", "Bone Blade", "Strong, scary, debt-heavy.",
         ("bone", "tooth", "broken_mark"), bonus_damage=2,
         npc_reaction="That knife has more opinions than most citizens.",
-        story_flag="debt_deepened",
+        story_flag="debt_deepened", price=0,  # paid in curse, not coins
+        pitch="For customers who think healing lacks teeth. Free! The price is elsewhere.",
     ),
     "coin_sling": Weapon(
         "coin_sling", "Coin Sling", "Economy magic: tolls, bribery, secret merchant.",
         ("coin", "bell"), bonus_damage=1, unlock_bonus=True,
         npc_reaction="You weaponized payment. The goblins are moved.",
-        story_flag="tollmaster_route_open",
+        story_flag="tollmaster_route_open", price=5,
+        pitch="Turns money into arguments at excellent range.",
     ),
     "river_thread": Weapon(
         "river_thread", "River Thread", "Utility, binding, repair, ally support.",
         ("wave", "leaf", "thread"), courage_relief=1, xp_bonus=1,
         npc_reaction="That thread smells like rain that forgave someone.",
-        story_flag="calendar_repair_possible",
+        story_flag="calendar_repair_possible", price=4,
+        pitch="That thread smells like rain that forgave someone.",
     ),
 }
 
@@ -168,26 +176,215 @@ def weapon_or_default(weapon_id: str | None) -> Weapon:
 
 
 # ---------------------------------------------------------------------------
+# Weapon reforging (rpg_plan.md §4): gold + materials buy +1/+2/+3 tiers.
+# ---------------------------------------------------------------------------
+# tier -> {gold, rune_grit, warped_cog, min_level, bonus_damage, crit}
+REFORGE_TIERS: dict[int, dict] = {
+    1: {"gold": 6, "rune_grit": 2, "warped_cog": 0, "min_level": 1,
+        "bonus_damage": 1, "crit": 0},
+    2: {"gold": 12, "rune_grit": 4, "warped_cog": 1, "min_level": 1,
+        "bonus_damage": 2, "crit": 5},
+    3: {"gold": 20, "rune_grit": 0, "warped_cog": 2, "min_level": 12,
+        "bonus_damage": 3, "crit": 5},
+}
+MAX_REFORGE = 3
+
+
+def reforge_spec(tier: int) -> dict | None:
+    return REFORGE_TIERS.get(int(tier or 0))
+
+
+def weapon_tier_bonus(weapon_id: str, tiers: dict | None) -> int:
+    """Extra flat damage a weapon's reforge level adds, on top of its school bonus."""
+    if not tiers:
+        return 0
+    spec = REFORGE_TIERS.get(int(tiers.get(weapon_id, 0) or 0))
+    return spec["bonus_damage"] if spec else 0
+
+
+def weapon_tier_crit(weapon_id: str, tiers: dict | None) -> int:
+    if not tiers:
+        return 0
+    spec = REFORGE_TIERS.get(int(tiers.get(weapon_id, 0) or 0))
+    return spec["crit"] if spec else 0
+
+
+# Weapons also temper through use: kills with a weapon equipped earn reforge
+# tiers for free at these counts. The paid smith path stays the fast lane;
+# this is the slow lane for players who stick with one weapon.
+WEAPON_KILL_MILESTONES = (10, 25, 50)
+
+
+def weapon_tier_for_kills(count: int) -> int:
+    """Reforge tier earned purely by use: 10/25/50 kills -> +1/+2/+3."""
+    return sum(1 for m in WEAPON_KILL_MILESTONES if int(count or 0) >= m)
+
+
+# ---------------------------------------------------------------------------
+# Trinkets (rpg_plan.md §3): one equip slot, rolled by Python, named by the LLM
+# (M7) within a deterministic stat band. Stats never come from the model.
+# ---------------------------------------------------------------------------
+TRINKET_STATS = ("bonus_damage", "crit", "max_hp", "courage_relief",
+                 "gold_find", "xp_bonus")
+_TRINKET_ROLL = {
+    "bonus_damage": 1, "crit": 5, "max_hp": 2, "courage_relief": 1,
+    "gold_find": 1, "xp_bonus": 1,
+}
+# Deterministic fallback names by primary stat (LLM overrides display in M7).
+_TRINKET_NAME = {
+    "bonus_damage": "Charm of Edges", "crit": "Eye of the Soft Spot",
+    "max_hp": "Knuckle of Endurance", "courage_relief": "Calm Bead",
+    "gold_find": "Tax Collector's Tooth", "xp_bonus": "Scholar's Bell",
+}
+
+
+def roll_trinket(rarity: str, area: str, seed: int) -> dict:
+    """Roll a trinket's deterministic stats + a placeholder name.
+
+    rare = one stat; epic = two distinct stats. Returns a dict the client
+    stores under ``player.trinket`` and the LLM can later re-christen."""
+    rng = random.Random(seed)
+    n = 2 if rarity == "epic" else 1
+    stats_keys = rng.sample(list(TRINKET_STATS), n)
+    stats = {k: _TRINKET_ROLL[k] for k in stats_keys}
+    primary = stats_keys[0]
+    area_word = (area or "dungeon").split()[-1].capitalize()
+    return {
+        "id": f"trinket_{seed}",
+        "name": _TRINKET_NAME.get(primary, "Odd Trinket") + " of the " + area_word,
+        "rarity": rarity,
+        "stats": stats,
+        "area": area,
+        "seed": seed,
+    }
+
+
+def trinket_bonus(trinket: dict | None, key: str) -> int:
+    if not trinket:
+        return 0
+    return int((trinket.get("stats") or {}).get(key, 0) or 0)
+
+
+# ---------------------------------------------------------------------------
+# LLM combat-taunt fallback table (rpg_plan.md §8). Keyed (archetype, event);
+# the model writes fresh lines, but a downed/absent model never blocks combat.
+# ---------------------------------------------------------------------------
+TAUNT_FALLBACK: dict[tuple[str, str], str] = {
+    ("charge", "spotted"): "Stand still. This will only hurt with conviction.",
+    ("charge", "windup"): "Here I come — paperwork can wait.",
+    ("charge", "enrage"): "Now I am late AND angry.",
+    ("charge", "player_low"): "Almost filed under 'finished'.",
+    ("charge", "defeated"): "Fine. Reschedule me.",
+    ("spit", "spotted"): "I taste your tomorrow from here.",
+    ("spit", "windup"): "Open wide, little clerk.",
+    ("spit", "enrage"): "I am all out of patience and full of bile.",
+    ("spit", "player_low"): "Drip. Drip. That's your morning leaking.",
+    ("spit", "defeated"): "Splattered, but memorable.",
+    ("summon", "spotted"): "I never argue alone.",
+    ("summon", "windup"): "Friends! Form a committee!",
+    ("summon", "enrage"): "If you want something eaten right, summon it yourself.",
+    ("summon", "player_low"): "My minions would like your forwarding address.",
+    ("summon", "defeated"): "Adjourned. The motion did not carry.",
+    ("boss", "spotted"): "Little clerk. You rang the bell. I answered.",
+    ("boss", "windup"): "Show me the language you broke me with.",
+    ("boss", "enrage"): "I know that spell now. Draw a new mistake.",
+    ("boss", "player_low"): "Your tomorrow is already on my plate.",
+    ("boss", "defeated"): "Then take your morning. It was always too bright for me.",
+    ("brute", "spotted"): "You look like an overdue invoice.",
+    ("brute", "windup"): "This is going to be load-bearing.",
+    ("brute", "enrage"): "No more warnings. Only dents.",
+    ("brute", "player_low"): "Stay down, it's cheaper.",
+    ("brute", "defeated"): "Worth it. Mostly.",
+}
+
+
+def taunt_fallback(archetype: str, event: str) -> str:
+    key = (archetype or "brute", event or "spotted")
+    return TAUNT_FALLBACK.get(key) or TAUNT_FALLBACK.get(("brute", event), "…")
+
+
+# ---------------------------------------------------------------------------
 # XP / leveling (game_plan.md level rewards)
 # ---------------------------------------------------------------------------
-# xp_to_next[level] = XP needed to advance FROM that level.
-XP_TO_NEXT: dict[int, int] = {1: 8, 2: 16, 3: 28, 4: 44, 5: 0}
-MAX_LEVEL = 5
+# xp_to_next[level] = XP needed to advance FROM that level. (rpg_plan.md §1)
+# Cumulative landmarks: L5=64, L8=154, L10=236, L12=342, L16=638, L20=1088.
+XP_TO_NEXT: dict[int, int] = {
+    1: 10, 2: 14, 3: 18, 4: 22, 5: 26, 6: 30, 7: 34, 8: 38, 9: 44,
+    10: 50, 11: 56, 12: 62, 13: 70, 14: 78, 15: 86, 16: 96,
+    17: 106, 18: 118, 19: 130, 20: 0,
+}
+MAX_LEVEL = 20
 
-# Reward applied on reaching each level (cumulative, applied once).
-LEVEL_REWARDS: dict[int, dict] = {
+# Milestone rewards layered on top of the +1 max-HP baseline every level.
+# Keys other than max_hp REPLACE the baseline +1 with their own max_hp where
+# given; the baseline is folded in by _build_level_rewards below.
+_LEVEL_MILESTONES: dict[int, dict] = {
     2: {"max_hp": 2, "note": "Level 2 — toughened up: +2 max HP."},
     3: {"unlock_four_runes": True, "note": "Level 3 — you can weave 4-rune casts."},
     4: {"rune_mastery_choice": True, "note": "Level 4 — choose a rune mastery."},
-    5: {"max_courage": 2, "boss_ready": True,
-        "note": "Level 5 — boss-ready power spike; ending branches unlocked."},
+    5: {"max_courage": 2, "note": "Level 5 — steadier nerves: +2 max courage."},
+    6: {"spell_power": 1, "note": "Level 6 — sharper intent: +1 spell power."},
+    7: {"potion_belt": 2, "note": "Level 7 — potion belt slot 2 unlocked (key 2)."},
+    8: {"crit": 10, "note": "Level 8 — you learn to find the soft spot: 10% crit."},
+    9: {"max_hp": 2, "note": "Level 9 — scarred and sturdier: +2 max HP."},
+    10: {"max_hp": 3, "spell_power": 1, "evolve_tier": 2,
+         "note": "Level 10 — you evolve into your champion form: +3 max HP, +1 spell power."},
+    11: {"max_courage": 1, "note": "Level 11 — +1 max courage."},
+    12: {"rune_mastery_choice": True, "note": "Level 12 — choose a second rune mastery."},
+    13: {"crit": 5, "note": "Level 13 — keener eye: +5% crit."},
+    14: {"max_hp": 2, "note": "Level 14 — +2 max HP."},
+    15: {"crit_knockback": True, "note": "Level 15 — your crits knock enemies back a tile."},
+    16: {"king_eligible": True,
+         "note": "Level 16 — you could wear the Goblin King's crown, if you found one."},
+    17: {"spell_power": 1, "note": "Level 17 — +1 spell power."},
+    18: {"crit": 5, "note": "Level 18 — +5% crit."},
+    19: {"max_hp": 2, "note": "Level 19 — +2 max HP."},
+    20: {"max_hp": 2, "spell_power": 1, "crit": 5,
+         "note": "Level 20 — Calendar Sovereign: +2 max HP, +1 spell power, +5% crit."},
 }
 
-XP_DEFEAT_ENEMY = 6
-XP_DEFEAT_BOSS_PHASE = 10
-XP_READ_STORY = 3
-XP_HELP_NPC = 4
-XP_UNLOCK = 2
+
+def _build_level_rewards() -> dict[int, dict]:
+    """Every level 2..MAX_LEVEL grants +1 max HP unless a milestone overrides it."""
+    out: dict[int, dict] = {}
+    for lvl in range(2, MAX_LEVEL + 1):
+        reward = {"max_hp": 1, "note": f"Level {lvl} — +1 max HP."}
+        reward.update(_LEVEL_MILESTONES.get(lvl, {}))
+        out[lvl] = reward
+    return out
+
+
+# Reward applied on reaching each level (cumulative, applied once).
+LEVEL_REWARDS: dict[int, dict] = _build_level_rewards()
+
+# Flat XP for non-combat events.
+XP_READ_STORY = 4
+XP_HELP_NPC = 6
+XP_UNLOCK = 3
+XP_DEFEAT_BOSS_PHASE = 30
+# Kept for back-compat / fallbacks; tiered kills use xp_for_kill() below.
+XP_DEFEAT_ENEMY = 8
+
+# Per-tier kill XP = base + per_dr * area difficulty rating (rpg_plan.md §1).
+_KILL_XP: dict[str, tuple[int, int]] = {
+    "minion": (4, 0),
+    "standard": (6, 2),
+    "elite": (14, 4),
+    "boss": (30, 0),
+}
+
+
+def xp_for_kill(tier: str | None, dr: int = 1, *, respawned: bool = False) -> int:
+    """Deterministic kill XP by enemy tier and area difficulty rating.
+
+    Respawned (non-unique) enemies grant half, floored, so grinding works but
+    never beats authored content.
+    """
+    base, per_dr = _KILL_XP.get(tier or "standard", _KILL_XP["standard"])
+    xp = base + per_dr * max(0, int(dr or 1))
+    if respawned:
+        xp = max(1, xp // 2)
+    return xp
 
 
 def xp_to_next(level: int) -> int:
@@ -243,6 +440,7 @@ ALLOWED_FLAGS: frozenset[str] = frozenset({
     "tollmaster_ending",
     "boss_ally_tourist", "boss_ally_librarian", "boss_ally_water",
     "arena_approach_reached", "debt_collector_spawned", "player_evolved",
+    "tourist_lunch_shared",
 })
 
 # Flags that, when present, increase the "devour" pressure (bad-ending weight).
@@ -268,6 +466,130 @@ BOSS_FLAG_REACTIONS: dict[str, str] = {
     "debt_deepened": "Borrowed power tastes best when the bill arrives late.",
     "calendar_truth_read": "You read the truth. Most meals do not read the menu back.",
 }
+
+
+# Plain-English meaning of each flag, written as something that happened to the
+# player. This is what the dialogue model sees — never raw flag keys, which a
+# small model tends to parrot back as gibberish ("you have tourist_helped").
+FLAG_GLOSS: dict[str, str] = {
+    "tourist_helped": "You calmed the Lost Tourist with kind magic.",
+    "tourist_scared": "You frightened the Lost Tourist away with scary magic.",
+    "librarian_trust": "The Mold Librarian trusts you because you read before taking.",
+    "librarian_angry": "The Mold Librarian is angry because you damaged the library.",
+    "water_spirit_helped": "You helped the Water Spirit in the sewer.",
+    "queue_goblin_paid": "You paid the Queue Goblin's toll properly.",
+    "queue_goblin_forced": "You forced your way past the Queue Goblin.",
+    "mirror_truth_seen": "The Mirror Stone showed you the Beast's true fear.",
+    "fungus_colony_spared": "You spared the fungus colony in the caverns.",
+    "fungus_colony_burned": "You burned the fungus colony in the caverns.",
+    "wet_catalog_read": "You read the library catalog and learned where the Key hides.",
+    "library_shelves_burned": "You burned library shelves for a shortcut.",
+    "clean_water_restored": "You restored clean water to the Clock Sewer.",
+    "sewer_valves_aligned": "You aligned the sewer valves.",
+    "sewer_shortcut_open": "You opened the sewer shortcut.",
+    "debt_accepted": "You took a cursed deal and owe a debt.",
+    "debt_repaid": "You repaid your debt at the Bone Market.",
+    "debt_deepened": "You deepened your cursed debt.",
+    "weapon_bought": "You bought a weapon at the Bone Market.",
+    "secret_merchant_met": "You met the Hooded Merchant.",
+    "bone_market_entered": "You visited the Bone Market.",
+    "toll_paid": "You paid the road toll.",
+    "toll_forced": "You forced the toll gate open.",
+    "mycologist_defeated": "You defeated the Mirror Mycologist.",
+    "calendar_shard_1_taken": "You carry the first Calendar Shard.",
+    "calendar_truth_read": "You read the calendar truth: the road borrowed against tomorrow.",
+    "calendar_key_found": "You carry the Calendar Key.",
+    "debt_collector_spawned": "The Debt Collector is hunting you for unpaid debts.",
+    "arena_approach_reached": "You have reached the Calendar Gate.",
+    "player_evolved": "You have evolved into the Goblin King.",
+    "tourist_lunch_shared": "The Lost Tourist shared their packed lunch with you before the arena.",
+    "calendar_beast_phase_2": "The Calendar Beast is wounded and has changed stance.",
+    "calendar_beast_phase_3": "The Calendar Beast is near its end; the final choice is open.",
+}
+
+
+def flag_story(flags, *, limit: int = 6) -> list[str]:
+    """Translate flags into short plain-English 'what happened' lines.
+
+    Most recent flags last (matching set order); unknown/internal flags are
+    silently skipped so the model never sees raw keys.
+    """
+    lines = [FLAG_GLOSS[f] for f in filter_flags(flags) if f in FLAG_GLOSS]
+    return lines[-limit:]
+
+
+def main_objective(player: dict) -> str:
+    """The player's current main-quest objective in one plain sentence.
+
+    Mirrors the client HUD logic using only state the server receives
+    (inventory + flags); the dialogue model uses this so every line can point
+    the player the right way.
+    """
+    inv = set(player.get("inventory") or ())
+    flags = set(player.get("story_flags") or ())
+    if flags & {"calendar_repaired", "calendar_broken", "calendar_devoured",
+                "tollmaster_ending"}:
+        return "The Calendar Beast is decided; the story is ending."
+    if flags & {"calendar_beast_phase_2", "calendar_beast_phase_3"}:
+        return "Defeat or repair the Calendar Beast."
+    if "Calendar Shard" not in inv and "calendar_shard_1_taken" not in flags:
+        return "Find the Calendar Shard in the Mirror Fungus Caverns."
+    if "Calendar Key" not in inv and "calendar_key_found" not in flags:
+        return "Find the Calendar Key in the Wet Library."
+    if "arena_approach_reached" not in flags:
+        return "Open the Calendar Gate and cross the Gate Approach."
+    return "Face the Calendar Beast in its arena."
+
+
+def story_chapter(player: dict) -> str:
+    """Coarse 'where are we in the story' label for the dialogue model."""
+    inv = set(player.get("inventory") or ())
+    flags = set(player.get("story_flags") or ())
+    if flags & {"calendar_beast_phase_2", "calendar_beast_phase_3"}:
+        return "the final boss fight"
+    if "arena_approach_reached" in flags:
+        return "the approach to the final boss"
+    if "Calendar Key" in inv or "calendar_key_found" in flags:
+        return "late game, ready for the Calendar Gate"
+    if "Calendar Shard" in inv or "calendar_shard_1_taken" in flags:
+        return "mid game, hunting the Calendar Key"
+    return "the early game, just after the calendar broke"
+
+
+# ---------------------------------------------------------------------------
+# Bone Market pricing — deterministic bands the LLM may haggle inside
+# ---------------------------------------------------------------------------
+# The model never invents a price: Python derives a [lo, hi] band from the
+# weapon's base price, how deep into the quest the player is (markets gouge
+# when the world is ending), and the player's reputation flags. The LLM picks
+# a price inside the band and writes the haggle line; anything outside is
+# clamped to the band.
+_STAGE_BUMP = {
+    "the early game, just after the calendar broke": 0,
+    "mid game, hunting the Calendar Key": 1,
+    "late game, ready for the Calendar Gate": 2,
+    "the approach to the final boss": 3,
+    "the final boss fight": 3,
+}
+
+
+def price_band(weapon_id: str, player: dict) -> tuple[int, int, int]:
+    """Return (lo, hi, anchor) gold for a weapon given quest stage + flags.
+
+    The cursed Bone Blade is always (0, 0, 0): its price is the debt.
+    """
+    w = WEAPONS.get(weapon_id)
+    if w is None or w.price <= 0:
+        return (0, 0, 0)
+    flags = set(player.get("story_flags") or ())
+    bump = _STAGE_BUMP.get(story_chapter(player), 0)
+    # reputation: responsible customers get kinder bands, desperate ones pay
+    if "debt_repaid" in flags or "queue_goblin_paid" in flags:
+        bump -= 1
+    if flags & {"debt_accepted", "debt_deepened", "calendar_devour_pressure"}:
+        bump += 1
+    anchor = max(1, w.price + bump)
+    return (max(1, anchor - 1), anchor + 1, anchor)
 
 
 def is_allowed_flag(flag: str) -> bool:
@@ -458,11 +780,23 @@ def boss_phase_for(hp: int, max_hp: int) -> dict:
     return BOSS_PHASES[-1]
 
 
-# Goblin King evolution trigger (story_plan.md baseline trigger).
+# Goblin King evolution (rpg_plan.md §6): no longer automatic at boss phase 3.
+# The chosen goblin auto-evolves to its tier-2 champion form at level 10, and
+# only becomes the Goblin King by consuming the Cracked Crown at level 16+.
+KING_MIN_LEVEL = 16
+CHAMPION_LEVEL = 10
+CRACKED_CROWN = "Cracked Crown"
+
+
+def can_become_king(level: int, inventory, flags) -> bool:
+    return (int(level or 1) >= KING_MIN_LEVEL
+            and CRACKED_CROWN in set(inventory or ())
+            and "player_evolved" not in set(flags or ()))
+
+
+# Back-compat shim (unused by the client, kept for any external callers/tests).
 def can_evolve(level: int, flags, boss_phase: int) -> bool:
-    flagset = set(flags or ())
-    identity = bool(flagset & set(HELPER_FLAGS)) or bool(flagset & set(DEVOUR_FLAGS))
-    return boss_phase >= 3 and (level >= 5 or identity) and "player_evolved" not in flagset
+    return int(level or 1) >= KING_MIN_LEVEL and "player_evolved" not in set(flags or ())
 
 
 # ---------------------------------------------------------------------------
@@ -478,6 +812,9 @@ class NpcVoice:
     greeting: str
     reactions: dict[str, str] = field(default_factory=dict)
     journal: str = ""  # durable discovery line written on first meaningful talk
+    # Relationship callbacks for repeat meetings (story_plan.md): keyed by
+    # "trusted" (trust > 0), "wary" (trust < 0), "return" (neutral revisit).
+    callbacks: dict[str, str] = field(default_factory=dict)
 
 
 NPC_VOICES: dict[str, NpcVoice] = {
@@ -492,6 +829,11 @@ NPC_VOICES: dict[str, NpcVoice] = {
             "neutral": "If you broke time, stand in the left line. If you only "
                        "damaged it, right line.",
         },
+        callbacks={
+            "trusted": "The clerk! Still alive, still undertrained. Respect.",
+            "wary": "Oh great. The walking incident report. Stay in your line.",
+            "return": "Back again? The queue missed you. The queue is a liar.",
+        },
         journal="Queue Goblin guards the Toll Road. It hates bells and respects coins.",
     ),
     "tourist": NpcVoice(
@@ -502,6 +844,11 @@ NPC_VOICES: dict[str, NpcVoice] = {
             "fear": "I understand less than before, but much faster.",
             "neutral": "Please do not attack the map. It has already won twice.",
         },
+        callbacks={
+            "trusted": "It's you! The kind-magic one. The map only bit me twice today.",
+            "wary": "Oh. You. I will be over here, behind this rock, learning quickly.",
+            "return": "Still looking for Tuesday. The map now denies Tuesday exists.",
+        },
         journal="The Lost Tourist calms to wave/leaf and may bring a healing lunch later.",
     ),
     "watch_archer": NpcVoice(
@@ -511,6 +858,10 @@ NPC_VOICES: dict[str, NpcVoice] = {
             "insight": "Weakness matters. A small correct spell beats a dramatic wrong one.",
             "neutral": "When a boss changes stance, stop repeating yourself. The "
                        "calendar learns.",
+        },
+        callbacks={
+            "trusted": "Your stance improved. The dungeon is collecting less evidence on you.",
+            "return": "Back for more training? Good. Repetition is honest.",
         },
         journal="Blue Watch Archer: face a target, read its weakness, then exploit it.",
     ),
@@ -523,6 +874,10 @@ NPC_VOICES: dict[str, NpcVoice] = {
             "insight": "You want gear? Bring proof you can survive the road first.",
             "neutral": "Trophies for equipment. Potions for trophies. Simple economy, clerk.",
         },
+        callbacks={
+            "trusted": "The herd-thinner returns! Trophies out — the good gear is on the table.",
+            "return": "Trophies for gear, clerk. The economy has not changed since breakfast.",
+        },
         journal="Quartermaster Bramble trades monster trophies for weapons and potions.",
     ),
     "road_druid": NpcVoice(
@@ -533,6 +888,10 @@ NPC_VOICES: dict[str, NpcVoice] = {
                     "to be alive.",
             "neutral": "The sewer water remembers the clean version of itself. Help "
                        "it remember louder.",
+        },
+        callbacks={
+            "trusted": "The weeds part for you now. The garden talks about you, kindly.",
+            "return": "Still weeding the calendar? Good. Roots before flowers.",
         },
         journal="Road Druid points to leaf/wave repair routes and the Clock Sewer.",
     ),
@@ -551,6 +910,11 @@ NPC_VOICES: dict[str, NpcVoice] = {
             "kind": "Good. The colony will tell the Beast where its own fear lives.",
             "neutral": "The fungus is not hiding a shard. It is remembering one.",
         },
+        callbacks={
+            "trusted": "The colony hums when you pass. That is fungal applause.",
+            "wary": "The mirrors remember what you burned. So do I.",
+            "return": "Back under the glass? Walk soft; the spores are napping.",
+        },
         journal="Mirror Hermit: solve the fungus with mirror+eye, not fire.",
     ),
     "librarian": NpcVoice(
@@ -561,6 +925,11 @@ NPC_VOICES: dict[str, NpcVoice] = {
                        "the species was not finished.",
             "fear": "That was a century of notes and three perfectly dry jokes.",
             "neutral": "The Calendar Key is ink-locked. It opens for readers, not burglars.",
+        },
+        callbacks={
+            "trusted": "Ah, the reader returns. The books have stopped flinching.",
+            "wary": "The shelves remember the smoke. Borrowing privileges: revoked.",
+            "return": "Mind the damp. Chapter three is leaking again.",
         },
         journal="Mold Librarian: the Calendar Key is ink-locked — key + eye + wave.",
     ),
@@ -586,6 +955,11 @@ NPC_VOICES: dict[str, NpcVoice] = {
             "fear": "Excellent. Your future has approved the loan by screaming.",
             "neutral": "I sell weapons, refunds, and mistakes with handles.",
         },
+        callbacks={
+            "trusted": "My favorite solvent customer! Today's curses are half off, emotionally.",
+            "wary": "Ah, the debtor walks in like the interest is not watching.",
+            "return": "Back to browse? Everything is still for sale, including the browsing.",
+        },
         journal="Bone Market Merchant sells weapons; coins repay debt, curses deepen it.",
     ),
     "water_spirit": NpcVoice(
@@ -595,6 +969,10 @@ NPC_VOICES: dict[str, NpcVoice] = {
             "kind": "The water remembers the sky. So will I.",
             "neutral": "Wave moves water. Leaf reminds it why. Clean me and I carry "
                        "one kindness to the final room.",
+        },
+        callbacks={
+            "trusted": "You carried my clean water in your hands. I have not forgotten.",
+            "return": "The pipes still tick. I still remember the sky.",
         },
         journal="Water Spirit: restore clean flow with wave + leaf for a final ally.",
     ),
@@ -614,6 +992,10 @@ NPC_VOICES: dict[str, NpcVoice] = {
         reactions={
             "coin": "Fine. Consider the account emotionally closed.",
             "neutral": "Debt is just a monster that learned accounting.",
+        },
+        callbacks={
+            "wary": "The account grows teeth while you stall.",
+            "return": "Still owing. Compound interest is also a monster.",
         },
         journal="Debt Collector appears when forced shortcuts go unpaid.",
     ),
@@ -674,10 +1056,30 @@ def npc_intent(runes) -> str:
     return "neutral"
 
 
-def fallback_dialogue(npc_id: str, runes=()) -> dict:
+def canonical_npc_line(npc_id: str, runes=(), trust: int = 0, meets: int = 1) -> str:
+    """THE one correct line for this NPC in this moment.
+
+    Single source of truth shared by the deterministic fallback and the LLM
+    prompt (persona + steering), so the model is never shown two competing
+    "correct" lines. Spells route through intent reactions; spell-free repeat
+    visits route through the relationship callback (trusted / wary / return).
+    """
+    voice = NPC_VOICES.get(npc_id)
+    if voice is None:
+        return ""
+    line = voice.reactions.get(npc_intent(runes)) or voice.greeting
+    if not runes and meets > 1 and voice.callbacks:
+        key = "trusted" if trust > 0 else ("wary" if trust < 0 else "return")
+        line = voice.callbacks.get(key) or voice.callbacks.get("return") or line
+    return line
+
+
+def fallback_dialogue(npc_id: str, runes=(), trust: int = 0, meets: int = 1) -> dict:
     """Deterministic dialogue payload for an NPC + rune intent.
 
     Returns the same shape the LLM endpoint produces so callers are uniform.
+    On a repeat visit with no spell, the voice's relationship callback line
+    (trusted / wary / plain return) replaces the canned first greeting.
     """
     voice = NPC_VOICES.get(npc_id)
     if voice is None:
@@ -685,8 +1087,7 @@ def fallback_dialogue(npc_id: str, runes=()) -> dict:
             "story_toast": "", "npc_line": "They blink at you, professionally.",
             "journal_entry": "", "suggested_story_flag": "", "mood_shift": "",
         }
-    intent = npc_intent(runes)
-    line = voice.reactions.get(intent) or voice.greeting
+    line = canonical_npc_line(npc_id, runes, trust=trust, meets=meets)
     return {
         "story_toast": "",
         "npc_line": f"{voice.name}: {line}",

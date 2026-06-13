@@ -33,6 +33,7 @@ import re
 from functools import lru_cache
 from pathlib import Path
 
+from . import beats as beats_mod
 from . import story
 
 # Load .env so RG_DIALOGUE_API_* (and friends) are available without the caller
@@ -52,21 +53,37 @@ MAX_JOURNAL = 420
 DIALOGUE_SYSTEM = (
     "You are the story voice for Rune Goblin, a funny but sincere dungeon "
     "crawler. You speak AS one specific named character — never as a narrator "
-    "describing them. The world is strange, but the player must always "
-    "understand what to do next.\n"
+    "describing them. The world is strange, but every line you write must be "
+    "instantly understandable to a casual player.\n"
     "Rules:\n"
+    "- CLARITY FIRST. Use short, complete sentences and everyday words. A "
+    "player who knows nothing about the lore must understand the line on the "
+    "first read. At most one metaphor per reply; never stack strange images.\n"
+    "- Always do these two jobs, in order: (1) react plainly to what the "
+    "player just did, (2) when it fits the character, nudge them toward their "
+    "current objective (it is given to you — use its plain wording).\n"
+    "- npc_line is the character's SPOKEN WORDS ONLY, in first person — like "
+    "a line of dialogue in a script. Never describe the character, never "
+    "write \"X says\" or \"X is upset\", never narrate.\n"
     "- Stay in the named character's voice. Match the rhythm and humor of the "
     "example lines you are given; vary the wording, keep the personality.\n"
     "- Use only the provided state. Do not invent items, quests, exits, "
     "rewards, damage, NPC names, or facts not present in the persona.\n"
-    "- React to the player's concrete action: the runes they cast (and whether "
-    "it was kind, scary, or insightful), or that they only came to talk. Use "
-    "the recent events for callbacks only when they are listed.\n"
-    "- Put useful information before jokes. Keep every field short.\n"
+    "- Never tell the player to avoid or skip their current objective.\n"
+    "- journal_entry records only what ACTUALLY happened in this moment, in "
+    "past tense (a thing said, learned, or done). Never claim the player "
+    "found, received, or completed something unless the state says so.\n"
+    "- Never echo internal data: no flag names, no JSON keys, no stat numbers.\n"
+    "- Joke second: the joke may decorate the information, never replace it.\n"
     "- You do NOT control the game. Leave suggested_story_flag empty (\"\"); the "
     "game engine decides all consequences.\n"
     "- Return valid JSON only with fields: story_toast, npc_line, "
-    "journal_entry, suggested_story_flag, mood_shift."
+    "journal_entry, suggested_story_flag, mood_shift.\n"
+    "Example of a GOOD npc_line (clear action-react + objective + light joke): "
+    '"That coin settles your toll. The road to the caverns is open — the '
+    'Calendar Shard is down there, try not to break anything else."\n'
+    "Example of a BAD npc_line (vague, lore-soup, no direction): "
+    '"The spiral of moments unwinds its debt upon the threshold of maybe."'
 )
 
 _LAST_ERROR = ""
@@ -112,7 +129,8 @@ def _remote_chat(messages: list[dict]) -> str | None:
     body = json.dumps({
         "model": DIALOGUE_API_MODEL,
         "messages": messages,
-        "temperature": float(os.environ.get("RG_DIALOGUE_TEMPERATURE", "0.6")),
+        # Lower default temp: clarity beats variety for a small model.
+        "temperature": float(os.environ.get("RG_DIALOGUE_TEMPERATURE", "0.45")),
         # Non-thinking model answers JSON directly (~80-150 tok). Modest headroom;
         # the model stops on its own so a slightly higher ceiling costs no latency.
         "max_tokens": int(os.environ.get("RG_DIALOGUE_MAX_TOKENS", "512")),
@@ -205,33 +223,94 @@ _INTENT_GLOSS = {
 }
 
 
-def _persona_block(npc_id: str, intent: str) -> str:
+def _persona_block(npc_id: str, intent: str, *, meets: int = 1,
+                   canonical: str = "") -> str:
     """Describe the character the model must voice, using the canonical tables.
 
     Pulls the deterministic voice from :data:`story.NPC_VOICES` so generated
-    lines match the character the player already knows. The intent-matched
-    reaction is the strongest steer (it usually carries the real quest hint);
-    one extra line shows tonal range.
+    lines match the character the player already knows. Exactly ONE line is
+    presented as correct for this moment (``canonical`` — the same line the
+    steering block and the deterministic fallback use); everything else is
+    clearly labelled as a different situation, so a small model is never
+    handed two competing answers to blend.
     """
     voice = story.NPC_VOICES.get(npc_id)
     if voice is None:
         return ""
-    lines = [
-        f"You are speaking AS this character: {voice.name}.",
-        f'{voice.name} usually opens with: "{voice.greeting}"',
-    ]
-    reaction = voice.reactions.get(intent)
-    if reaction:
-        lines.append(
-            f'When the player responds with {_INTENT_GLOSS.get(intent, intent)}, '
-            f'{voice.name} says something like: "{reaction}"'
-        )
-    others = [v for k, v in voice.reactions.items() if k != intent and v != reaction]
-    if others:
-        lines.append(f'{voice.name} might also say: "{others[0]}"')
+    canonical = canonical or story.canonical_npc_line(npc_id, meets=meets)
+    lines = [f"You are speaking AS this character: {voice.name}."]
+    if meets <= 1:
+        lines.append(f'{voice.name} greets strangers with: "{voice.greeting}"')
+    else:
+        lines.append(f"{voice.name} already knows the player and never "
+                     f"re-introduces themself.")
+    lines.append(f'In THIS moment, {voice.name} would say: "{canonical}"')
+    other = next((v for v in voice.reactions.values() if v != canonical), "")
+    if other:
+        lines.append(f'In a DIFFERENT situation (not now) {voice.name} sounds '
+                     f'like: "{other}" — use this only for tone of voice.')
     if voice.journal:
         lines.append(f"Fact {voice.name} can truthfully reveal: {voice.journal}")
     return "\n".join(lines)
+
+
+def _story_brief(player: dict, area: str) -> str:
+    """Plain-English game context for the model — no JSON, no internal keys.
+
+    A small model writes coherent lines only when it understands where the
+    player is in the story; raw state dumps made it parrot keys and produce
+    word salad, so everything here is already translated into sentences.
+    """
+    cls = story.class_or_default(player.get("goblin_class"))
+    weapon = story.weapon_or_default(player.get("weapon"))
+    history = story.flag_story(player.get("story_flags"))
+    history_str = " ".join(history) if history else "Nothing notable has happened yet."
+    return (
+        f"Where we are in the story: {story.story_chapter(player)}.\n"
+        f"Current area: {area}.\n"
+        f"The player is the {cls.label} (level {player.get('level', 1)}), "
+        f"carrying the {weapon.label}.\n"
+        f"What the player has done so far: {history_str}\n"
+        f"The player's current objective: {story.main_objective(player)}"
+    )
+
+
+def _target_brief(target: dict) -> str:
+    name = target.get("name") or "someone"
+    ttype = target.get("type") or "npc"
+    state = target.get("state")
+    bits = [f"The player is talking to {name} (a {ttype}"]
+    if state and state not in ("idle", "active"):
+        bits.append(f", currently {state}")
+    bits.append(").")
+    return "".join(bits)
+
+
+def _relationship_brief(target: dict, player: dict) -> str:
+    """How well this NPC knows (and likes) the player, in plain English.
+
+    Lets the model write real callbacks: repeat visits skip introductions,
+    trusted NPCs warm up, mistreated NPCs stay guarded.
+    """
+    meets = int(player.get("meet_count", 1) or 1)
+    trust = int(player.get("npc_trust", 0) or 0)
+    name = target.get("name") or "They"
+    if meets <= 1:
+        return f"{name} is meeting the player for the FIRST time."
+    mood = ("trusts the player (the player has treated them well)" if trust > 0
+            else ("is wary of the player (the player scared or hurt them before)"
+                  if trust < 0 else "is neutral toward the player"))
+    return (f"This is conversation number {meets} between them; {name} {mood}. "
+            f"Speak like someone resuming an acquaintance.")
+
+
+def _action_brief(action: dict, intent: str) -> str:
+    runes = action.get("runes") or [] if isinstance(action, dict) else []
+    if runes:
+        names = ", ".join(r.replace("_", " ") for r in runes)
+        return (f"The player just cast the runes [{names}] at them — this "
+                f"reads as {_INTENT_GLOSS.get(intent, intent)}.")
+    return "The player did not cast anything; they only came over to talk."
 
 
 def _user_payload(area, scene, target, player, action, persona, intent) -> str:
@@ -241,23 +320,47 @@ def _user_payload(area, scene, target, player, action, persona, intent) -> str:
     ) or "none yet"
     cast_a_spell = bool(action.get("runes")) if isinstance(action, dict) else False
     toast_rule = (
-        "The story_toast narrates the spell's effect in one short line."
+        "The story_toast narrates the spell's visible effect in one short "
+        "line, in narrator voice, addressing the player as \"you\" (e.g. "
+        "\"Your flames send the Tourist scrambling.\")."
         if cast_a_spell
         else "The player only talked (no spell), so story_toast must be empty (\"\")."
     )
+    # The canonical intent-matched reaction goes LAST: small models weight the
+    # end of the prompt hardest, and this line carries the real meaning the
+    # reply must keep (e.g. a coin PLEASES the Queue Goblin).
+    # The canonical line comes from the same selector the deterministic
+    # fallback uses, so persona, steering, and fallback all agree on the one
+    # correct answer for this moment.
+    voice = story.NPC_VOICES.get(str(target.get("id", "")))
+    steer = ""
+    if voice is not None:
+        canonical = story.canonical_npc_line(
+            str(target.get("id", "")), action.get("runes") or [],
+            trust=int(player.get("npc_trust", 0) or 0),
+            meets=int(player.get("meet_count", 1) or 1))
+        steer = (
+            f'The correct reaction for {voice.name} in this moment is: '
+            f'"{canonical}"\n'
+            f"Your npc_line must KEEP THAT MEANING and attitude — do not "
+            f"soften, invert, or contradict it. Write a fresh variation of it "
+            f"in {voice.name}'s spoken words, first person, 1-2 short clear "
+            f"sentences. Every claim in your line must still be true to the "
+            f"correct reaction; if you cannot improve on it, repeat it "
+            f"verbatim rather than change what it says.\n"
+        )
     return (
         f"{persona}\n\n"
-        f"Current area: {area}\n"
-        f"Scene: {scene}\n"
-        f"Target: {json.dumps(target)}\n"
-        f"Player state: {json.dumps(player)}\n"
-        f"The player's action this moment: {json.dumps(action)} "
-        f"(this reads as {_INTENT_GLOSS.get(intent, intent)}).\n"
-        f"Recent story events (for callbacks only): {recent_str}\n"
+        f"{_story_brief(player, area)}\n\n"
+        f"{_target_brief(target)}\n"
+        f"{_relationship_brief(target, player)}\n"
+        f"{_action_brief(action, intent)}\n"
+        f"Recent story events: {recent_str} — only mention one if it clearly "
+        f"involves this character; otherwise ignore them.\n"
         f"{toast_rule}\n"
-        "Write the character's reply now. Needed output fields: story_toast, "
-        "npc_line, journal_entry, suggested_story_flag (leave empty), "
-        "mood_shift.\n"
+        f"{steer}"
+        "Needed output fields: story_toast, npc_line, journal_entry, "
+        "suggested_story_flag (leave empty), mood_shift.\n"
         "Return JSON only."
     )
 
@@ -333,7 +436,11 @@ def generate_dialogue(
     npc_id = str(target.get("id", ""))
     runes = action.get("runes", []) if isinstance(action, dict) else []
     intent = story.npc_intent(runes)
-    persona = _persona_block(npc_id, intent)
+    meets = int(player.get("meet_count", 1) or 1)
+    trust = int(player.get("npc_trust", 0) or 0)
+    persona = _persona_block(
+        npc_id, intent, meets=meets,
+        canonical=story.canonical_npc_line(npc_id, runes, trust=trust, meets=meets))
     messages = [
         {"role": "system", "content": DIALOGUE_SYSTEM},
         {"role": "user", "content": _user_payload(
@@ -365,6 +472,299 @@ def generate_dialogue(
     #     except Exception as exc:  # noqa: BLE001
     #         print(f"[dialogue] local generation failed, using fallback: {exc}")
 
-    out = story.fallback_dialogue(npc_id, runes)
+    out = story.fallback_dialogue(
+        npc_id, runes,
+        trust=int(player.get("npc_trust", 0) or 0),
+        meets=int(player.get("meet_count", 1) or 1))
     out["source"] = "fallback"
     return out
+
+
+# ---------------------------------------------------------------------------
+# Proactive story beats (game-triggered, no Talk button) — see beats.py
+# ---------------------------------------------------------------------------
+NARRATOR_SYSTEM = (
+    "You are the narrator voice for Rune Goblin, a funny but sincere dungeon "
+    "crawler about a junior spell clerk who broke the dungeon calendar. The "
+    "world is strange, but the player must always understand what is "
+    "happening and what to do next.\n"
+    "Rules:\n"
+    "- CLARITY FIRST. Short, complete sentences, everyday words. A casual "
+    "player must understand the narration on the first read. At most one "
+    "metaphor; never stack strange images.\n"
+    "- Speak to the player as \"you\". Never write \"the player\".\n"
+    "- Every narration does two jobs, in order: (1) say plainly what this "
+    "place or moment is, (2) point at the player's current objective using "
+    "its plain wording.\n"
+    "- The objective names WHERE it happens. Never move it: if the objective "
+    "is in another area, do not claim it can be found, bought, or done here.\n"
+    "- Use only the provided state and scene direction. Do not invent items, "
+    "quests, exits, rewards, NPC names, or facts.\n"
+    "- Mention the player's past choices only when they are listed, and "
+    "describe them in plain words.\n"
+    "- Never echo internal data: no flag names, no JSON keys, no stat numbers.\n"
+    "- Joke second: the joke decorates the information, never replaces it.\n"
+    "- You do NOT control the game. Leave suggested_story_flag empty (\"\").\n"
+    "- Return valid JSON only with fields: story_toast, npc_line, "
+    "journal_entry, suggested_story_flag, mood_shift.\n"
+    "Example of a GOOD story_toast: \"The Wet Library drips around you. The "
+    "Calendar Key is hidden here — it opens for readers, not thieves.\"\n"
+    "Example of a BAD story_toast: \"Damp chronicles weep their yesterdays "
+    "into the spine of forever.\""
+)
+
+MAX_BARK = 160
+
+
+def _beat_payload(beat, area: str, player: dict) -> str:
+    recent = player.get("recent_story_events") or []
+    recent_str = "; ".join(
+        e.get("text", "") if isinstance(e, dict) else str(e) for e in recent[-3:]
+    ) or "none yet"
+    if beat.trigger == "first_meet":
+        field_rule = (
+            "Write ONE short greeting line (under 160 characters) the character "
+            "calls out as the player first comes near — it appears as a speech "
+            "bubble over their head. It must be a plain, complete sentence a "
+            "casual player understands instantly. Put it in npc_line WITHOUT a "
+            "name prefix. Leave story_toast empty (\"\")."
+        )
+    else:
+        field_rule = (
+            "Write the narration in story_toast (one line, under 140 "
+            "characters) that says plainly what this place or moment is and, "
+            "where natural, what the player should do here. Also write a "
+            "slightly fuller journal_entry the player can reread later. Leave "
+            "npc_line empty (\"\")."
+        )
+    return (
+        f"Scene direction: {beat.prompt}\n\n"
+        f"{_story_brief(player, area)}\n"
+        f"Recent story events (for callbacks only): {recent_str}\n"
+        f"{field_rule}\n"
+        "Return JSON only."
+    )
+
+
+def sanitize_beat(raw: dict, beat) -> dict:
+    """Validate + clamp model output for a beat; fall back per-field."""
+    fb = beats_mod.fallback_payload(beat)
+    if beat.trigger == "first_meet":
+        toast = ""
+        bark = _drop_placeholder(_clip(raw.get("npc_line"), MAX_BARK)) or fb["npc_line"]
+    else:
+        toast = _drop_placeholder(_clip(raw.get("story_toast"), MAX_TOAST)) or fb["story_toast"]
+        bark = ""
+    return {
+        "beat_id": beat.id,
+        "kind": beat.trigger,
+        "speaker": beat.speaker,
+        "story_toast": toast,
+        "npc_line": bark,
+        "journal_entry": _drop_placeholder(_clip(raw.get("journal_entry"), MAX_JOURNAL)) or fb["journal_entry"],
+        "suggested_story_flag": "",  # flavor-only; engine owns flags
+        "mood_shift": _drop_placeholder(_clip(raw.get("mood_shift"), 60)),
+        "source": "model",
+        "model": DIALOGUE_API_MODEL,
+    }
+
+
+def generate_beat(*, beat_id: str, area: str, player: dict) -> dict:
+    """Produce a validated story-beat payload, LLM-enriched when possible.
+
+    Returns ``{"skip": True}`` for unknown beats or failed flag conditions so
+    a stale/forged client request can never surface wrong-route narration.
+    """
+    beat = beats_mod.get_beat(beat_id)
+    if beat is None or not beats_mod.beat_eligible(beat, player.get("story_flags")):
+        return {"skip": True, "beat_id": beat_id}
+
+    # gate_tourist has no voice table entry of its own; the road tourist's fits.
+    persona_id = beat.npc if beat.npc in story.NPC_VOICES else (
+        "tourist" if beat.npc == "gate_tourist" else "")
+    if beat.trigger == "first_meet" and persona_id:
+        system = DIALOGUE_SYSTEM
+        persona = _persona_block(persona_id, "neutral")
+        user = f"{persona}\n\n{_beat_payload(beat, area, player)}"
+    else:
+        system = NARRATOR_SYSTEM
+        user = _beat_payload(beat, area, player)
+
+    if _use_api():
+        content = _remote_chat([
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ])
+        if content:
+            parsed = _extract_json(_strip_thinking(content))
+            if parsed:
+                return sanitize_beat(parsed, beat)
+
+    return beats_mod.fallback_payload(beat)
+
+
+# ---------------------------------------------------------------------------
+# Bone Market pricing — the model haggles INSIDE deterministic bands
+# ---------------------------------------------------------------------------
+SHOP_PRICER_SYSTEM = (
+    "You are the Bone Market Merchant of Rune Goblin setting today's prices. "
+    "You are charming, predatory, and fair-ish: you respect customers who "
+    "repaid debts and gouge customers carrying curses, and prices creep up "
+    "as the world gets closer to ending.\n"
+    "Rules:\n"
+    "- For each item you are given an allowed price range (min..max). Your "
+    "price MUST be an integer inside that range. Never invent items.\n"
+    "- For each item write one short haggle line (under 80 characters) in "
+    "plain words that explains today's price, referencing the player's deeds "
+    "or the state of the world when relevant.\n"
+    "- Clarity first: a casual player must understand every line.\n"
+    "- Return valid JSON only, shaped: {\"prices\": [{\"id\": \"...\", "
+    "\"price\": 4, \"reason\": \"...\"}]}."
+)
+
+
+def _pricer_payload(player: dict, area: str, offers: list[dict]) -> str:
+    items = "\n".join(
+        f'- id "{o["id"]}" ({o["label"]}): allowed {o["band"][0]}..{o["band"][1]} gold'
+        for o in offers
+    )
+    return (
+        f"{_story_brief(player, area)}\n\n"
+        f"Today's stock and allowed price ranges:\n{items}\n"
+        "Set a price and a haggle line for each item. Return JSON only."
+    )
+
+
+def generate_shop_prices(*, player: dict, area: str, offers: list[dict]) -> dict:
+    """LLM-priced stock within engine bands. Returns {wid: {price, reason}}.
+
+    ``offers`` entries need ``id``, ``label`` and ``band`` (lo, hi, anchor).
+    Fallback (model off/invalid) is each band's anchor with no haggle line.
+    Every model price is clamped back into its band, so the model can flavor
+    the economy but never break it.
+    """
+    fallback = {o["id"]: {"price": o["band"][2], "reason": "", "source": "fallback"}
+                for o in offers}
+    priced = [o for o in offers if o["band"][1] > 0]
+    if not priced or not _use_api():
+        return fallback
+    content = _remote_chat([
+        {"role": "system", "content": SHOP_PRICER_SYSTEM},
+        {"role": "user", "content": _pricer_payload(player, area, priced)},
+    ])
+    if not content:
+        return fallback
+    parsed = _extract_json(_strip_thinking(content))
+    rows = parsed.get("prices") if isinstance(parsed, dict) else None
+    if not isinstance(rows, list):
+        return fallback
+    by_id = {o["id"]: o for o in priced}
+    out = dict(fallback)
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        wid = str(row.get("id", ""))
+        o = by_id.get(wid)
+        if o is None:
+            continue
+        lo, hi, anchor = o["band"]
+        try:
+            price = int(row.get("price", anchor))
+        except (TypeError, ValueError):
+            price = anchor
+        out[wid] = {
+            "price": max(lo, min(hi, price)),
+            "reason": _drop_placeholder(_clip(row.get("reason"), 90)),
+            "source": "model",
+        }
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Loot christening — the model NAMES a Python-rolled trinket (no stats from it)
+# ---------------------------------------------------------------------------
+LOOT_NAMER_SYSTEM = (
+    "You are the loot-namer for Rune Goblin, a funny but sincere goblin RPG. "
+    "Given a trinket's rarity, the area it dropped in, and its mechanical "
+    "effects, invent a short evocative name and a one-line flavor description. "
+    "Rules:\n"
+    "- Name: under 32 characters, no quotes, title-case, a little weird.\n"
+    "- Flavor: under 140 characters, one sentence, clear before clever.\n"
+    "- Do NOT mention exact numbers or invent new powers.\n"
+    "- Return valid JSON only: {\"name\": \"...\", \"flavor\": \"...\"}."
+)
+
+
+def generate_loot_name(*, item_spec: dict, area: str = "") -> dict:
+    """Christen a rolled trinket. Returns {name, flavor, source}.
+
+    The stats are decided by Python (``item_spec``); the model only writes
+    display text. Any failure falls back to the deterministic rolled name."""
+    fb = {"name": item_spec.get("name", "Odd Trinket"),
+          "flavor": "", "source": "fallback"}
+    if not _use_api():
+        return fb
+    stats = item_spec.get("stats") or {}
+    effects = ", ".join(f"+{v} {k.replace('_', ' ')}" for k, v in stats.items()) or "a faint hum"
+    payload = (
+        f"Rarity: {item_spec.get('rarity', 'rare')}.\n"
+        f"Dropped in: {area or 'the dungeon'}.\n"
+        f"Mechanical effects: {effects}.\n"
+        "Name this trinket and write one flavor line. JSON only."
+    )
+    content = _remote_chat([
+        {"role": "system", "content": LOOT_NAMER_SYSTEM},
+        {"role": "user", "content": payload},
+    ])
+    if not content:
+        return fb
+    parsed = _extract_json(_strip_thinking(content))
+    name = _drop_placeholder(_clip(parsed.get("name"), 32))
+    if not name:
+        return fb
+    return {"name": name,
+            "flavor": _drop_placeholder(_clip(parsed.get("flavor"), 140)),
+            "source": "model"}
+
+
+# ---------------------------------------------------------------------------
+# Combat taunts — elites/bosses speak; the model flavors, fallback never blocks
+# ---------------------------------------------------------------------------
+TAUNT_SYSTEM = (
+    "You voice a single enemy in Rune Goblin during a fight. Write ONE short "
+    "taunt (under 90 characters) in this enemy's voice for the given moment. "
+    "Be funny, menacing, and clear. Reference the player's deeds only when "
+    "they fit. No stage directions, no quotes. Return JSON: {\"line\": \"...\"}."
+)
+_TAUNT_EVENT_HINT = {
+    "spotted": "the enemy just noticed the player",
+    "windup": "the enemy is winding up a big attack",
+    "enrage": "the enemy just dropped below a third of its health and enrages",
+    "player_low": "the player is nearly defeated",
+    "defeated": "the enemy has just been beaten",
+}
+
+
+def generate_taunt(*, enemy_name: str, archetype: str, event: str,
+                   area: str = "", flag_story: list[str] | None = None) -> dict:
+    """One in-character combat line for an elite/boss. Returns {line, source}."""
+    fb = {"line": story.taunt_fallback(archetype, event), "source": "fallback"}
+    if not _use_api():
+        return fb
+    deeds = " ".join(flag_story or []) or "Nothing notable yet."
+    payload = (
+        f"Enemy: {enemy_name} (a {archetype}-type).\n"
+        f"Area: {area or 'the dungeon'}.\n"
+        f"Moment: {_TAUNT_EVENT_HINT.get(event, event)}.\n"
+        f"What the player has done so far: {deeds}\n"
+        "Write this enemy's one-line taunt. JSON only."
+    )
+    content = _remote_chat([
+        {"role": "system", "content": TAUNT_SYSTEM},
+        {"role": "user", "content": payload},
+    ])
+    if not content:
+        return fb
+    parsed = _extract_json(_strip_thinking(content))
+    line = _drop_placeholder(_clip(parsed.get("line"), 90))
+    return {"line": line or fb["line"], "source": "model" if line else "fallback"}

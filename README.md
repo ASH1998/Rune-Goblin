@@ -1,4 +1,11 @@
-
+---
+title: Rune Goblin
+colorFrom: purple
+colorTo: gray
+sdk: docker
+app_port: 7860
+pinned: false
+---
 
 # 🪄 Rune Goblin
 
@@ -6,8 +13,15 @@
 
 [![Deploy to Hugging Face Space](https://github.com/ASH1998/Rune-Goblin/actions/workflows/deploy-hf-space.yml/badge.svg?branch=master)](https://github.com/ASH1998/Rune-Goblin/actions/workflows/deploy-hf-space.yml)
 
+> ### 🙏 Credits
+> - 🤖 **Made with [Codex](https://github.com/codex)** — coding and some asset creation (the `BOSS` and `rune_goblin` magic-circle assets are Codex-generated).
+> - 🧠 **Models by [OpenBMB](https://huggingface.co/openbmb)** — [`openbmb/MiniCPM-V-4.6`](https://huggingface.co/openbmb/MiniCPM-V-4.6) (fine-tuned spell engine + base dialogue/story).
+> - ⚡ **Thanks to [Modal](https://modal.com)** for fine-tuning credits.
+>
+> Full attributions, including game art packs, are in [`CREDITS.md`](./CREDITS.md).
+
 A tiny dungeon crawler where players draw spells in an invented symbolic
-language (**RuneLang**) and a fine-tuned [`openbmb/MiniCPM5-1B-SFT`](https://huggingface.co/openbmb/MiniCPM5-1B-SFT)
+language (**RuneLang**) and a fine-tuned [`openbmb/MiniCPM-V-4.6`](https://huggingface.co/openbmb/MiniCPM-V-4.6)
 acts as the **spell engine** — reading glyph combinations and emitting JSON
 that drives attacks, curses and game-state changes. Runtime visuals are not
 image-generated; spell metadata recolors, resizes, retargets and animates
@@ -20,7 +34,7 @@ See [`rune_goblin_plan.md`](./rune_goblin_plan.md) for the full design doc.
 ```
 Rune buttons (Gradio / React)
    → serialized rune sequence + game state
-   → fine-tuned MiniCPM5-1B + LoRA   (rune_goblin.inference)
+   → fine-tuned openbmb/MiniCPM-V-4.6 + LoRA   (rune_goblin.inference)
    → spell outcome JSON              (validated by rune_goblin.schema)
    → game state engine               (rune_goblin.game, clamps HP)
    → updated UI
@@ -136,9 +150,10 @@ fine-tuning reference and model-serving notes.
 A free-roaming campaign RPG. You start on a **character-select title screen** and
 pick one of five goblin heroes (Warrior / Rogue / Poison Rogue / Hunter /
 Barbarian, art from `assets/Goblin Pack #1`), each with its own HP, courage and
-rune affinities. Then explore **seven connected areas** — Toll Road hub, Mirror
-Fungus Caverns, Wet Library, Bone Market, Clock Sewer, Gate Approach and the
-Calendar Beast Arena — fighting enemies, gaining **XP and levels**, buying
+rune affinities. Then explore **nine connected areas** — Toll Road hub, Mirror
+Fungus Caverns, Wet Library, Bone Market, Clock Sewer, Gate Approach, the
+Calendar Beast Arena, plus the **Frostbite Pass** and **Ember Foundry** (a
+linked ice/forge loop off the hub) — fighting enemies, gaining **XP and levels**, buying
 **weapons** that modify your spells, helping or scaring NPCs, and leaving durable
 **story flags** that steer one of four endings (Broken / Repaired / Devoured /
 secret Tollmaster). The final boss has three phases and your hero can **evolve
@@ -158,6 +173,21 @@ RG_USE_DIALOGUE_MODEL=1 \
 RG_DIALOGUE_MODEL=models/MiniCPM-V-4.6-gguf/MiniCPM-V-4_6-Q4_K_M.gguf \
 uv run --extra gguf python app/rpg_app.py
 # → http://localhost:7862   (set RG_USE_MODEL=0 to play purely on the rule engine)
+```
+
+**Admin mode.** A fully-unlocked world: every area-to-area portal and locked
+door is walkable, locked chests open with any cast, and the hero holds the key
+story items (Calendar Key, Debt Receipt, Thawed Ember…). When it's on, a
+`🔓 ADMIN` badge shows in the HUD and a green **⇪ Warp to map…** dropdown appears
+in the action bar to teleport directly to any of the nine areas. Two ways to
+enable it:
+
+- **Backend:** set `RG_ADMIN=1` on the server — the world ships pre-unlocked.
+- **In-game:** press **Shift + L + A** (held together) to toggle admin on/off at
+  any time, even from a normal run. Toggling off restores every lock.
+
+```bash
+RG_USE_MODEL=0 RG_ADMIN=1 uv run python app/rpg_app.py   # all maps unlocked from boot
 ```
 
 **NPC dialogue model.** `RG_USE_DIALOGUE_MODEL=1` enables live, model-written NPC
@@ -248,7 +278,7 @@ context, then returns attack/VFX metadata for the renderer.
 
 ## Notes on the model
 
-- **Fine-tuning base**: `openbmb/MiniCPM5-1B-SFT` — safetensors, llama-arch,
+- **Fine-tuning base**: `openbmb/MiniCPM-V-4.6` — safetensors, vision-capable,
   LoRA-trainable. This is what `rune-goblin-download` and `finetune.py` use.
 - **Vision fine-tune**: `ASHu2/goblinV1` — merged MiniCPM-V model for canvas
   drawings. The local GGUF files live in `models/goblinV1-gguf/gguf/`; use
@@ -258,9 +288,11 @@ context, then returns attack/VFX metadata for the renderer.
 - **Asset planner model**: `models/MiniCPM-V-4.6-gguf/MiniCPM-V-4_6-Q8_0.gguf`
   — planned higher-quality model for attack type, palette, size, area, path,
   impact reaction, particle tags and animation timing from validated spell JSON.
-- The `MODEL` in `.env` (`openbmb/MiniCPM-o-4_5-gguf`) is a **quantized GGUF
-  multimodal** model — it's the llama.cpp/serving + optional vision path and
-  **cannot** be LoRA-fine-tuned. Download it with `--gguf` only if you need it.
+- **Dialogue / story model**: the base (non-fine-tuned) `openbmb/MiniCPM-V-4.6`
+  drives NPC dialogue and story progression — loaded as the GGUF
+  `models/MiniCPM-V-4.6-gguf/MiniCPM-V-4_6-Q4_K_M.gguf` via
+  `RG_DIALOGUE_MODEL`. It's a **quantized GGUF multimodal** model and **cannot**
+  be LoRA-fine-tuned. Download it with `--gguf` only if you need it.
 
 Renderer rule: do not generate new images during combat or exploration. Use
 model metadata to drive existing sprites, particles, overlays, CSS/canvas
@@ -270,7 +302,10 @@ effects, weapon trails, colors, sizes and enemy reactions.
 
 All art/audio packs are free / CC0. The raw packs live in the git-ignored
 `assets/`; a curated subset is baked into `app/rpg_static/{sprites,vfx,icons,sfx}/`
-with a generated `manifest.json` (regenerate by re-running the bake step).
+with a generated `manifest.json`. `scripts/bake_extra_sprites.py` re-bakes the
+extra Tiny Swords assets (terrain tiles, colored buildings, resource piles,
+skulls, animated flames/TNT goblins) and the snow/stone/dead-tree recolors that
+give each biome its own ground and props.
 
 - **Terrain & buildings**: [Tiny Swords](https://pixelfrog-assets.itch.io/tiny-swords) by **Pixel Frog** (CC0).
 - **Creatures (enemies/NPCs)**: Basic magical animations pack — elementals,

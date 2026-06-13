@@ -126,3 +126,40 @@ def test_generate_dialogue_fallback_without_model(monkeypatch):
 def test_model_status_keys():
     s = dialogue.model_status()
     assert set(s) == {"enabled", "model_path", "last_error"}
+
+
+def test_fallback_dialogue_relationship_callbacks():
+    from rune_goblin import story
+    # first meeting: canned intent reaction (no callback yet)
+    first = story.fallback_dialogue("toll_goblin", meets=1)
+    assert "left line" in first["npc_line"]
+    # repeat visit, neutral: plain return line
+    again = story.fallback_dialogue("toll_goblin", meets=3)
+    assert "queue missed you" in again["npc_line"]
+    # repeat visit with trust: the story-plan respect line
+    warm = story.fallback_dialogue("toll_goblin", trust=2, meets=2)
+    assert "Respect" in warm["npc_line"]
+    # repeat visit after mistreatment: the incident-report line
+    cold = story.fallback_dialogue("toll_goblin", trust=-1, meets=2)
+    assert "incident report" in cold["npc_line"]
+    # casting runes still routes through intent reactions, not callbacks
+    coin = story.fallback_dialogue("toll_goblin", runes=["coin"], trust=2, meets=5)
+    assert "Payment accepted" in coin["npc_line"]
+
+
+def test_user_payload_steers_with_relationship_callback():
+    from rune_goblin.dialogue import _user_payload
+    tgt = {"id": "tourist", "name": "Lost Tourist", "type": "npc"}
+    # repeat friendly visit, no spell: steer with the trusted callback
+    p = _user_payload("Goblin Toll Road", "talk", tgt,
+                      {"meet_count": 3, "npc_trust": 2}, {"runes": []}, "", "neutral")
+    assert "kind-magic one" in p
+    assert "won twice" not in p          # first-meeting line no longer steers
+    # first meeting still steers with the canonical first-meeting reaction
+    p1 = _user_payload("Goblin Toll Road", "talk", tgt,
+                       {"meet_count": 1, "npc_trust": 0}, {"runes": []}, "", "neutral")
+    assert "won twice" in p1
+    # casting runes keeps the intent reaction even on repeat visits
+    pc = _user_payload("Goblin Toll Road", "talk", tgt,
+                       {"meet_count": 4, "npc_trust": 2}, {"runes": ["wave"]}, "", "kind")
+    assert "panic quieter" in pc

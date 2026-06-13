@@ -987,6 +987,45 @@ Allowed story flags: {allowed_flags}
 Needed output fields: story_toast, npc_line, journal_entry, suggested_story_flag, mood_shift
 ```
 
+## LLM-Triggered Story Beats (implemented)
+
+The dialogue model originally spoke only when the player pressed Talk. Story
+beats make the LLM fire proactively, so the world narrates itself:
+
+- `src/rune_goblin/beats.py` — the beat registry. Two trigger kinds:
+  - `area_enter`: narrator voice, fires once per run when the player enters an
+    area and the flag conditions hold (every map has one; the Gate Approach
+    has four mutually exclusive variants: allies / debts / mixed / clean).
+  - `first_meet`: character voice, fires once when the player first walks
+    within `radius` tiles of a named NPC. Rendered as a speech bubble over the
+    entity. Gate-ally barks require the earning flag (`tourist_helped` etc.),
+    the Debt Collector bark requires unpaid debt.
+- Triggers ship with `/rg/world` (`story_beats` manifest, conditions only —
+  text stays server-side). The client fires each beat at most once, tracked in
+  `player.beats_seen`, and calls `POST /rg/story_beat`.
+- The endpoint (`app/rpg_bridge.py`) calls `dialogue.generate_beat`: the model
+  writes the moment using the beat's scene direction, the player's class,
+  flags and recent events; output is length-clamped and `suggested_story_flag`
+  is always emptied. Unknown beats or failed conditions return `skip` so a
+  stale client can never surface wrong-route narration.
+- Every beat carries deterministic fallback toast/bark/journal text, so the
+  LLM being down never blocks the story.
+
+The Bone Market uses the same flavor/authority split: Python derives a
+[lo, hi] price band per weapon from quest stage + reputation flags
+(`story.price_band`), the LLM haggles inside the band and writes the reason
+line, and out-of-band prices are clamped. The shop panel tags which model set
+today's prices. Buying echoes the quoted price back; the engine honors it only
+if it sits inside the band.
+
+Beat firing rules:
+
+- One `area_enter` beat max per area entry; proximity barks are checked after
+  every step.
+- Narrator beats land in the toast + journal; barks land in a canvas speech
+  bubble (~6 s) with no name prefix.
+- Flags stay engine-owned. Beats read flags, never write them.
+
 ## Implementation Notes
 
 - Add deterministic fallback dialogue tables for every NPC, map, boss phase, and
