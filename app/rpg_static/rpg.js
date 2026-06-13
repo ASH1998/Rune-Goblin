@@ -131,6 +131,21 @@
     blue_archer: { src: "blue_archer.png", fw: 192, fh: 192, frames: 6, anim: true, scale: 1.25 },
     red_warrior: { src: "red_warrior.png", fw: 192, fh: 192, frames: 8, anim: true, scale: 1.35 },
   };
+  // Mega Boss (assets/BOSS): green-flame horned knight, 96x96 frames facing
+  // left, feet baseline ~7px above the frame bottom (the `foot` fraction).
+  // `mega_boss` is the plain sprite_key alias; the per-state sheets are picked
+  // by the boss animation state machine in drawEntity.
+  (() => {
+    const sheets = { idle: ["Idle", 5], walk: ["Walk", 5], run: ["Run", 5],
+      hurt: ["Hurt", 2], death: ["Death", 5], attack1: ["Attack1", 5],
+      attack2: ["Attack2", 5], attack3: ["Attack3", 5], attack4: ["Attack4", 5],
+      special: ["Special", 5], jump: ["Jump", 5] };
+    for (const [k, [file, frames]] of Object.entries(sheets)) {
+      SPRITES["mega_boss_" + k] = { src: "boss/" + file + ".png", fw: 96, fh: 96,
+        frames, anim: true, scale: 3.0, foot: 7 / 96 };
+    }
+    SPRITES.mega_boss = SPRITES.mega_boss_idle;
+  })();
   const STATIC = "/rg/static/";
   const VFXM = {};            // name -> {img, fw, fh, frames}
   const SFXB = {};            // name -> url for Audio
@@ -217,15 +232,18 @@
     return true;
   }
   // bottom-centred unit/object sprite at screen (cx, baseY)
-  function drawUnitSprite(name, cx, baseY, scale, frameIndex) {
+  function drawUnitSprite(name, cx, baseY, scale, frameIndex, flip) {
     const s = spr(name); if (!s) return false;
     const fw = s.fw || s.img.naturalWidth, fh = s.fh || s.img.naturalHeight;
     const fcount = s.frames || 1;
     const col = (s.anim && fcount > 1) ? (frameIndex % fcount) : 0;
     const dw = TILE * (scale || s.scale || 1.4);
     const dh = dw * (fh / fw);
+    const dy = baseY - dh + (s.foot ? dh * s.foot : 0);  // sink padded feet to the baseline
     ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(s.img, col * fw, 0, fw, fh, cx - dw / 2, baseY - dh, dw, dh);
+    if (flip) { ctx.save(); ctx.translate(cx * 2, 0); ctx.scale(-1, 1); }
+    ctx.drawImage(s.img, col * fw, 0, fw, fh, cx - dw / 2, dy, dw, dh);
+    if (flip) ctx.restore();
     return true;
   }
   const GOBLIN_BY_NAME = {
@@ -234,9 +252,53 @@
     "Stapler Hydra": "goblin_red", "Mold Knight": "goblin_yellow",
     "Calendar Beast": "goblin_purple",
   };
+  // ---- Mega Boss animation state machine -----------------------------------
+  // The boss has real per-state sheets (idle/hurt/death/attacks/special).
+  // One-shot states play once then fall back to idle; death holds its last
+  // frame (ash + sword on the ground) until the entity despawns.
+  const BOSS_ANIM = {
+    idle:    { fps: 8,  loop: true },
+    // walk/run are one-shots: the boss snap-moves a tile per player turn, so
+    // each step plays one stride cycle and settles back to idle
+    walk:    { fps: 10, loop: false },
+    run:     { fps: 12, loop: false },
+    hurt:    { fps: 8,  loop: false },
+    death:   { fps: 7,  loop: false, hold: true },
+    attack1: { fps: 9, loop: false },
+    attack2: { fps: 9, loop: false },
+    attack3: { fps: 9, loop: false },
+    attack4: { fps: 9, loop: false },
+    special: { fps: 9,  loop: false },
+    jump:    { fps: 9,  loop: false },
+  };
+  const bossAnim = {};    // entity id -> {name, start}
+  const bossHpSeen = {};  // entity id -> last seen hp (flinch on any damage source)
+  function setBossAnim(e, name) {
+    const cur = bossAnim[e.id];
+    if (cur && cur.name === "death") return;   // death is final
+    if (cur && cur.name === name && BOSS_ANIM[name].loop) return;
+    bossAnim[e.id] = { name, start: now() };
+  }
+  function bossAnimSheet(e) {
+    // Damage from any source (casts, burn ticks) makes the boss flinch.
+    const prev = bossHpSeen[e.id];
+    if (prev != null && e.hp < prev) setBossAnim(e, e.hp <= 0 ? "death" : "hurt");
+    bossHpSeen[e.id] = e.hp;
+    let st = bossAnim[e.id] || (bossAnim[e.id] = { name: "idle", start: now() });
+    let a = BOSS_ANIM[st.name];
+    const sheet = () => "mega_boss_" + st.name;
+    const s = SPRITES[sheet()], frames = (s && s.frames) || 5;
+    let fi = ((now() - st.start) * a.fps / 1000) | 0;
+    if (fi >= frames) {
+      if (a.loop) fi %= frames;
+      else if (a.hold) fi = frames - 1;
+      else { st = bossAnim[e.id] = { name: "idle", start: now() }; fi = 0; }
+    }
+    return { sheet: sheet(), fi };
+  }
   function entitySprite(e) {
     if (e.sprite_key && SPRITES[e.sprite_key]) return e.sprite_key;
-    if (e.type === "boss") return "goblin_purple";
+    if (e.type === "boss") return "mega_boss";
     if (e.type === "enemy") return GOBLIN_BY_NAME[e.name] || "goblin_red";
     if (e.type === "npc") return e.id === "librarian" ? "npc_monk" : "npc_pawn";
     if (e.type === "story_object") return e.sprite_key || "shrine_tower";
@@ -672,6 +734,9 @@
     if (now() - (enemyCooldown[e.id] || 0) < 850) return;
     enemyCooldown[e.id] = now();
     const dmg = enemyHitDamage(e);
+    // the boss swings its greatsword (a random Attack1-4 sheet) on every blow,
+    // shield-absorbed or not
+    if (e.type === "boss") setBossAnim(e, "attack" + (1 + ((Math.random() * 4) | 0)));
     if (P.fx && P.fx.shield > 0) { P.fx.shield -= 1; if (P.fx.shield <= 0) delete P.fx.shield; toast("Your shield absorbs <b>" + e.name + "</b>."); return; }
     P.hp = clamp(P.hp - dmg, 0, P.max_hp);
     enemyOnHit(e);
@@ -791,6 +856,40 @@
       if (n) toast("<b>" + e.name + "</b> summons " + n + " shade" + (n > 1 ? "s" : "") + "!");
     }
   }
+  // One boss action: the arena has a single boss and it owns the whole floor,
+  // so it stalks the player from any distance (walk sheet), double-stepping
+  // once enraged (run sheet), and strikes when adjacent. Within sight it
+  // alternates advancing with a standing spell-cast (attack sheet + projectile
+  // vfx) so it threatens from range too. Runs on every player step (enemyTurn)
+  // AND once per cast — a stationary rune-drawing duel still has the boss
+  // bearing down on you.
+  const bossRangedFlip = {};   // entity id -> alternation bit (cast, move, cast…)
+  function bossTurn(e) {
+    if (distToPlayer(e) <= 1) { enemyAttack(e, "presses in"); return; }
+    const enraged = e.fx && e.fx.enraged;
+    if (distToPlayer(e) <= 6 && (bossRangedFlip[e.id] = !bossRangedFlip[e.id])) {
+      enemyAttack(e, "hurls a calendar curse");
+      return;
+    }
+    const steps = enraged ? 2 : 1;
+    let moved = false;
+    for (let i = 0; i < steps && distToPlayer(e) > 1; i++) {
+      const step = stepToward(e, true);
+      if (!step) break;
+      e.x = step.nx; e.y = step.ny; moved = true;
+    }
+    if (moved) setBossAnim(e, enraged ? "run" : "walk");
+    if (distToPlayer(e) <= 1) enemyAttack(e, "lunges");
+  }
+  // Greedy one-tile step that closes the gap to the player. avoidPortals
+  // keeps blocking pursuers (the boss) from squatting on travel tiles.
+  function stepToward(e, avoidPortals) {
+    return ["up", "down", "left", "right"].map((dir) => {
+      const v = DIRV[dir], nx = e.x + v[0], ny = e.y + v[1];
+      return { nx, ny, d: Math.abs(nx - P.x) + Math.abs(ny - P.y) };
+    }).sort((a, b) => a.d - b.d).find((p) => canEnemyStep(e, p.nx, p.ny) &&
+      (!avoidPortals || !A.entities.some((o) => o.type === "portal" && o.x === p.nx && o.y === p.ny))) || null;
+  }
   function enemyTurn() {
     if (!A || over || busy) return;
     turnNo += 1;
@@ -802,7 +901,8 @@
       // Enrage: elites/bosses below 33% HP get angrier (and faster).
       if ((e.tier === "elite" || e.type === "boss") && e.hp <= e.max_hp / 3) {
         e.fx = e.fx || {};
-        if (!e.fx.enraged) { e.fx.enraged = 999; toast("<b>" + e.name + "</b> ENRAGES!"); fireTaunt(e, "enrage"); }
+        if (!e.fx.enraged) { e.fx.enraged = 999; if (e.type === "boss") setBossAnim(e, "special");
+          toast("<b>" + e.name + "</b> ENRAGES!"); fireTaunt(e, "enrage"); }
       }
       // Resolve a pending telegraphed attack first.
       if (e.windup) { resolveWindup(e); continue; }
@@ -818,13 +918,11 @@
       if (e.ability === "summon" && turnNo % 4 === 0 && ownMinionsAlive(e) < 3 && d0 <= 6) {
         e.windup = { kind: "summon" }; toast("<b>" + e.name + "</b> begins a summon…"); continue;
       }
+      if (e.type === "boss") { bossTurn(e); continue; }
       if (d0 <= 1) { enemyAttack(e, "presses in"); continue; }
       const enraged = e.fx && e.fx.enraged;
-      if (e.type === "boss" || d0 > 6 || (!enraged && d0 > 3 && (turnNo + e.id.length) % 3 !== 0)) continue;
-      const step = ["up", "down", "left", "right"].map((dir) => {
-        const v = DIRV[dir], nx = e.x + v[0], ny = e.y + v[1];
-        return { nx, ny, d: Math.abs(nx - P.x) + Math.abs(ny - P.y) };
-      }).sort((a, b) => a.d - b.d).find((p) => canEnemyStep(e, p.nx, p.ny));
+      if (d0 > 6 || (!enraged && d0 > 3 && (turnNo + e.id.length) % 3 !== 0)) continue;
+      const step = stepToward(e, false);
       if (step) { e.x = step.nx; e.y = step.ny; }
       if (distToPlayer(e) <= 1) enemyAttack(e, "lunges");
     }
@@ -1196,9 +1294,15 @@
       const e = a.target_id ? byId(a.target_id) : null;
       switch (a.type) {
         case "set_entity_hp": if (e) e.hp = a.hp; break;
-        case "defeat_entity": if (e) { e.state = "defeated"; e.blocking = false;
+        case "defeat_entity": if (e) { e.blocking = false;
           P.score += (e.type === "boss" ? 200 : 50); defeated = true; lastDefeated = e;
           onEnemyDefeated(e);
+          if (e.type === "boss") {
+            // let the death sheet play (dissolve to ash, sword left on the
+            // ground) before the entity despawns
+            e.hp = 0; setBossAnim(e, "death");
+            setTimeout(() => { e.state = "defeated"; }, 1000);
+          } else { e.state = "defeated"; }
           toast("<b>" + e.name + "</b> is defeated!"); } break;
         case "set_entity_state": if (e) e.state = a.state; break;
         case "set_entity_blocking": if (e) e.blocking = a.blocking; break;
@@ -1316,6 +1420,7 @@
           if (e) {
             if (a.weakness) e.weakness = a.weakness;
             if (a.resistance) e.resistance = a.resistance;
+            if (e.type === "boss") setBossAnim(e, "special");  // phase-up flare
           }
           showBanner(a.banner || ("PHASE " + a.phase));
           setTimeout(() => {
@@ -1325,7 +1430,11 @@
           if (a.phase >= 3) setTimeout(() => { if (!over && canBecomeKing()) toast("👑 You carry the Cracked Crown and the strength to wear it — open Bag (I) and crown yourself!"); }, 1400);
           break;
         case "win_game": lastEnding = { ending: a.ending, title: a.title, text: a.text,
-          choices: a.choices || [], boss_reactions: a.boss_reactions || [] }; win(); break;
+          choices: a.choices || [], boss_reactions: a.boss_reactions || [] };
+          // the boss's death dissolve (~1s) plays out before the end screen
+          if (lastDefeated && lastDefeated.type === "boss") setTimeout(() => win(), 1500);
+          else win();
+          break;
         default: break;
       }
     });
@@ -1361,6 +1470,15 @@
     // enemy retaliation if it survived
     if (!over && target && (target.type === "enemy" || target.type === "boss") && !defeated) {
       retaliate(target, s.status_effects || []);
+    }
+    // A cast is the boss's turn too: unless it just struck back above, it
+    // advances on the player — standing still and casting doesn't park it.
+    if (!over) {
+      for (const b of liveEntities()) {
+        if (b.type !== "boss" || b.hp <= 0) continue;
+        if (target && b.id === target.id && !defeated) continue;  // already retaliated
+        bossTurn(b);
+      }
     }
     // casting at a friendly NPC also surfaces a model-driven reply
     if (!over && target && target.type === "npc") openDialogue(target, runes);
@@ -1559,6 +1677,11 @@
     if (skip) { setTimeout(() => toast(enemy.name + " fumbles its turn."), 650); return; }
     let dmg = enemyHitDamage(enemy);
     if (fx.fear > 0) dmg = Math.max(1, dmg - 1);
+    // The boss telegraphs its counter: the greatsword swing starts as a
+    // windup, then the blow lands with the spell vfx (even into a shield).
+    if (enemy.type === "boss") {
+      setTimeout(() => { if (enemy.hp > 0) setBossAnim(enemy, "attack" + (1 + ((Math.random() * 4) | 0))); }, 320);
+    }
     if (statuses.includes("player_shielded") || (P.fx && P.fx.shield > 0)) {
       if (P.fx && P.fx.shield > 0) { P.fx.shield -= 1; if (P.fx.shield <= 0) delete P.fx.shield; }
       setTimeout(() => toast("Your shield absorbs " + enemy.name + "'s blow."), 650); return;
@@ -1566,6 +1689,7 @@
     setTimeout(() => {
       P.hp = clamp(P.hp - dmg, 0, P.max_hp);
       enemyOnHit(enemy);
+      if (enemy.type === "boss") bossSpellVfx(enemy, dmg);
       spawnHit();
       toast(enemy.name + " strikes back for " + dmg + (fx.fear > 0 ? " (cowed by fear)" : "") + "!");
       if (P.hp <= 0 && !over) lose();
@@ -2295,7 +2419,12 @@
       const fi = (now() / 140) | 0;
       let drew = false;
       if (name && !(e.type === "chest" && e.state === "open")) {
-        drew = drawUnitSprite(name, cx, baseY, null, fi);
+        if (e.type === "boss" && spr("mega_boss_idle")) {
+          // state-machine sheets; flip so the boss always faces the player
+          const ba = bossAnimSheet(e);
+          drew = drawUnitSprite(ba.sheet, cx, baseY, null, ba.fi, P.x > e.x);
+        }
+        if (!drew) drew = drawUnitSprite(name, cx, baseY, null, fi);
       }
       if (!drew) {
         ctx.font = Math.floor(TILE * 0.7) + "px serif";

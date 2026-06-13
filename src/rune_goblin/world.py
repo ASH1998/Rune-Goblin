@@ -592,7 +592,7 @@ def _build_areas() -> dict[str, Area]:
         entities=[
             _mob("calendar_beast", "Calendar Beast", 14, 4, hp=72, boss=True,
                  weakness=["spiral", "eye"], resistance=["flame"],
-                 sprite_key="adept_necromancer", mood="overbooked and furious"),
+                 sprite_key="mega_boss", mood="overbooked and furious"),
             Entity("portal_home_a", "portal", "Arena Exit", 2, 20, sprite="🚪",
                    blocking=False, target_area="gate_approach", target_x=2, target_y=12,
                    hint="flee → Calendar Gate Approach"),
