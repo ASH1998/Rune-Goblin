@@ -13,6 +13,13 @@ pinned: false
 
 [![Deploy to Hugging Face Space](https://github.com/ASH1998/Rune-Goblin/actions/workflows/deploy-hf-space.yml/badge.svg?branch=master)](https://github.com/ASH1998/Rune-Goblin/actions/workflows/deploy-hf-space.yml)
 
+> ### 🙏 Credits
+> - 🤖 **Made with [Codex](https://github.com/codex)** — coding and some asset creation (the `BOSS` and `rune_goblin` magic-circle assets are Codex-generated).
+> - 🧠 **Models by [OpenBMB](https://huggingface.co/openbmb)** — [`openbmb/MiniCPM-V-4.6`](https://huggingface.co/openbmb/MiniCPM-V-4.6) (fine-tuned spell engine + base dialogue/story).
+> - ⚡ **Thanks to [Modal](https://modal.com)** for fine-tuning credits.
+>
+> Full attributions, including game art packs, are in [`CREDITS.md`](./CREDITS.md).
+
 A tiny dungeon crawler where players draw spells in an invented symbolic
 language (**RuneLang**) and a fine-tuned [`openbmb/MiniCPM-V-4.6`](https://huggingface.co/openbmb/MiniCPM-V-4.6)
 acts as the **spell engine** — reading glyph combinations and emitting JSON
