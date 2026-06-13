@@ -61,10 +61,10 @@ Rune Goblin fits because the AI is the core game mechanic. The player invents sp
 
 ## 4. What We Fine-Tune
 
-We fine-tune a small OpenBMB text model, preferably:
+We fine-tune the OpenBMB vision model:
 
 ```text
-MiniCPM5-1B-SFT
+openbmb/MiniCPM-V-4.6
 ```
 
 The fine-tuned text model becomes:
@@ -86,7 +86,7 @@ The full drawing pipeline is:
 Player drawing
 → goblinV1-gguf Q4_K_M sketch reader
 → spell sketch metadata / detected rune sequence
-→ fine-tuned MiniCPM5 RuneLang spell engine
+→ fine-tuned openbmb/MiniCPM-V-4.6 RuneLang spell engine
 → validated spell outcome JSON
 → MiniCPM-V-4.6 Q8 asset planner
 → animation / attack / asset metadata JSON
@@ -347,7 +347,7 @@ Split:
 6. Use a larger model or template system to create funny spell names and flavor text.
 7. Validate JSON.
 8. Save as JSONL.
-9. Fine-tune MiniCPM5-1B-SFT with LoRA.
+9. Fine-tune openbmb/MiniCPM-V-4.6 with LoRA.
 ```
 
 ---
@@ -394,7 +394,7 @@ Gradio UI
   |
 Rune Serializer
   |
-Fine-tuned MiniCPM5-1B-SFT LoRA
+Fine-tuned openbmb/MiniCPM-V-4.6 LoRA
   |
 JSON Spell Result
   |
@@ -583,7 +583,7 @@ Modal credits can be used for:
 Local / Modal:
 1. Generate rune_spell_dataset.jsonl
 2. Upload dataset to Hugging Face
-3. Fine-tune MiniCPM5-1B-SFT using LoRA/QLoRA
+3. Fine-tune openbmb/MiniCPM-V-4.6 using LoRA/QLoRA
 4. Save LoRA adapter
 5. Push adapter to Hugging Face
 6. Load adapter in Gradio or Modal endpoint
@@ -594,13 +594,13 @@ Local / Modal:
 ### 13.3 Suggested Training Setup
 
 ```text
-Base model: OpenBMB MiniCPM5-1B-SFT
+Base model: openbmb/MiniCPM-V-4.6
 Method: LoRA / QLoRA
 Dataset size: 5k examples
 Epochs: 2–4
 Max sequence length: 1024 or 2048
 Batch size: based on GPU
-Output: rune-goblin-minicpm5-1b-lora
+Output: rune-goblin-minicpm-v-4.6-lora
 ```
 
 ---
@@ -678,7 +678,7 @@ Good output:
 
 | Badge | How We Earn It |
 |---|---|
-| Well-Tuned | Fine-tuned MiniCPM5-1B-SFT on RuneLang |
+| Well-Tuned | Fine-tuned openbmb/MiniCPM-V-4.6 on RuneLang |
 | Off-Brand | Custom Gradio UI that looks like a tiny cursed dungeon |
 | Field Notes | Blog post explaining RuneLang and training process |
 | Open Trace | Publish sample game traces / spell logs |

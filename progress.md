@@ -147,8 +147,6 @@ uv run --extra gguf python app/vision_app.py     # → http://localhost:7861
 Play with `RG_USE_MODEL=0` to skip the model entirely (drawings then fall back
 to the rule engine; rune-button casts are unaffected). Rune-button casts are
 always instant; the first drawing cast loads the vision model (~30s on CPU).
-`.claude/launch.json` has a `rune-goblin` preview config (model off) for quick
-UI checks.
 
 ---
 

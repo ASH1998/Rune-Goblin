@@ -14,7 +14,7 @@ pinned: false
 [![Deploy to Hugging Face Space](https://github.com/ASH1998/Rune-Goblin/actions/workflows/deploy-hf-space.yml/badge.svg?branch=master)](https://github.com/ASH1998/Rune-Goblin/actions/workflows/deploy-hf-space.yml)
 
 A tiny dungeon crawler where players draw spells in an invented symbolic
-language (**RuneLang**) and a fine-tuned [`openbmb/MiniCPM5-1B-SFT`](https://huggingface.co/openbmb/MiniCPM5-1B-SFT)
+language (**RuneLang**) and a fine-tuned [`openbmb/MiniCPM-V-4.6`](https://huggingface.co/openbmb/MiniCPM-V-4.6)
 acts as the **spell engine** — reading glyph combinations and emitting JSON
 that drives attacks, curses and game-state changes. Runtime visuals are not
 image-generated; spell metadata recolors, resizes, retargets and animates
@@ -27,7 +27,7 @@ See [`rune_goblin_plan.md`](./rune_goblin_plan.md) for the full design doc.
 ```
 Rune buttons (Gradio / React)
    → serialized rune sequence + game state
-   → fine-tuned MiniCPM5-1B + LoRA   (rune_goblin.inference)
+   → fine-tuned openbmb/MiniCPM-V-4.6 + LoRA   (rune_goblin.inference)
    → spell outcome JSON              (validated by rune_goblin.schema)
    → game state engine               (rune_goblin.game, clamps HP)
    → updated UI
@@ -271,7 +271,7 @@ context, then returns attack/VFX metadata for the renderer.
 
 ## Notes on the model
 
-- **Fine-tuning base**: `openbmb/MiniCPM5-1B-SFT` — safetensors, llama-arch,
+- **Fine-tuning base**: `openbmb/MiniCPM-V-4.6` — safetensors, vision-capable,
   LoRA-trainable. This is what `rune-goblin-download` and `finetune.py` use.
 - **Vision fine-tune**: `ASHu2/goblinV1` — merged MiniCPM-V model for canvas
   drawings. The local GGUF files live in `models/goblinV1-gguf/gguf/`; use
@@ -281,9 +281,11 @@ context, then returns attack/VFX metadata for the renderer.
 - **Asset planner model**: `models/MiniCPM-V-4.6-gguf/MiniCPM-V-4_6-Q8_0.gguf`
   — planned higher-quality model for attack type, palette, size, area, path,
   impact reaction, particle tags and animation timing from validated spell JSON.
-- The `MODEL` in `.env` (`openbmb/MiniCPM-o-4_5-gguf`) is a **quantized GGUF
-  multimodal** model — it's the llama.cpp/serving + optional vision path and
-  **cannot** be LoRA-fine-tuned. Download it with `--gguf` only if you need it.
+- **Dialogue / story model**: the base (non-fine-tuned) `openbmb/MiniCPM-V-4.6`
+  drives NPC dialogue and story progression — loaded as the GGUF
+  `models/MiniCPM-V-4.6-gguf/MiniCPM-V-4_6-Q4_K_M.gguf` via
+  `RG_DIALOGUE_MODEL`. It's a **quantized GGUF multimodal** model and **cannot**
+  be LoRA-fine-tuned. Download it with `--gguf` only if you need it.
 
 Renderer rule: do not generate new images during combat or exploration. Use
 model metadata to drive existing sprites, particles, overlays, CSS/canvas
