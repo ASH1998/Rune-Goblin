@@ -48,8 +48,7 @@ from rune_goblin.schema import try_parse_vision_spell  # noqa: E402
 load_dotenv(ROOT / ".env")
 
 # Deployed goblin-vision-gguf URL (override via env above).
-DEFAULT_BASE = "https://ashutosh-36597--goblin-vision-gguf-goblinvisiongguf-serve.modal.run"
-
+DEFAULT_BASE = ""
 
 def _resolve_base() -> str:
     base = os.environ.get("MODAL_GGUF_APP_URL", "").strip()
