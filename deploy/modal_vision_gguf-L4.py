@@ -59,8 +59,7 @@ Modal prints a URL like:
   https://<workspace>--goblin-vision-gguf-goblinvisiongguf-serve.modal.run
 The game's RG_VISION_API_URL is that URL + "/v1/chat/completions".
 
-Smoke test (health + model list):
-  curl -s https://<workspace>--...modal.run/health
+Smoke test (model list):
   curl -s https://<workspace>--...modal.run/v1/models \
     -H "Authorization: Bearer $RG_VISION_API_KEY"
 ----------------------------------------------------------------------------
