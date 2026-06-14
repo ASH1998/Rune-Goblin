@@ -31,23 +31,7 @@ See [`rune_goblin_plan.md`](./rune_goblin_plan.md) for the full design doc.
 
 ## Architecture
 
-```
-Rune buttons (Gradio / React)
-   → serialized rune sequence + game state
-   → fine-tuned openbmb/MiniCPM-V-4.6 + LoRA   (rune_goblin.inference)
-   → spell outcome JSON              (validated by rune_goblin.schema)
-   → game state engine               (rune_goblin.game, clamps HP)
-   → updated UI
-
-Drawn canvas (Gradio vision app)
-   → canvas image + game state
-   → goblinV1-gguf Q4_K_M sketch reader
-   → visual_reading / rune metadata  (rune_goblin.vision_inference)
-   → fine-tuned RuneLang spell JSON  (validated by rune_goblin.schema)
-   → asset / VFX planner             (rune_goblin.vfx — rule-based today, MiniCPM-V-4.6 later)
-   → attack / VFX metadata           (palette, projectile, particles, screen shake)
-   → CSS/canvas renderer + game state engine
-```
+![Rune Goblin architecture](./Rune_Goblin_ARCH.png)
 
 For the playable MVP the asset planner is a small deterministic function
 (`rune_goblin.vfx`) instead of a second model: it is instant and never fails,
@@ -64,6 +48,27 @@ powerups, locked doors and a boss. The canvas client owns movement/rendering;
 `resolve_world_cast` turns drawn/selected runes + the faced target into a
 validated spell **and** a list of world actions (unlock, loot, defeat, heal,
 travel-gate…). Python stays the spell engine and balance authority.
+
+## Deployment (Modal)
+
+The vision spell engine runs **serverlessly on a [Modal](https://modal.com) GPU**
+and the game (HF Space, CPU-only) calls it over an OpenAI-compatible
+`POST /v1/chat/completions` endpoint — the same contract the local backend uses,
+so nothing in the game changes besides the URL.
+
+The deployed model is the quantized **GGUF** build (`ASHu2/goblinV1/gguf`,
+`Q8_0` + mmproj) served by **llama-cpp-python** (CUDA), not the safetensors
+weights on vLLM. The big win is **cold start**: the GPU sits scaled-to-zero when
+idle and only bills while warm, so cold-boot latency is what hurts an interactive
+game. Loading the safetensors with torch took **~5 minutes**; switching to the
+GGUF and enabling Modal's **GPU memory snapshot** (model loaded + warmed once,
+then the whole VRAM state is restored on each cold start) dropped that to
+**~10 seconds — a ~30× faster cold boot.**
+
+Deploy scripts live in [`deploy/`](./deploy/):
+`modal_vision_gguf.py` (and an `-L4` variant) build the CUDA image, pull the GGUF
+on first boot into a cached Volume, and serve behind a Bearer-auth key.
+Smoke-test with [`tests/test_modal_vision_gguf.py`](./tests/test_modal_vision_gguf.py).
 
 ## Layout
 
