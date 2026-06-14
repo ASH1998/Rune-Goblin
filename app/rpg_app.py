@@ -135,7 +135,7 @@ PLAY_PAGE = """<!doctype html>
           <button class="rg-btn" id="rg-draw-clear">Clear</button>
           <button class="rg-btn ghost" id="rg-draw-cancel">Cancel (Esc)</button>
         </div>
-        <div class="tip">Sketch 1–4 RuneLang glyphs. The fine-tuned goblinV1 model reads your doodle (~slow on CPU).</div>
+        <div class="tip">Sketch 1–4 RuneLang glyphs. The fine-tuned goblinV1 model reads your doodle.</div>
       </div>
 
       <div class="rg-end" id="rg-end">
