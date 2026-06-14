@@ -107,7 +107,8 @@ vllm_image = (
 hf_cache = modal.Volume.from_name("goblin-hf-cache", create_if_missing=True)
 vllm_cache = modal.Volume.from_name("goblin-vllm-cache", create_if_missing=True)
 
-app = modal.App("goblin-vision")
+app = modal.App("goblin-vision-gpu")
+snapshot_key = "v1"  # change this to invalidate the snapshot cache
 
 
 @app.function(
@@ -126,10 +127,13 @@ app = modal.App("goblin-vision")
         #   modal secret create rg-vision RG_VISION_API_KEY=...
         modal.Secret.from_name("rg-vision"),
     ],
+    experimental_options={"enable_gpu_snapshot": True}
 )
+
 @modal.concurrent(max_inputs=10)    # <=10 concurrent requests per replica  (requirement)
 @modal.web_server(port=VLLM_PORT, startup_timeout=10 * MINUTES)
 def serve():
+    print(f"snapshotting {snapshot_key}")
     """Launch vLLM's OpenAI-compatible server inside the container."""
     cmd = [
         "vllm",

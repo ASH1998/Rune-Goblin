@@ -36,3 +36,4 @@ frontend/.vite/
 .vscode/
 *.log
 launch.json
+.venv-vllm/
